@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Document** | `docs/04-api-specification.md` |
-| **Version** | 1.0 (Draft for review) |
+| **Version** | 1.1 (Q2/Q4/Q7/Q8/Q9/DM-Q5/Q7/Q8 resolved) |
 | **Status** | Planning phase — pending stakeholder sign-off |
 | **Author role** | Principal Backend Architect |
 | **Date** | 2026-07-22 |
@@ -66,7 +66,8 @@ Single-resource endpoints return the bare resource object (no envelope).
 - **Session revocation** is immediate server-side (logout, suspension, deprovisioning) — supports BR-25/BR-33 and moderation.
 - **Verification** (FR-1): phone via OTP, email via link/code. Unverified accounts cannot receive notifications on an unverified channel (BR-30) and have limited capability.
 - **Authority/Admin** may be required to use **2FA** (FR-4, optional per policy).
-- **Anonymous access** to write endpoints is gated by **PRD ❓Q4 / DM-Q2** (anonymous reporting) and to public reads by **PRD ❓Q7 / DM-Q3** (public visibility). Endpoints below mark these explicitly.
+- **Anonymous access** to write endpoints: **Q4 RESOLVED — login required.** All submissions require a Citizen session. Anonymous write access is not supported.
+- **Public reads**: **Q7 RESOLVED — map and issue list are publicly visible** to unauthenticated users.
 
 > *Note:* mechanics of OTP/token storage are implementation (Architecture §8) and out of scope here; this spec defines only the request/response contract.
 
@@ -161,7 +162,7 @@ Uniform envelope for all errors:
 ## 5. API Versioning Strategy
 - **URI versioning: `/api/v1`.** Chosen for explicitness, cache-friendliness, and ease of routing.
 - **Additive changes are non-breaking** and ship within `v1` (new optional fields, new endpoints, new enum values behind capability flags). Clients MUST ignore unknown fields.
-- **Breaking changes** (removing/renaming fields, changing semantics, e.g. adding a **Critical** severity that clients must handle — PRD ❓Q2) trigger `/api/v2`, with `v1` supported through a documented deprecation window.
+- **Breaking changes** (removing/renaming fields, changing semantics, e.g. adding **Critical** severity — Q2 RESOLVED: Critical is now part of the enum) are handled within `v1` when additive (new enum value clients must ignore-unknown); a `/api/v2` is triggered only if existing clients must change behavior to handle it. Clients MUST ignore unknown enum values to stay forward-compatible.
 - **Deprecation signaling:** `Deprecation` and `Sunset` response headers on affected endpoints.
 
 ---
@@ -276,8 +277,8 @@ Uniform envelope for all errors:
 
 #### `POST /reports`
 - **Purpose:** Submit a report; persists immediately, triage runs async (FR-5, NFR-3, Architecture §4).
-- **Auth:** Session **or** anonymous — **gated by PRD ❓Q4 / DM-Q2** (anonymous reporting unresolved; if disallowed, requires Citizen session).
-- **Authorization:** Citizen (or anonymous per above).
+- **Auth:** Session required (Q4 RESOLVED: login required for all submissions).
+- **Authorization:** Citizen.
 - **Headers:** `Idempotency-Key` (BR-5).
 - **Body:**
 ```json
@@ -300,8 +301,8 @@ Uniform envelope for all errors:
 
 #### `GET /reports/{id}`
 - **Purpose:** Retrieve a report incl. classification result and its Issue link once triaged.
-- **Auth:** Session or anonymous — **public visibility gated by PRD ❓Q7 / DM-Q3**.
-- **Authorization:** Author (own), Authority (in scope), Admin, or public per ❓Q7.
+- **Auth:** Session or public (Q7 RESOLVED: public map and list visible to unauthenticated users).
+- **Authorization:** Author (own), Authority (in scope), Admin, or public.
 - **Response `200`:**
 ```json
 { "id":"rep_123", "authorId":"usr_x", "description":"…",
@@ -335,7 +336,7 @@ Uniform envelope for all errors:
 
 #### `POST /media`
 - **Purpose:** Upload a photo; returns a media handle to attach to a report (FR-7). Server compresses, thumbnails, **strips EXIF/GPS by default** (P3) asynchronously.
-- **Auth:** Session (or anonymous per ❓Q4 alignment with report submission).
+- **Auth:** Session required (Q4 RESOLVED: login required).
 - **Authorization:** Citizen.
 - **Request:** `multipart/form-data` with `file`. Enforce size/type limits (FR-7).
 - **Response `202`:**
@@ -348,7 +349,7 @@ Uniform envelope for all errors:
 
 #### `GET /media/{id}`
 - **Purpose:** Fetch media metadata / processed URLs.
-- **Auth/Authorization:** As owning report's visibility (❓Q7).
+- **Auth/Authorization:** As owning report's visibility (Q7 RESOLVED: public).
 - **Response `200`:** `{ "id","state":"ready","url":"…","thumbnailUrl":"…" }`
 - **Errors:** `404`, `410` (moderated), standard.
 
@@ -364,8 +365,8 @@ Uniform envelope for all errors:
 
 #### `GET /issues`
 - **Purpose:** The **authority work queue** — list Issues, severity-ranked (FR-22).
-- **Auth:** Session (public read gated by ❓Q7 for citizens/anonymous).
-- **Authorization:** Authority → **within category scope** (BR-26); Admin → all; Citizen/public → public subset (❓Q7).
+- **Auth:** Session or public (Q7 RESOLVED: public).
+- **Authorization:** Authority → **within category scope** (BR-26); Admin → all; Citizen/public.
 - **Params:**
   - Filters: `?category=&severity=high,medium&status=in_progress&assignedTo=me&bbox=minLng,minLat,maxLng,maxLat&nearLng=&nearLat=&radiusM=&openedAfter=&q=`
   - Sorting: `?sort=` allowlist `severity` (default, DESC), `age`, `-createdAt`, `corroborationCount`. Default: **severity DESC, then age** (FR-19, §5.1).
@@ -389,8 +390,7 @@ Uniform envelope for all errors:
 
 #### `GET /issues/{id}`
 - **Purpose:** Full issue detail incl. member reports, history pointers, context.
-- **Auth:** Session/public (❓Q7).
-- **Authorization:** Authority (scope), Admin, Citizen/public (public subset).
+- **Auth:** Session or public (Q7 RESOLVED: public). **Authorization:** Authority (scope), Admin, Citizen/public.
 - **Response `200`:** issue object (as above) plus `memberReports` (paged link), `severity` block, `duplicateOf` (nullable), public comments.
 - **Errors:** `404`, `410`, `FORBIDDEN`, standard.
 
@@ -409,7 +409,7 @@ Uniform envelope for all errors:
 - **Validation:** transition must be legal per state machine (BR-16/C-7) else `409 INVALID_TRANSITION`.
 - **Response `200`:** updated issue.
 - **Errors:** `409 INVALID_TRANSITION`, `422` (missing required reason), `FORBIDDEN`, standard.
-- **Open question:** the precise definition of **Resolved** (authority self-attestation vs citizen confirmation) is **PRD ❓Q8 / DM-Q4** — the endpoint accepts the transition; the *gating rule* is deferred to that answer. **Reopen** semantics (new vs reactivated issue) are **DM-Q8**.
+- **Q8 RESOLVED — Resolved definition:** Authority self-attestation. The transition to `resolved` requires only an authority action; no citizen confirmation is needed. **DM-Q8 RESOLVED — Reopen semantics:** Reopening creates a **new linked issue**; `toStatus:"reopen"` on a resolved/closed issue creates a new Issue linked to the original, rather than reactivating it.
 
 #### `PATCH /issues/{id}/assignment`
 - **Purpose:** Assign/unassign an Issue to an Authority (FR-24).
@@ -422,7 +422,7 @@ Uniform envelope for all errors:
 - **Purpose:** **Authority severity override** (FR-20). Never overwrites computed value; both retained with actor + mandatory reason (BR-20/21, C-8).
 - **Auth:** Session. **Authorization:** Authority (scope) / Admin only.
 - **Body:** `{ "severity":"medium", "reason":"verified minor, no traffic risk" }`
-- **Validation:** `reason` mandatory (`422` if absent); severity ∈ allowed set (C-1; Critical only if ❓Q2).
+- **Validation:** `reason` mandatory (`422` if absent); severity ∈ {Critical, High, Medium, Low} (Q2 RESOLVED).
 - **Response `200`:** issue with `severity.overridden` populated and `severity.computed` unchanged.
 - **Errors:** `422`, `FORBIDDEN`, standard.
 
@@ -432,7 +432,7 @@ Uniform envelope for all errors:
 - **Body:** `{ "mergeWithIssueId":"iss_789", "reason":"same pothole" }`
 - **Response `200`:** surviving issue.
 - **Errors:** `409` (illegal merge, e.g. closed issues), `FORBIDDEN`, standard.
-- **Open question:** re-attribution of member Reports/Confirmations on merge is **DM-Q7** — endpoint exposes the action; the re-attribution rule is deferred, not invented.
+- **DM-Q7 RESOLVED:** On merge, all member Reports and Confirmations re-attribute to the surviving Issue; severity recomputed as max of all members.
 
 #### `POST /issues/{id}/split`
 - **Purpose:** Split incorrectly-merged reports into a new issue (FR-25). Each side must retain ≥1 Report (BR-14/C-4).
@@ -440,7 +440,7 @@ Uniform envelope for all errors:
 - **Body:** `{ "reportIds":["rep_2","rep_5"], "reason":"different issue" }`
 - **Response `201`:** new issue + updated original.
 - **Errors:** `422` (would empty a side), `409`, `FORBIDDEN`, standard.
-- **Open question:** split re-attribution details — **DM-Q7**.
+- **DM-Q7 RESOLVED:** On split, moved Reports carry their own data to the new Issue; Confirmations re-attribute accordingly.
 
 > Issues are **not** created directly via the API — they are formed by async clustering (FR-18, Architecture §4.3). There is deliberately **no** `POST /issues`. Issues are also never hard-deleted; moderation hides content (FR-31).
 
@@ -457,10 +457,10 @@ Uniform envelope for all errors:
 - **Errors:** `409 ALREADY_CONFIRMED`, `404`, standard.
 
 #### `DELETE /issues/{id}/confirmations/me`
-- **Purpose:** Withdraw a confirmation — **only if revocation is permitted (DM-Q5, unresolved).**
+- **Purpose:** Withdraw a confirmation (DM-Q5 RESOLVED: revocable).
 - **Auth:** Session. **Authorization:** Confirming citizen.
-- **Response `204`** *(if enabled)* / `403 NOT_SUPPORTED` if DM-Q5 resolves to non-revocable.
-- **Note:** endpoint documented but **behavior deferred to DM-Q5**; corroboration-count monotonicity depends on it (peer-review S-R2).
+- **Response `204`.**
+- **Note:** Corroboration count decreases on withdrawal.
 
 ---
 
@@ -468,7 +468,7 @@ Uniform envelope for all errors:
 
 #### `GET /issues/{id}/comments`
 - **Purpose:** List comments. Public comments visible to citizens; **internal notes** only to Authority/Admin (FR-24).
-- **Auth:** Session/public (❓Q7). **Authorization:** visibility filter applied server-side by role.
+- **Auth:** Session or public (Q7 RESOLVED: public). **Authorization:** visibility filter applied server-side by role.
 - **Params:** pagination; `sort` default `createdAt`.
 - **Response `200`:** collection with `visibility: "public"|"internal"`.
 
@@ -491,7 +491,7 @@ Uniform envelope for all errors:
 
 #### `GET /issues/{id}/status-events`
 - **Purpose:** Immutable transition history of the issue (§6.3, FR-32) — powers citizen tracking and time-to-resolution.
-- **Auth:** Session/public (❓Q7 for public subset). **Authorization:** scope/role.
+- **Auth:** Session or public (Q7 RESOLVED: public). **Authorization:** visibility filter applied server-side by role.
 - **Response `200`:**
 ```json
 { "data":[ { "from":"triaged","to":"acknowledged","actorRole":"authority","reason":null,"at":"…" } ], "page": {…} }
@@ -625,7 +625,7 @@ Moderation (FR-31) is expressed as **actions on existing resources**, not a sepa
 ### 6.16 System — `/health`, `/meta`
 
 - `GET /health` — **Purpose:** liveness/readiness incl. dependency degradation flags (LLM/geocoder up/fallback — NFR-4/9). **Auth:** none (or internal). **Response `200`/`503`.**
-- `GET /meta/enums` — **Purpose:** machine-readable enums (severities, statuses, categories, notification types) so clients stay in sync as the taxonomy evolves (extensibility; supports ❓Q2 Critical rollout). **Auth:** public/session.
+- `GET /meta/enums` — **Purpose:** machine-readable enums (severities, statuses, categories, notification types) so clients stay in sync as the taxonomy evolves. Severity enum is now **Critical / High / Medium / Low** (Q2 RESOLVED). **Auth:** public/session.
 
 ---
 
@@ -634,8 +634,8 @@ Moderation (FR-31) is expressed as **actions on existing resources**, not a sepa
 | Operation | Anonymous | Citizen | Authority (in scope) | Admin |
 |-----------|:--:|:--:|:--:|:--:|
 | Register / login / verify | ✅ | ✅ | ✅ | ✅ |
-| Submit report | ⚠️ ❓Q4 | ✅ | ✅ | ✅ |
-| Read report/issue (public) | ⚠️ ❓Q7 | ✅ (own+public) | ✅ (scope) | ✅ |
+| Submit report | ❌ (Q4 RESOLVED: login required) | ✅ | ✅ | ✅ |
+| Read report/issue (public) | ✅ (Q7 RESOLVED: public) | ✅ (own+public) | ✅ (scope) | ✅ |
 | Track own reports / notifications | — | ✅ | ✅ | ✅ |
 | Confirm ("me-too") | — | ✅ (1×, BR-23) | ✅ | ✅ |
 | Comment (public) | — | ✅ | ✅ | ✅ |
@@ -657,7 +657,7 @@ Moderation (FR-31) is expressed as **actions on existing resources**, not a sepa
 - **Transport:** HTTPS/TLS enforced; HSTS (NFR-5).
 - **Session cookies:** `Secure`, `HttpOnly`, `SameSite`; CSRF token on state-changing requests (§2).
 - **AuthZ everywhere:** every mutating and sensitive-read endpoint checks role + scope server-side (FR-3, BR-27); scope leakage (Authority reading out-of-scope issues) returns `403`/`404` (avoid existence leaks).
-- **No enumeration:** login, registration, and password-reset responses are generic; `404` is used to hide resources the caller may not see (aligned with ❓Q7).
+- **No enumeration:** login, registration, and password-reset responses are generic; `404` is used to hide resources the caller may not see (Q7 RESOLVED: public map/list; exact-location exposure accepted).
 - **Input validation** at the boundary for every body/param (NFR-5); reject unknown fields where strictness matters (config endpoints).
 - **Object references** are opaque IDs; no IDOR via guessable identifiers.
 - **File upload hardening:** type/size limits (413/415), server-side image processing, **EXIF/GPS stripped** (P3), content moderation path (FR-31).
@@ -681,17 +681,25 @@ Moderation (FR-31) is expressed as **actions on existing resources**, not a sepa
 - **No `POST /issues`** — correct: Issues arise only from async clustering (FR-18). Documented deliberately, not an omission.
 - **Report → Issue linkage** is exposed via `GET /reports/{id}` (`issueId`) and `GET /issues/{id}/reports` — no separate join endpoint needed.
 - **Bulk status update** (FR-25 "bulk") — *gap:* the queue supports bulk operations in the PRD. Recommend a future `POST /issues/bulk-status` (additive, `v1`-safe) rather than inventing now; flagged so it isn't forgotten.
-- **`GET /meta/enums`** added so clients absorb enum evolution (e.g. Critical severity ❓Q2) without a breaking release.
+- **`GET /meta/enums`** added so clients absorb enum evolution (Critical severity now included — Q2 RESOLVED) without a breaking release.
 
 ### Redundant endpoints — checked
 - Considered separate top-level `/confirmations` and `/comments` collections; **rejected** as redundant with the nested forms. Kept nested-only for a single clear ownership path.
 - Considered `PUT` variants; **rejected** in favor of `PATCH` (partial, safer) — no full-replacement use case exists.
 
 ### Security concerns raised
-- **Anonymous write (❓Q4)** is the biggest open security lever: if enabled, `POST /reports`/`POST /media` need stronger IP rate-limiting and abuse heuristics (T3, FR-33) — noted, gated on the open question.
-- **Public read granularity (❓Q7)** must be resolved before go-live; exact-location exposure on public issues is a privacy vector (P1) — the spec defaults to `404`-hiding and defers the policy.
+- **Login required (Q4 RESOLVED)** — `POST /reports`/`POST /media` require a Citizen session. IP rate-limiting still applies for unauthenticated login/register attempts.
+- **Public read (Q7 RESOLVED)** — exact coordinates are publicly visible. Privacy risk (P1) is accepted; EXIF is still stripped (P3) and PII in response bodies is minimized.
 - **SMS gate (BR-30)** is enforced server-side irrespective of preference — prevents cost/abuse bypass (RISK-9). ✅
 - **Export links** must be short-lived, signed URLs (`expiresAt`) to avoid data leakage of bulk PII/location.
+
+### Open items — all resolved
+- **DM-Q5 RESOLVED** — confirmations are revocable; `DELETE …/confirmations/me` enabled; count can decrease.
+- **DM-Q7 RESOLVED** — merge re-attributes all Reports/Confirmations to surviving Issue; split moves Reports/Confirmations to new Issue.
+- **Q8 / DM-Q8 RESOLVED** — Resolved = authority self-attestation; reopen = new linked Issue.
+- **Q2 RESOLVED** — severity enum is Critical / High / Medium / Low.
+- **Q4 RESOLVED** — login required for all writes.
+- **Q7 RESOLVED** — public map and list.
 
 ### REST design improvements applied / recommended
 - **Cursor pagination** over offset for the concurrently-mutated queue (§4.4). ✅ applied.

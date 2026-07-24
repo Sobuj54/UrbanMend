@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Document** | `docs/03-data-model.md` |
-| **Version** | 1.0 (Draft for review) |
+| **Version** | 1.1 (DM-Q1–Q5/Q7/Q8 resolved) |
 | **Status** | Planning phase — pending stakeholder sign-off |
 | **Author role** | Principal Backend Architect |
 | **Date** | 2026-07-22 |
@@ -121,7 +121,7 @@ The domain comprises the following entities, grouped by concern:
 - Issue **many ↔ many** Point of Interest (nearby, **derived/contextual**, display-only).
 - Issue **many → 0..1** Issue (a Duplicate links to the surviving Issue).
 
-**Lifecycle.** The PRD §6.3 state machine: `Submitted → Triaged → Acknowledged → In Progress → Resolved → Closed`, with branches `Rejected / Duplicate / Insufficient Info`, and an optional reopen from Resolved/Closed. Detailed in *Entity Lifecycle*.
+**Lifecycle.** The PRD §6.3 state machine: `Submitted → Triaged → Acknowledged → In Progress → Resolved → Closed`, with branches `Rejected / Duplicate / Insufficient Info`. **Reopen semantics — DM-Q8 RESOLVED:** Reopening a resolved/closed issue creates a **new linked issue** rather than reactivating the old one; the original issue's history is preserved intact.
 
 ---
 
@@ -163,7 +163,7 @@ The domain comprises the following entities, grouped by concern:
 
 ### 6. Severity *(value concept, not an independent record)*
 
-**Purpose.** The triage signal that ranks work: **High / Medium / Low** (FR-14; a possible "Critical" band is PRD ❓Q2).
+**Purpose.** The triage signal that ranks work: **Critical / High / Medium / Low** (FR-14; Q2 RESOLVED: Critical band added — reserved for life-safety emergencies such as collapse, live wire, gas leak, severe flooding).
 
 **Modeling note.** Severity is a **value** carried by a Report (as a classification signal) and by an Issue (as its authoritative, possibly-overridden level). It is not an entity with its own lifecycle; it changes only as an attribute of the Report/Issue that owns it and always with rationale (FR-15) and, when overridden, an audited reason (FR-20).
 
@@ -181,7 +181,7 @@ The domain comprises the following entities, grouped by concern:
 
 **Relationships.** Confirmation **many → 1** Citizen; **many → 1** Issue.
 
-**Lifecycle.** `Created` (effectively immutable; at most one per citizen per Issue). Optionally revocable — see ❓Open Questions.
+**Lifecycle.** `Created` (at most one per citizen per Issue). **Revocable — DM-Q5 RESOLVED:** Citizens may withdraw a confirmation; corroboration count can decrease accordingly.
 
 ---
 
@@ -495,10 +495,10 @@ Pending ──▶ Sent ──▶ Delivered
 | Entity | Owner | Anonymous | Citizen | Authority | Admin |
 |--------|-------|:--:|:--:|:--:|:--:|
 | User (own account) | The User | — | CRUD⚙️ (own) | RU⚙️ (own) | CRUD (any; grants Authority) |
-| Report | Authoring Citizen | R⚙️ (public view, ❓Q7) | C, R (own+public), U⚙️ (pre-triage/own) | R⚙️ (scope), U⚙️ (re-categorize) | CRUD⚙️ (moderation) |
-| Media | Authoring Citizen | R⚙️ (public) | C, R (own), D⚙️ (pre-triage) | R⚙️ | RU D⚙️ (moderation) |
-| Issue | System / assigned Authority | R⚙️ (public) | R⚙️ (own/public) | R⚙️ (scope), U (status/assign/override), merge/split | CRUD⚙️ |
-| Confirmation | Confirming Citizen | — | C, R, (D if revocable ❓) | R⚙️ | R, D⚙️ |
+| Report | Authoring Citizen | R (public — Q7 RESOLVED) | C, R (own+public), U⚙️ (pre-triage/own) | R⚙️ (scope), U⚙️ (re-categorize) | CRUD⚙️ (moderation) |
+| Media | Authoring Citizen | R (public) | C, R (own), D⚙️ (pre-triage) | R⚙️ | RU D⚙️ (moderation) |
+| Issue | System / assigned Authority | R (public — Q7 RESOLVED) | R⚙️ (own/public) | R⚙️ (scope), U (status/assign/override), merge/split | CRUD⚙️ |
+| Confirmation | Confirming Citizen | — | C, R, D⚙️ (revocable — DM-Q5 RESOLVED) | R⚙️ | R, D⚙️ |
 | Comment | Author | R⚙️ (public only) | C, R (public), U⚙️ (own) | C (public/internal), R, U⚙️ | CRUD |
 | Category | Admin | R | R | R | CRUD |
 | POI | Admin | R⚙️ | R | R | CRUD |
@@ -510,14 +510,14 @@ Pending ──▶ Sent ──▶ Delivered
 | Clustering Rule | Admin | — | — | — | CRUD |
 | City Boundary | Admin | R | R | R | CRUD |
 
-*Notes:* Status Events and Audit Events are **never** updatable/deletable by anyone (BR-31); "D" is absent by design. Public visibility (Anonymous/Citizen R on Reports/Issues) depends on PRD ❓Q7.
+*Notes:* Status Events and Audit Events are **never** updatable/deletable by anyone (BR-31); "D" is absent by design. Public visibility (Anonymous/Citizen R on Reports/Issues) confirmed: Q7 RESOLVED — public map and list visible to unauthenticated users.
 
 ---
 
 ## Domain Constraints
 *(Technology-independent invariants the model must always uphold.)*
 
-- **C-1.** Severity is a bounded set {High, Medium, Low} (+ Critical only if ❓Q2 confirms). *(FR-14)*
+- **C-1.** Severity is a bounded set {Critical, High, Medium, Low} (Q2 RESOLVED). *(FR-14)*
 - **C-2.** Category values are drawn from the controlled taxonomy; no free-form categories. *(FR-10, §6.2)*
 - **C-3.** Every Report has exactly one authoritative geographic location. *(FR-6)*
 - **C-4.** An Issue always has ≥ 1 member Report. *(§4.3)*
@@ -565,14 +565,14 @@ Pending ──▶ Sent ──▶ Delivered
 ## Open Questions
 *(Modeling decisions blocked on PRD-level answers or needing product input. PRD open questions restated where they affect the model.)*
 
-- **DM-Q1.** Does severity include a **Critical** band, or only High/Medium/Low? *(PRD ❓Q2 — affects C-1, BR-8)*
-- **DM-Q2.** Is **anonymous reporting** permitted? If so, how is authorship/tracking represented for an anonymous Report? *(PRD ❓Q4 — affects BR-1, Report ownership)*
-- **DM-Q3.** What is the **public visibility** granularity of Reports/Issues (fully public, location-fuzzed, some private)? *(PRD ❓Q7 — affects permission table, DM-A8)*
-- **DM-Q4.** What defines **"Resolved"** — authority self-attestation or citizen confirmation? *(PRD ❓Q8 — affects Issue lifecycle transition into Resolved)*
-- **DM-Q5.** Are **Confirmations revocable** (citizen withdraws a "me-too")? *(affects DM-A4, corroboration count)*
-- **DM-Q6.** Should **Department** be a first-class entity now, or is Category scope sufficient for the prototype? *(affects DM-A3)*
-- **DM-Q7.** When an Issue is **split/merged**, how are member Reports and their Confirmations re-attributed? *(operational rule for BR-14/18)*
-- **DM-Q8.** On **reopen**, is a new Issue created or the same Issue reactivated (and how does that affect corroboration and history)? *(refines BR-19)*
+- **DM-Q1 / Q2 — Severity enum. RESOLVED:** Four bands: **Critical / High / Medium / Low**. Critical = life-safety emergency. *(affects C-1, BR-8)*
+- **DM-Q2 / Q4 — Anonymous reporting. RESOLVED:** Not supported. All Reports require an authenticated Citizen. *(affects BR-1, Report ownership)*
+- **DM-Q3 / Q7 — Public visibility. RESOLVED:** Map and issue list are publicly visible to unauthenticated users. *(affects permission table)*
+- **DM-Q4 / Q8 — "Resolved" definition. RESOLVED:** Authority self-attestation. No citizen confirmation required. *(affects Issue lifecycle)*
+- **DM-Q5 — Confirmation revocability. RESOLVED:** Confirmations are revocable. Citizens may withdraw; corroboration count can decrease. *(affects DM-A4, count monotonicity)*
+- **DM-Q6 — Department as first-class entity.** Deferred. Category scope is sufficient for the prototype. *(DM-A3)*
+- **DM-Q7 — Merge/split re-attribution. RESOLVED:** On merge, all member Reports and Confirmations re-attribute to the surviving Issue; severity recomputed as max. On split, moved Reports carry their own data to the new Issue. *(affects BR-14/18)*
+- **DM-Q8 — Reopen semantics. RESOLVED:** Reopening creates a **new linked Issue**; the original Issue's history is preserved intact. *(affects BR-19)*
 
 ---
 
@@ -591,10 +591,10 @@ Pending ──▶ Sent ──▶ Delivered
 7. **Report → Issue** transitions from 0..1 to exactly 1 across the processing boundary. Ensure consumers never assume a Report always has an Issue (it doesn't, while `Processing`).
 
 ### Missing / implicit business rules worth making explicit
-8. **Split/merge re-attribution** (DM-Q7) has no rule yet — what happens to Confirmations and member Reports on split is undefined and directly affects the corroboration count (a public-facing number).
-9. **Reopen semantics** (DM-Q8) — new vs reactivated Issue changes history and metrics; currently unstated.
-10. **Confirmation revocation** (DM-Q5) — if allowed, corroboration counts become mutable downward; if not, state it as an invariant.
-11. **Anonymous authorship** (DM-Q2) — BR-1 assumes one Citizen; the model needs an explicit answer or the ownership/permission rows for Report are underspecified.
+8. **Split/merge re-attribution — DM-Q7 RESOLVED:** On merge, all member Reports and Confirmations re-attribute to the surviving Issue; severity recomputed as max. On split, moved Reports carry their own data to the new Issue.
+9. **Reopen semantics — DM-Q8 RESOLVED:** Reopening creates a new linked Issue; the original Issue's history is preserved intact.
+10. **Confirmation revocation — DM-Q5 RESOLVED:** Confirmations are revocable; corroboration count can decrease. This is now an explicit invariant.
+11. **Anonymous authorship — DM-Q2 / Q4 RESOLVED:** Anonymous reporting is not supported. All Reports require an authenticated Citizen; BR-1 is unambiguous.
 
 ### Potential scalability concerns
 12. **Audit + Status Event growth.** Append-only histories grow unbounded. At A7 scale this is a non-issue, but a retention/archival policy should be named before any real deployment (Future work, not prototype-blocking).
@@ -603,10 +603,10 @@ Pending ──▶ Sent ──▶ Delivered
 15. **Notification fan-out.** A status change on a massively-corroborated Issue notifies many citizens at once. The domain is fine; delivery must batch (implementation concern, Architecture §7.2).
 
 ### Suggestions for improvement
-- **S-R1.** Add explicit **split/merge and reopen re-attribution rules** (resolve DM-Q7/Q8) before schema design — these are the model's biggest gaps and they touch a public metric.
-- **S-R2.** Decide **Confirmation revocability** (DM-Q5) and state it as an invariant either way, so the corroboration count's monotonicity is defined.
+- **S-R1.** Split/merge and reopen re-attribution rules — **DM-Q7/Q8 RESOLVED.** Rules are now explicit in Open Questions and business rules.
+- **S-R2.** Confirmation revocability — **DM-Q5 RESOLVED.** Confirmations are revocable; corroboration count can decrease. Stated as an explicit invariant.
 - **S-R3.** Make the **derived-vs-stored** nature of corroboration count and proximity explicit for the schema doc, with BR-22/C-10 as the governing rules, to prevent drift.
-- **S-R4.** Confirm whether **Department** and **anonymous reporting** are in for the prototype; both are currently deferred assumptions that materially shape ownership rules.
+- **S-R4.** Anonymous reporting — **Q4 RESOLVED:** not supported. Department as first-class entity remains deferred (DM-Q6).
 - **S-R5.** Name a **retention/archival stance** for append-only histories now (even if "unbounded for prototype"), so it's a conscious decision rather than an oversight.
 
 **Overall:** the model faithfully encodes the PRD's structural decisions — Report/Issue separation, severity-not-score, display-only context, auditability. Its genuine gaps are the **operational rules around merge/split/reopen/revocation**, which are lifecycle edge cases the PRD implies but does not fully specify. Resolving the open questions above closes them without any redesign.
@@ -631,4 +631,4 @@ Pending ──▶ Sent ──▶ Delivered
 
 ---
 
-*End of `docs/03-data-model.md` (v1.0). This document defines the business domain only — no schema, no implementation. The next document, `04-api-specification.md`, defines the API contracts over these entities. Resolve the Open Questions (esp. DM-Q7 merge/split re-attribution and DM-Q2 anonymous reporting) before finalizing.*
+*End of `docs/03-data-model.md` (v1.1). Open questions DM-Q1–Q5/Q7/Q8 resolved — see Open Questions section and §16 of the PRD. Remaining open: DM-Q6 (Department entity, deferred). Next document: `04-api-specification.md`.*

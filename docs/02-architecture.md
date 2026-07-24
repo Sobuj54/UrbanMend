@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Document** | `docs/02-architecture.md` |
-| **Version** | 1.0 (Draft for review) |
+| **Version** | 1.1 (ASSUMP-7 updated: Q9 resolved) |
 | **Status** | Planning phase — pending stakeholder sign-off |
 | **Author role** | Principal Backend Architect |
 | **Date** | 2026-07-22 |
@@ -213,7 +213,7 @@ Per PRD edge case ("conflicting severities across a cluster → highest wins, sh
 
 ## 6. Classification Subsystem (LLM + Fallback)
 
-Isolated behind a single **`ClassificationService` interface** (S1) so the provider (❓Q9, still open in PRD) is swappable without touching callers.
+Isolated behind a single **`ClassificationService` interface** (S1) so the provider (Q9 RESOLVED: provider deferred to implementation; no-training-data policy locked; adapter is provider-agnostic) is swappable without touching callers.
 
 ```
 ClassificationService.classify(text, lang?, imageRef?) → {category, severity, confidence, source}
@@ -330,7 +330,7 @@ Formal HA/DR is explicitly out of scope for the prototype (A10); the design degr
 | ASSUMP-4 | Clustering **radius and time-window** are configurable per-category defaults, tuned later. | PRD specifies the signals (FR-18) but not exact values. | Wrong values → over/under-merge; tunable as reference data (RISK-10). |
 | ASSUMP-5 | A single **reverse-geocoding provider** is available behind an adapter. | FR-6 requires an address; PRD doesn't name a source. | Swappable adapter; degrades to coordinates-only if unavailable. |
 | ASSUMP-6 | A **city boundary polygon** is available to enforce the "outside city" edge case. | Implied by the edge case, not provided. | Without it, out-of-city reports can't be auto-flagged. |
-| ASSUMP-7 | LLM provider/data-policy (PRD **❓Q9**) will be chosen before build; adapter is provider-agnostic until then. | Open question in PRD. | No design impact due to S1 isolation. |
+| ASSUMP-7 | LLM provider/data-policy (PRD **Q9 RESOLVED**: provider deferred to implementation; no-training-data policy locked; adapter is provider-agnostic). | Open question in PRD — now resolved. | No design impact due to S1 isolation. |
 | ASSUMP-8 | Single-city now, but a nullable `city` boundary in the model keeps a future city column possible (PRD §11) — **no** multi-tenant isolation is built (§2.2 non-goal). | PRD wants future-proofing without multi-tenancy. | Building tenancy now would violate scope. |
 
 None of these introduce features; they record decisions the PRD deferred.
@@ -381,4 +381,4 @@ None of these introduce features; they record decisions the PRD deferred.
 
 ---
 
-*End of `docs/02-architecture.md` (v1.0). Detailed schema follows in `03-data-model.md`; endpoint contracts in `04-api-specification.md`. No implementation code and no new requirements were introduced. Resolve PRD §15 open questions (esp. ❓Q9 LLM provider) and confirm ASSUMP-1 (framework) before/at architecture sign-off.*
+*End of `docs/02-architecture.md` (v1.1). Open question Q9 resolved: LLM provider deferred to implementation; no-training-data policy locked; adapter remains provider-agnostic (ASSUMP-7 updated). Detailed schema in `03-data-model.md`; endpoint contracts in `04-api-specification.md`. No implementation code and no new requirements were introduced.*

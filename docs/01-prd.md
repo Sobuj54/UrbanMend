@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Document** | `docs/01-prd.md` |
-| **Version** | 1.1 (Draft for review) |
+| **Version** | 1.2 (Open questions Q2/Q4/Q7/Q8/Q9/DM-Q5/Q7/Q8 resolved) |
 | **Status** | Planning phase — pending stakeholder sign-off |
 | **Author role** | Senior Backend Architect |
 | **Date** | 2026-07-22 |
@@ -29,7 +29,7 @@ Sections needing your attention before this document is frozen are marked **⚠�
 
 ## 1. Executive Summary
 
-UrbanMend is a **civic issue-reporting web platform** for a single city (initial deployment: Bangladesh) in which citizens report public infrastructure problems (potholes, broken streetlights, waste, water/drainage, etc.) with a photo and a precise geolocation. The system's differentiator is an **AI-assisted triage layer** that automatically (a) **categorizes** each report and (b) assigns a **severity level** (High / Medium / Low), so municipal authorities can work the most urgent issues first. The AI is a **hosted large-language-model (LLM) API**, not a custom-trained model.
+UrbanMend is a **civic issue-reporting web platform** for a single city (initial deployment: Bangladesh) in which citizens report public infrastructure problems (potholes, broken streetlights, waste, water/drainage, etc.) with a photo and a precise geolocation. The system's differentiator is an **AI-assisted triage layer** that automatically (a) **categorizes** each report and (b) assigns a **severity level** (Critical / High / Medium / Low), so municipal authorities can work the most urgent issues first. The AI is a **hosted large-language-model (LLM) API**, not a custom-trained model.
 
 The platform serves three actors: **Citizens** (report and track), **Authorities** (triage, act, and resolve — simulated/admin-provisioned roles for this prototype), and **Platform Administrators** (provision authority accounts, moderate, manage reference data).
 
@@ -45,7 +45,7 @@ The core product bet: *reporting is a solved problem; **triage** is not.* UrbanM
 |---|------|--------------------|
 | G1 | Let any citizen file a high-quality, geolocated, photo-backed report in under 90 seconds. | Median submission time < 90s; < 5% of reports rejected for missing location/photo. |
 | G2 | Automatically categorize reports with useful accuracy. | ≥ 85% top-1 category agreement with human labels on a held-out set (target; see risks). |
-| G3 | Assign every issue a **clear, defensible severity level**. | Every issue shows a severity (High/Med/Low) with the recognized signals behind it; authorities can override with a logged reason. |
+| G3 | Assign every issue a **clear, defensible severity level**. | Every issue shows a severity (Critical/High/Med/Low) with the recognized signals behind it; authorities can override with a logged reason. |
 | G4 | Cluster duplicate/related reports of the same real-world issue. | Duplicate reports of one incident collapse into a single tracked issue ≥ 80% of the time. |
 | G5 | Give authorities a severity-ranked, map-based work queue with corroboration & proximity context. | Authorities can find, filter, assign, and resolve the top issues in ≤ 3 clicks; "N reporters" and nearby landmarks are visible per issue. |
 | G6 | Keep citizens informed of status changes. | Citizens receive a notification within 1 minute of any status change on their report. |
@@ -100,7 +100,7 @@ Carried from the proposal and extended:
 | Capability | Anonymous | Citizen | Authority | Admin |
 |---|:--:|:--:|:--:|:--:|
 | View public reports / map | ✅ | ✅ | ✅ | ✅ |
-| Submit a report | ⚠️ (❓Q4) | ✅ | ✅ | ✅ |
+| Submit a report | ❌ (Q4 RESOLVED: login required) | ✅ | ✅ | ✅ |
 | Track own reports / get notified | — | ✅ | ✅ | ✅ |
 | Confirm / "me too" on an issue | — | ✅ | ✅ | ✅ |
 | Comment / add info | — | ✅ | ✅ | ✅ |
@@ -146,7 +146,7 @@ IDs (`FR-x`) are stable. Priorities use MoSCoW (**MUST / SHOULD / COULD**). Requ
 
 > **Design principle:** There is **no computed numeric score and no tunable weights.** Triage is driven by the **severity label**. Corroboration and proximity are shown to authorities as **context for human judgment**, not combined into a number. This keeps triage transparent and trivially explainable.
 
-- **FR-14 (MUST) — Severity label.** Every issue carries a severity of **High / Medium / Low** (❓Q2 — confirm whether a "Critical" band is needed). Severity comes from FR-10 (LLM) or FR-13a (fallback), reflecting high-risk indicators ("danger", "accident", "flood", "gas leak", "live wire", "collapse") in **both Bangla and English**.
+- **FR-14 (MUST) — Severity label.** Every issue carries a severity of **Critical / High / Medium / Low** (Q2 RESOLVED: Critical band added — Critical is reserved for life-safety emergencies such as collapse, live wire, gas leak, severe flooding). Severity comes from FR-10 (LLM) or FR-13a (fallback), reflecting high-risk indicators ("danger", "accident", "flood", "gas leak", "live wire", "collapse") in **both Bangla and English**.
   - *Accept:* every issue shows a severity plus the recognized indicators behind it ("flagged High: 'live wire', 'children'").
 - **FR-15 (MUST) — Severity is explainable.** The UI shows *why* a severity was assigned (the key phrases/category that drove it). No black-box ranking.
 - **FR-16 (SHOULD) — Corroboration count (display-only).** Show how many **distinct reporters** have reported the same clustered issue (e.g. "6 people reported this"). This is **informational**; it does **not** change severity. Count distinct trustworthy reporters, not raw submissions (T1).
@@ -353,14 +353,14 @@ Removing the numeric score **lowers** — but does not eliminate — gaming stak
 ## 15. Open Questions (❓ Require Stakeholder Input Before Freeze)
 
 - **❓Q1 — Category taxonomy.** Is the §6.2 draft correct/complete for the target city?
-- **❓Q2 — Severity levels.** Three levels (High/Med/Low), or add a **Critical** band? What distinguishes each level?
+- **Q2 — Severity levels. RESOLVED:** Four levels — **Critical / High / Medium / Low**. Critical is reserved for life-safety emergencies (collapse, live wire, gas leak, severe flooding). High = significant risk/disruption; Medium = moderate; Low = minor inconvenience.
 - **❓Q3 — POI data source & licensing.** OSM, a government dataset, or admin-entered? Which POI types show as proximity context? (A5)
-- **❓Q4 — Anonymous reporting.** Allowed (lower friction) or require an account (better abuse control + tracking)?
+- **Q4 — Anonymous reporting. RESOLVED:** Login required for all submissions. Anonymous reporting is not supported.
 - **❓Q5 — Notification channels for the prototype.** In-app only, + email, and/or SMS? SMS budget? (A6)
 - **❓Q6 — EXIF/location privacy default.** Strip photo GPS on upload (recommended) or retain? (P3)
-- **❓Q7 — Public visibility granularity.** All reports public, exact location fuzzed, or some private? (P1)
-- **❓Q8 — Definition of "resolved."** Authority self-attestation, or citizen confirmation required to close?
-- **❓Q9 — LLM provider & data policy.** Which provider (OpenAI/Claude/Gemini)? Confirm a configuration that **does not train on submitted data** and fits budget (A4, A11, P7). *(Replaces v1.0's training-dataset question — no dataset is needed.)*
+- **Q7 — Public visibility granularity. RESOLVED:** Map and issue list are publicly visible to unauthenticated users. Exact coordinates are shown publicly.
+- **Q8 — Definition of "resolved." RESOLVED:** Authority self-attestation. An authority marks the issue Resolved; no citizen confirmation is required.
+- **Q9 — LLM provider & data policy. RESOLVED:** Provider deferred to implementation time. The no-training-on-submitted-data policy is locked now. The adapter must be provider-agnostic (A4, A11, P7).
 - **❓Q10 — Accuracy acceptance bar.** Is ≥ 85% top-1 category accuracy (plus a severity-agreement target) acceptable for the academic evaluation?
 
 ---
@@ -372,6 +372,14 @@ Removing the numeric score **lowers** — but does not eliminate — gaming stak
 3. **Triage model:** **Severity label only** — the weighted numeric priority score is **removed**. Frequency (corroboration count) and proximity are **display-only context**, not score inputs. Narrowing of the proposal's 3-signal scoring is **accepted** (→ §2.2, §5.4, §18).
 4. **Authorities:** Simulated / admin-provisioned roles (→ A3, FR-2).
 5. **Technology:** Architect to recommend the best-fit stack; **geospatial-first is still required** for proximity context, clustering, and the map (→ NFR-1). Specific stack deferred to the architecture document.
+6. **Q2 RESOLVED — Severity enum:** Four bands: **Critical / High / Medium / Low**. Critical = life-safety emergency (collapse, live wire, gas leak, severe flooding). High = significant risk/disruption. Medium = moderate. Low = minor inconvenience.
+7. **Q4 RESOLVED — Anonymous reporting:** Not supported. All submissions require a verified citizen login.
+8. **Q7 RESOLVED — Public visibility:** Map and issue list are publicly visible to unauthenticated users. Exact coordinates shown publicly.
+9. **Q8 RESOLVED — "Resolved" definition:** Authority self-attestation. No citizen confirmation required to close an issue.
+10. **Q9 RESOLVED — LLM provider:** Provider deferred to implementation time. No-training-on-submitted-data policy is locked. Adapter must be provider-agnostic.
+11. **DM-Q5 RESOLVED — Confirmation revocability:** Confirmations are revocable. Citizens may withdraw a "me-too"; corroboration count can decrease.
+12. **DM-Q7 RESOLVED — Merge/split re-attribution:** On merge, all member reports and confirmations re-attribute to the surviving issue; severity recomputed as max. On split, moved reports carry their own data to the new issue.
+13. **DM-Q8 RESOLVED — Reopen semantics:** Reopening a resolved/closed issue creates a **new linked issue** rather than reactivating the old one. The original issue's history is preserved.
 
 ---
 
@@ -400,4 +408,4 @@ Two deliberate deviations from `PROJECT PROPOSAL.pdf`, recorded for your supervi
 
 ---
 
-*End of `docs/01-prd.md` (v1.1). Per instruction, no further documents have been created. Resolve the §15 open questions to freeze this PRD before proceeding to architecture/design.*
+*End of `docs/01-prd.md` (v1.2). Open questions Q2/Q4/Q7/Q8/Q9 and domain questions DM-Q5/Q7/Q8 are now resolved — see §15 and §16. Remaining open: ❓Q1 (taxonomy), ❓Q3 (POI source), ❓Q5 (notification channels), ❓Q6 (EXIF default), ❓Q10 (accuracy bar).*

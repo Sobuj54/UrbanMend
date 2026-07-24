@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Document** | `docs/05-project-plan.md` |
-| **Version** | 1.0 (Draft for review) |
+| **Version** | 1.1 (Q2/Q4/Q7/Q8/Q9/DM-Q5/DM-Q7/DM-Q8 resolved) |
 | **Status** | Planning phase — pending stakeholder sign-off |
 | **Author role** | Principal Software Engineer & Technical Lead |
 | **Date** | 2026-07-22 |
@@ -139,7 +139,7 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 
 **DoD (M2):** A report with a photo can be submitted and returns `202` immediately; the photo is stored with EXIF stripped and a thumbnail generated asynchronously; a citizen can retrieve and track their own reports; out-of-city and invalid submissions are rejected with correct codes; duplicate submits are idempotent.
 
-> **Decision gate:** anonymous submission (PRD ❓Q4 / DM-Q2) must be resolved before T2.2 auth rules and T2.9 limits are finalized. Until then, default to authenticated-citizen submission and isolate the anonymous branch.
+> **Q4 RESOLVED / DM-Q2 RESOLVED** — login required for all submissions; no anonymous reporting. T2.2 auth rules and T2.9 limits are finalized: authenticated-citizen session required.
 
 ### P3 — Classification (M3)
 | Task | Cx | Dep | Traces |
@@ -154,7 +154,7 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 
 **DoD (M3):** A submitted report is classified asynchronously with category + severity signal; when the LLM is unavailable or over budget, the keyword fallback produces a result and submission still succeeds; classification source is recorded; LLM failures degrade rather than crash the pipeline.
 
-> **Decision gate:** LLM provider + no-training-data policy (PRD ❓Q9) and accuracy bar (❓Q10) inform T3.2/T3.7 but do not block the adapter abstraction.
+> **Q9 RESOLVED** — LLM provider deferred; no-training-data policy locked; adapter stays provider-agnostic. T3.2 adapter abstraction is unblocked.
 
 ### P4 — Clustering & Issues (M4)
 | Task | Cx | Dep | Traces |
@@ -164,18 +164,18 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 | T4.3 Clustering rules (per-category radius/time-window), admin-managed | Med | T4.1 | FR-18, ASSUMP-4 |
 | T4.4 **Concurrency-safe find-or-create** clustering (spatial+category lock, geohash cell) | High | T4.2, T3.5 | Arch §4.3, race-safety |
 | T4.5 Clustering worker step: run after classification (category required first) | High | T4.4, T3.5 | Arch §4.2 |
-| T4.6 Issue severity = **max of member reports**; recompute on new member | Med | T4.5 | FR-14, BR-... |
+| T4.6 Issue severity = **max of member reports**; recompute on new member; enum is **Critical / High / Medium / Low** (Q2 RESOLVED) | Med | T4.5 | FR-14, BR-... |
 | T4.7 Confirmation ("me-too"): one per citizen per issue; derived corroboration count | Med | T4.1, T1.5 | FR-16, BR-22/23, C-10 |
 | T4.8 Proximity context (POIs near issue) — **display-only, never affects severity** | Med | T4.2 | FR-17, C-10 |
 
 **DoD (M4):** Two nearby same-category reports cluster into one Issue without creating duplicates under concurrent submission; Issue severity reflects the max of its members; corroboration count is derived and read-only; proximity context is computed for display only; clustering runs strictly after classification.
 
-> **Decision gate:** Critical severity band (PRD ❓Q2) affects T4.6 severity enum — isolate the enum so adding Critical is additive.
+> **Q2 RESOLVED** — severity enum is Critical / High / Medium / Low. T4.6 enum is unblocked.
 
 ### P5 — Issue Triage Workflow (M5)
 | Task | Cx | Dep | Traces |
 |------|----|-----|--------|
-| T5.1 Issue status state machine + transition validation | High | T4.1 | §6.3, BR-16, API §6.5 |
+| T5.1 Issue status state machine + transition validation; **reopen = new linked Issue** (Q8/DM-Q8 RESOLVED) | High | T4.1 | §6.3, BR-16, API §6.5 |
 | T5.2 `PATCH /issues/{id}/status` (+ mandatory reason on reject/duplicate/etc.) | Med | T5.1 | FR-24, BR-19 |
 | T5.3 Status Event emission (append-only history) | Med | T5.1 | FR-32, C-9 |
 | T5.4 Assignment (`PATCH …/assignment`), scope-validated | Med | T5.1, T1.5 | FR-24, BR-26 |
@@ -186,7 +186,7 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 
 **DoD (M5):** Authorities can move an Issue through its legal lifecycle (illegal transitions rejected with `409`), assign within scope, override severity with a mandatory reason (computed value preserved), and merge/split clusters; every transition writes an immutable status event; internal notes are hidden from citizens.
 
-> **Decision gates:** definition of "Resolved" and reopen semantics (❓Q8 / DM-Q8) gate the resolve/reopen transitions in T5.1; merge/split re-attribution rules (DM-Q7) gate T5.6/T5.7 detail. Build the transitions; hold the specific gating rule for the answer.
+> **Q8 / DM-Q8 RESOLVED** — Resolved = authority self-attestation; reopen = new linked Issue (not reactivation). **DM-Q7 RESOLVED** — merge/split re-attributes all Reports/Confirmations to surviving Issue; severity recomputed as max. T5.1/T5.6/T5.7 are unblocked.
 
 ### P6 — Notifications & Outbox (M6)
 | Task | Cx | Dep | Traces |
@@ -211,9 +211,9 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 | T7.4 Map endpoint `GET /map/issues` as GeoJSON + server-side aggregation at low zoom | High | T4.2 | FR-23, API §6.9 |
 | T7.5 Analytics `GET /analytics/summary` (counts, time-to-resolution, scope-limited) | Med | T5.3 | FR-26 |
 
-**DoD (M7):** The queue returns correctly ranked, scope-filtered, paginated Issues; the map returns valid GeoJSON that aggregates at low zoom to bound payload; analytics reflect real status-event data; citizens see only the public subset (pending ❓Q7).
+**DoD (M7):** The queue returns correctly ranked, scope-filtered, paginated Issues; the map returns valid GeoJSON that aggregates at low zoom to bound payload; analytics reflect real status-event data; citizens see the public subset (**Q7 RESOLVED** — exact coordinates publicly visible).
 
-> **Decision gate:** public visibility granularity (PRD ❓Q7 / DM-Q3) gates the public subset in T7.1/T7.3/T7.4.
+> **Q7 RESOLVED / DM-Q3 RESOLVED** — public map and list confirmed; exact coordinates publicly visible; privacy risk P1 accepted. T7.1/T7.3/T7.4 public subset is unblocked.
 
 ### P8 — Moderation, Audit & Reference Data (M8)
 | Task | Cx | Dep | Traces |
@@ -282,7 +282,7 @@ Parallelizable with 2 engineers:
 | R-2 | Duplicate Issues under concurrent submission | Data integrity, bad queue | Spatial+category lock find-or-create; test under concurrency early | P4 |
 | R-3 | Notification loss on crash (SLA breach) | Citizen trust, FR-29 miss | Transactional outbox + at-least-once idempotent dispatch | P6 |
 | R-4 | Geospatial performance at scale | Slow queue/map | PostGIS GiST indexes, `ST_DWithin`, server-side map aggregation, load test | P4/P7 |
-| R-5 | Unresolved open questions block phases | Rework / stalls | Decision gates in §10 with owners; isolate affected branches behind abstractions | All |
+| R-5 | ~~Unresolved open questions block phases~~ **Q2/Q4/Q7/Q8/Q9/DM-Q5/DM-Q7/DM-Q8 all RESOLVED** — gates closed; only ❓Q10 (accuracy bar) remains open | Rework / stalls | Decision gates in §10 with owners; isolate affected branches behind abstractions | All |
 | R-6 | RBAC/authZ gaps (privilege escalation, IDOR) | Security breach | AuthZ built per-slice + dedicated security review; opaque IDs; `404`-hiding | P1/P10 |
 | R-7 | Privacy leakage (EXIF, PII to LLM, PII in responses) | Legal/ethical, P1–P7 | EXIF strip by default, prompt minimization, response field discipline, privacy review | P2/P3/P10 |
 | R-8 | SMS abuse/cost | Budget | Server-side High-severity gate, not preference-bypassable | P6 |
@@ -343,20 +343,20 @@ Parallelizable with 2 engineers:
 
 ---
 
-## 10. Open-Question Decision Gates (Blocking Dependencies)
+## 10. Open-Question Decision Gates — All Resolved
 
-These must be resolved by the noted phase; each is isolated behind an abstraction so a late answer is additive, not a rewrite.
+These were blocking dependencies; all 8 are now closed. Only ❓Q10 (accuracy bar) remains open.
 
-| Open item | Blocks | Needed by | Owner (proposed) |
-|-----------|--------|-----------|------------------|
-| PRD ❓Q4 / DM-Q2 — anonymous reporting | Submission auth rules, rate limits | Start of P2 | Team + supervisor |
-| PRD ❓Q9 — LLM provider + no-training-data policy | LLM adapter config | Mid P3 | Team |
-| PRD ❓Q10 — accuracy bar | Confidence thresholds, low-confidence flagging | End P3 | Team + supervisor |
-| PRD ❓Q2 — Critical severity band | Severity enum, queue ordering | Before P4.6 | Team |
-| PRD ❓Q8 / DM-Q8 — "Resolved" definition & reopen semantics | Resolve/reopen transitions | Before P5.1 finalization | Team + supervisor |
-| DM-Q7 — merge/split re-attribution | Merge/split detail | Before P5.6/5.7 | Team |
-| DM-Q5 — confirmation revocability | Confirmation delete endpoint, count monotonicity | Before P4.7 finalization | Team |
-| PRD ❓Q7 / DM-Q3 — public visibility granularity | Public read subset, map/queue exposure | Before P7 public reads | Team + supervisor |
+| Open item | Decision | Status |
+|-----------|----------|--------|
+| ~~PRD Q4 / DM-Q2 — anonymous reporting~~ | **Q4 RESOLVED** — login required for all writes; no anonymous reporting. | ✅ Closed |
+| ~~PRD Q9 — LLM provider + no-training-data policy~~ | **Q9 RESOLVED** — provider deferred; no-training-data policy locked; adapter stays provider-agnostic. | ✅ Closed |
+| PRD ❓Q10 — accuracy bar | Confidence thresholds, low-confidence flagging — still open | End P3 |
+| ~~PRD Q2 — Critical severity band~~ | **Q2 RESOLVED** — severity enum is Critical / High / Medium / Low. | ✅ Closed |
+| ~~PRD Q8 / DM-Q8 — "Resolved" definition & reopen semantics~~ | **Q8 / DM-Q8 RESOLVED** — Resolved = authority self-attestation; reopen = new linked Issue. | ✅ Closed |
+| ~~DM-Q7 — merge/split re-attribution~~ | **DM-Q7 RESOLVED** — merge/split re-attributes all Reports/Confirmations to surviving Issue; severity recomputed as max. | ✅ Closed |
+| ~~DM-Q5 — confirmation revocability~~ | **DM-Q5 RESOLVED** — confirmations are revocable; `DELETE …/confirmations/me` enabled; count can decrease. | ✅ Closed |
+| ~~PRD Q7 / DM-Q3 — public visibility granularity~~ | **Q7 / DM-Q3 RESOLVED** — public map and list; exact coordinates visible; privacy risk P1 accepted. | ✅ Closed |
 
 ---
 
@@ -403,7 +403,7 @@ These must be resolved by the noted phase; each is isolated behind an abstractio
 
 ### Is the plan realistic and maintainable?
 - ✅ Estimates are relative and sized for a 2-person team; P8/P9 are identified as trimmable if the timeline compresses, without touching the core pipeline (MVP protection).
-- ✅ Open questions are handled as **decision gates behind abstractions** (§10), so late answers are additive — directly serving the "minimize rework" objective.
+- ✅ Open questions are handled as **decision gates behind abstractions** (§10), so late answers are additive — directly serving the "minimize rework" objective. **All 8 gates are now closed** (Q2/Q4/Q7/Q8/Q9/DM-Q5/DM-Q7/DM-Q8 RESOLVED); only ❓Q10 (accuracy bar) remains open.
 - ⚠️ **Biggest realism risk** remains bandwidth (R-10): the critical path P0→P10 is long for two people. Mitigation: strict MVP ordering, parallelizable P6/P7, and deferrable P8/P9. Recommend the team confirm which SHOULD/COULD FRs are in-scope for the defense before P5, so late phases can be cut cleanly rather than rushed.
 
 ### Improvements applied in this revision
@@ -413,4 +413,23 @@ These must be resolved by the noted phase; each is isolated behind an abstractio
 
 ---
 
-*End of `docs/05-project-plan.md` (v1.0). This roadmap schedules only work traceable to the approved PRD, Architecture, Domain Model, and API Specification; it introduces no new features or requirements. Unresolved open questions are tracked as decision gates (§10) to be closed before their dependent phases. This completes the 5-document planning set (01–05).*
+---
+
+## 13. Open Items — All Resolved
+
+All 8 decision gates collected during planning are now closed. Decisions are encoded inline throughout this document (§5 phase notes, §10 table, §7 risk register).
+
+- **Q2 RESOLVED** — severity enum is Critical / High / Medium / Low.
+- **Q4 RESOLVED** — login required for all writes; no anonymous reporting.
+- **Q7 RESOLVED** — public map and list; exact coordinates visible; privacy risk P1 accepted.
+- **Q8 / DM-Q8 RESOLVED** — Resolved = authority self-attestation; reopen = new linked Issue.
+- **Q9 RESOLVED** — LLM provider deferred; no-training-data policy locked; adapter stays provider-agnostic.
+- **DM-Q5 RESOLVED** — confirmations are revocable; `DELETE …/confirmations/me` enabled; count can decrease.
+- **DM-Q7 RESOLVED** — merge/split re-attributes all Reports/Confirmations to surviving Issue; severity recomputed as max.
+- **DM-Q3 RESOLVED** — (via Q7) public map and list confirmed.
+
+Only ❓Q10 (accuracy bar / confidence thresholds) remains open; it does not block the adapter abstraction (T3.2).
+
+---
+
+*End of `docs/05-project-plan.md` (v1.1). This roadmap schedules only work traceable to the approved PRD, Architecture, Domain Model, and API Specification; it introduces no new features or requirements. All 8 open-question decision gates (Q2/Q4/Q7/Q8/Q9/DM-Q5/DM-Q7/DM-Q8) are now closed (§10); only ❓Q10 (accuracy bar) remains open. This completes the 5-document planning set (01–05).*
