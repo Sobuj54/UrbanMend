@@ -1,0 +1,18 @@
+# The team develops on Windows; the runtime is Linux containers. Normalize every
+# text file to LF in the repository and in the working tree, so a CRLF line ending
+# never reaches an entrypoint script, Dockerfile, or .env file inside a container.
+* text=auto eol=lf
+
+# Windows-only tooling that must keep CRLF
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binary — never normalized, never diffed as text
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.mo   binary

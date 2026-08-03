@@ -1,0 +1,57 @@
+# Build context exclusions — keeps the image small and the layer cache stable.
+# Anything that is generated, secret, host-specific, or test-only stays out.
+
+# VCS + project meta
+.git
+.gitignore
+.gitattributes
+.github
+.claude
+docs
+*.md
+!README.md
+
+# Python bytecode / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenvs — the image installs its own dependencies
+.venv/
+venv/
+env/
+
+# Local environment + secrets (never in an image layer)
+.env
+.env.local
+.env.*.local
+
+# Test, lint and type-check caches + fixtures
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+tests/fixtures/
+
+# Django generated output — collectstatic runs at build time, media is object storage.
+# NOT `media/`: that is a Django app whose source must ship in the image.
+staticfiles/
+mediafiles/
+*.sqlite3
+local_settings.py
+
+# Compose files are host-side orchestration, not image content
+docker-compose.yml
+docker-compose.override.yml
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

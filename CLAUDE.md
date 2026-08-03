@@ -65,8 +65,8 @@ notifications/  moderation/  audit/  export/  platform/
 One Django app per architecture module. Each app carries **`services.py` (writes + authorization)**
 and **`selectors.py` (reads)** from day one; DRF views stay thin.
 
-⚠️ Unresolved: the settings split is `base`/`dev`/`prod` in plan T0.3 but `urbenmend.settings.local`
-in DevOps §3.2. Decide at T0.3 — don't silently pick one.
+✅ Resolved (A1): the settings split is **`base`/`dev`/`prod`** (plan T0.3 naming). DevOps §3.2's
+`urbenmend.settings.local` was amended to `urbenmend.settings.dev`. Do not reintroduce `settings.local`.
 
 ## Commands
 

@@ -15,7 +15,9 @@ env/
 # Django
 *.sqlite3
 staticfiles/
-media/
+# Local MEDIA_ROOT output. Deliberately NOT `media/` — `media/` is a Django *app*
+# (Arch §2.4) whose source must be tracked. Set MEDIA_ROOT to mediafiles/ in A4.
+mediafiles/
 local_settings.py
 
 # Environment — .env.example IS committed (placeholders only)

@@ -134,8 +134,10 @@ Celery's beat scheduler runs in-process with the worker locally (`-B`). In produ
 
 Store in `.env.local` (git-ignored). A `.env.example` with placeholder values is committed. Read them through `django-environ` in the settings module so the same names work locally and in deployment.
 
+The settings package is split `base` / `dev` / `prod` (T0.3 naming, resolved in A1 of the coding workflow; this section previously said `urbenmend.settings.local`).
+
 ```
-DJANGO_SETTINGS_MODULE=urbenmend.settings.local
+DJANGO_SETTINGS_MODULE=urbenmend.settings.dev
 DJANGO_SECRET_KEY=<local-dev-secret>
 DJANGO_DEBUG=true
 DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1

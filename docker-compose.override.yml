@@ -1,0 +1,5 @@
+# PLACEHOLDER — written in A3 (T0.2). Local-only overrides, applied automatically by
+# `docker compose up` on top of docker-compose.yml.
+#
+# Intended scope: source bind-mounts for hot reload, --reload on uvicorn, debug ports,
+# and any developer conveniences that must never reach a deployed environment.

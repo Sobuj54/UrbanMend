@@ -1,0 +1,15 @@
+# PLACEHOLDER — written in A3 (T0.2). Not runnable yet (Dockerfile and requirements.txt
+# are stubs pending the A2 version decision).
+#
+# Five services (docs/06-devops-guide.md §3.1):
+#   db      — postgis/postgis, NOT plain postgres. The extension must exist before the
+#             first migration enables it (T0.4).
+#   redis   — cache, rate-limit store, Celery broker
+#   storage — MinIO (S3-compatible object storage)
+#   api     — uvicorn urbenmend.asgi:application
+#   worker  — celery -A urbenmend worker -B  (-B = beat in-process; LOCAL ONLY. Deployed,
+#             beat is a separate single-replica Deployment, never autoscaled — two
+#             schedulers double-fire the outbox relay.)
+#
+# Compose is the MANDATED local environment, not a convenience: GeoDjango needs
+# GDAL/GEOS/PROJ, which are awkward to install natively on Windows (this team's platform).
