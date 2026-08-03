@@ -72,6 +72,18 @@ and **`selectors.py` (reads)** from day one; DRF views stay thin.
 ✅ Resolved (A1): the settings split is **`base`/`dev`/`prod`** (plan T0.3 naming). DevOps §3.2's
 `urbenmend.settings.local` was amended to `urbenmend.settings.dev`. Do not reintroduce `settings.local`.
 
+✅ Built in A4 (2026-08-03): `urbenmend/settings/{base,dev,prod,build}.py`, `urbenmend/{urls,asgi,wsgi}.py`,
+`pyproject.toml` (ruff/mypy/pytest config). Verified: `check --deploy` clean on prod, `mypy --strict` clean,
+uvicorn boots. Three A4 decisions that bind later work:
+
+- **Apps nest under `urbenmend.`** (`urbenmend/platform/`, not `platform/`) — a root-level `platform`
+  package shadows the stdlib module Django imports. App *names* are unchanged.
+- **`DJANGO_SECRET_KEY` and `DATABASE_URL` are required with no fallback** in `base`/`prod`. `build.py`
+  injects throwaway values before importing base so build-time `collectstatic` needs no secrets;
+  `dev.py` has local-only fallbacks so a fresh clone can lint and test. Never add one to `prod.py`.
+- **`DEFAULT_PAGINATION_CLASS` is unset**, `rest_framework.W001` silenced. No DRF built-in emits the
+  `{data, page, meta}` envelope; T0.6 adds the custom class and removes the silencer.
+
 ## Commands
 
 Sourced from `docs/06-devops-guide.md` §4.1 and its Dockerfile example. **No manifest or task

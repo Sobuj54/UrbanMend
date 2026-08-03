@@ -1,0 +1,73 @@
+# Tool configuration (A4, T0.3).
+#
+# NOT a package definition — UrbanMend is deployed as a container, not installed from an
+# index, and dependencies are pinned in requirements/*.txt via pip-compile (A2, T0.1).
+# This file exists so `ruff`, `mypy` and `pytest` read identical settings from a developer
+# shell and from CI (A9, T0.5). Passing flags on the command line lets the two drift.
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100          # 88 forces awkward wraps on Django's long dotted settings strings.
+# `docs/` holds the planning documents. Their fenced code blocks are illustrative snippets,
+# not source, and `ruff format` rewrites them in place — leaving the approved docs and the
+# code they specify silently out of sync.
+extend-exclude = ["migrations", "docs"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort — import ordering
+    "UP",       # pyupgrade — keep syntax current for the pinned Python
+    "B",        # flake8-bugbear
+    "DJ",       # flake8-django
+    "S",        # flake8-bandit — security
+    "C4",       # comprehensions
+    "SIM",      # simplify
+]
+ignore = [
+    "S101",  # assert — pytest is built on it.
+    "E501",  # line length: the formatter owns this; the linter flagging it too is noise.
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Settings modules are `from .base import *` by design — that is how Django layers config.
+# F403 = star import, F405 = name possibly from a star import.
+"urbenmend/settings/*.py" = ["F403", "F405"]
+# Hardcoded-password checks fire on the local-only placeholder secrets in dev.py/build.py.
+# Both are documented as never-deployed; prod.py has no fallback and is NOT exempted.
+"urbenmend/settings/dev.py" = ["F403", "F405", "S105", "S106"]
+"urbenmend/settings/build.py" = ["F403", "F405", "S105", "S106"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.13"
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+files = ["urbenmend"]
+exclude = ["migrations/"]
+strict = true
+# Migrations are generated code — Django's own writer emits untyped constructs.
+[[tool.mypy.overrides]]
+module = "*.migrations.*"
+ignore_errors = true
+
+# django-environ ships no py.typed marker and has no stub package on PyPI. It is used only
+# in the settings modules, where every value is immediately assigned to a Django setting.
+[[tool.mypy.overrides]]
+module = "environ.*"
+ignore_missing_imports = true
+
+[tool.django-stubs]
+# The plugin loads settings to resolve model fields, so it needs a module that imports
+# without external services. dev.py provides local fallbacks for SECRET_KEY/DATABASE_URL
+# and opens no connection at import time.
+django_settings_module = "urbenmend.settings.dev"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "urbenmend.settings.dev"
+testpaths = ["urbenmend"]
+python_files = ["test_*.py", "tests.py"]
+# --strict-markers: a typo'd marker fails instead of silently deselecting a test.
+addopts = "--strict-markers --strict-config"

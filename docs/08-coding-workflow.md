@@ -151,6 +151,43 @@ LLM_API_KEY=<your-key>
 confusing "unknown field type" error much later. If GDAL/GEOS aren't found, set `GDAL_LIBRARY_PATH` /
 `GEOS_LIBRARY_PATH` explicitly.
 
+✅ **Built and verified (2026-08-03).** `urbenmend/settings/{__init__,base,dev,prod,build}.py`, plus
+`urbenmend/{urls,asgi,wsgi}.py` (all three are imported by `manage.py check` or the container command,
+so they had to land here) and `pyproject.toml` (ruff/mypy/pytest config — CI and a dev shell must read
+identical settings).
+
+**`build.py` is a fourth module the plan did not name.** The Dockerfile's `collectstatic` step needs a
+settings module that imports with no secrets present [doc: DevOps §2.2]. It `os.environ.setdefault`s
+throwaway values for `DJANGO_SECRET_KEY` and `DATABASE_URL` *before* importing `base`, so `base` can
+keep both **required with no fallback** — a missing secret in a deployed environment fails startup
+instead of silently running on a known key. `prod.py` has no fallbacks at all.
+
+Two decisions this step forced, neither pre-answered by the plan:
+
+1. **Apps nest under `urbenmend.`, not the repo root.** A top-level `platform/` package would shadow
+   the stdlib `platform` module that Django itself imports — an import-order failure that is painful
+   to diagnose. Arch §2.4's app *names* are unchanged; only the import path is qualified. A5 creates
+   them as `urbenmend/identity/`, `urbenmend/platform/`, etc.
+2. **`DEFAULT_PAGINATION_CLASS` is deliberately left unset**, with `rest_framework.W001` in
+   `SILENCED_SYSTEM_CHECKS`. Pagination is mandatory (NFR-2), but no DRF built-in emits the required
+   `{data, page, meta}` envelope with opaque cursors (API §1.3/§4.4). Naming a built-in as a
+   "placeholder" would ship the wrong contract on every list view the moment one exists. T0.6 adds the
+   custom class and removes the silencer.
+
+Also settled here: `MEDIA_ROOT = mediafiles/` (**not** `media/`, which is an app name — the A1
+`.gitignore` fix), `STORAGES` dict instead of the `DEFAULT_FILE_STORAGE`/`STATICFILES_STORAGE` pair
+removed in Django 6.0, static files on local disk (build-time `collectstatic` has no credentials to
+upload with), and `OTPMiddleware` placed after `AuthenticationMiddleware` from the start so 2FA (FR-4)
+is not retrofitted.
+
+Verified in the container: `collectstatic` under `settings.build` copies 162 admin/DRF assets;
+`manage.py check` clean on `dev`; **`manage.py check --deploy` clean on `prod`** (the A9 gate);
+`ruff check`, `ruff format --check`, and `mypy --strict` all pass; a `postgres://` URL raises the
+fail-fast `ValueError`; structlog *and* stdlib `logging` records both render as JSON on one stream
+(T0.9); Redis cache round-trips and the `cached_db` session backend loads against the live services;
+GeoDjango constructs `POINT (90.4125 23.8103)` at SRID 4326; and uvicorn boots
+`urbenmend.asgi:application` and serves HTTP.
+
 ## A5. App skeleton (T0.1)
 
 One Django app per architecture module [doc: Arch §2.4]:
@@ -159,6 +196,9 @@ One Django app per architecture module [doc: Arch §2.4]:
 identity  reporting  media  classification  issues  geo
 notifications  moderation  audit  export  platform
 ```
+
+⚠️ **Created as `urbenmend/<app>/`, imported as `urbenmend.<app>`** — decided in A4. A root-level
+`platform/` package shadows the stdlib `platform` module that Django imports. Names are unchanged.
 
 `platform` holds cross-cutting concerns (outbox, base classes, middleware). Dashboard/query needs no
 app — it is served by `issues`/`geo` selectors.
