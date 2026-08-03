@@ -1,0 +1,60 @@
+# UrbanMend — runtime dependencies (A2 / T0.1).
+#
+# HUMANS EDIT THIS FILE. Do not edit base.txt — it is generated:
+#     docker compose run --rm api pip-compile --generate-hashes \
+#         --output-file requirements/base.txt requirements/base.in
+#
+# Version decision (T0.1), recorded 2026-08-03:
+#   Python 3.13  |  Django 5.2 LTS (security support to Apr 2028)  |  DRF 3.17
+# Binding constraint: djangorestframework-gis 1.2.1 supports Python 3.9-3.13 and
+# Django 4.2-6.0, so Python 3.14 is out. Django 5.2 LTS chosen over 6.0 for the
+# longer support window (Apr 2028 vs Apr 2027).
+# GeoDjango on Django 5.2 needs PostgreSQL 14+, PostGIS 3.1-3.5, GEOS 3.8-3.14,
+# GDAL 3.1-3.11, PROJ 6-9 — all satisfied by the Debian base of python:3.13-slim.
+
+# --- Core -------------------------------------------------------------------
+django~=5.2.16
+djangorestframework~=3.17.0
+
+# --- Geospatial -------------------------------------------------------------
+# Pulls django-filter as a hard dependency (>=23.5,<26.0).
+djangorestframework-gis~=1.2.1
+
+# --- Database driver --------------------------------------------------------
+# psycopg 3 (not psycopg2). The [binary] extra ships prebuilt libpq wheels, so the
+# image needs no libpq-dev at build time. GeoDjango's postgis backend supports v3.
+psycopg[binary]~=3.2
+
+# --- Configuration ----------------------------------------------------------
+django-environ~=0.12
+
+# --- Async / queue ----------------------------------------------------------
+celery[redis]~=5.5
+redis~=6.4
+# Redis-backed cache + DRF throttle store. django-redis is the cache backend.
+django-redis~=6.0
+
+# --- Object storage ---------------------------------------------------------
+django-storages[s3]~=1.14
+
+# --- Images -----------------------------------------------------------------
+# EXIF handling: ImageOps.exif_transpose then strip (T2.5).
+pillow~=11.3
+
+# --- Auth -------------------------------------------------------------------
+django-otp~=1.6
+argon2-cffi~=25.1
+
+# --- App server -------------------------------------------------------------
+# ASGI is required, not optional: SSE (T6.8) needs async. Never gunicorn sync.
+uvicorn[standard]~=0.38
+
+# --- Observability ----------------------------------------------------------
+structlog~=25.4
+django-prometheus~=2.4
+opentelemetry-sdk~=1.38
+opentelemetry-exporter-otlp~=1.38
+opentelemetry-instrumentation-django~=0.59b0
+opentelemetry-instrumentation-celery~=0.59b0
+opentelemetry-instrumentation-psycopg~=0.59b0
+opentelemetry-instrumentation-redis~=0.59b0

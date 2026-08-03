@@ -1,5 +1,38 @@
-# PLACEHOLDER — written in A3 (T0.2). Local-only overrides, applied automatically by
-# `docker compose up` on top of docker-compose.yml.
+# Local developer overrides — applied automatically on top of docker-compose.yml by
+# `docker compose up`. LOCAL ONLY: nothing here may reach a deployed environment.
 #
-# Intended scope: source bind-mounts for hot reload, --reload on uvicorn, debug ports,
-# and any developer conveniences that must never reach a deployed environment.
+# Two jobs: mount source for hot reload, and install the dev dependency set
+# (pytest/ruff/mypy) which the production runtime stage deliberately excludes.
+
+services:
+  api:
+    build:
+      target: dev
+    image: urbenmend:dev
+    # --reload restarts uvicorn on source change. Never use in deployment.
+    command:
+      [
+        "uvicorn", "urbenmend.asgi:application",
+        "--host", "0.0.0.0", "--port", "8080",
+        "--reload", "--reload-dir", "/app",
+      ]
+    volumes:
+      # Bind-mount source over the image copy so edits apply without a rebuild.
+      - .:/app
+      # Anonymous volumes keep container-generated output from being clobbered by
+      # the bind mount above (and from leaking into the Windows host).
+      - /app/staticfiles
+      - /app/mediafiles
+    stdin_open: true   # `docker attach` for pdb/breakpoint()
+    tty: true
+
+  worker:
+    build:
+      target: dev
+    image: urbenmend:dev
+    # Celery has no built-in reloader; the source mount still avoids image rebuilds,
+    # but a code change needs `docker compose restart worker` to take effect.
+    volumes:
+      - .:/app
+      - /app/staticfiles
+      - /app/mediafiles

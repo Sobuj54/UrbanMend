@@ -1,15 +1,109 @@
-# PLACEHOLDER — written in A3 (T0.2). Not runnable yet (Dockerfile and requirements.txt
-# are stubs pending the A2 version decision).
-#
-# Five services (docs/06-devops-guide.md §3.1):
-#   db      — postgis/postgis, NOT plain postgres. The extension must exist before the
-#             first migration enables it (T0.4).
-#   redis   — cache, rate-limit store, Celery broker
-#   storage — MinIO (S3-compatible object storage)
-#   api     — uvicorn urbenmend.asgi:application
-#   worker  — celery -A urbenmend worker -B  (-B = beat in-process; LOCAL ONLY. Deployed,
-#             beat is a separate single-replica Deployment, never autoscaled — two
-#             schedulers double-fire the outbox relay.)
+# UrbanMend — local development environment (A3 / T0.2).
 #
 # Compose is the MANDATED local environment, not a convenience: GeoDjango needs
-# GDAL/GEOS/PROJ, which are awkward to install natively on Windows (this team's platform).
+# GDAL/GEOS/PROJ, which are awkward to install natively on Windows — this team's
+# platform [doc: DevOps §3.1, Plan P0].
+#
+# Five services [doc: DevOps §3.1]: db, redis, storage, api, worker.
+# Local-only conveniences (source mounts, --reload) live in the override file.
+#
+#   docker compose up
+#   docker compose run --rm api python manage.py migrate     # migrate is a SEPARATE step
+
+name: urbenmend
+
+services:
+  # PostgreSQL + PostGIS. ⚠️ postgis/postgis, NOT plain postgres — the extension must
+  # exist before the first migration enables it (T0.4). PostGIS 3.5 is inside Django
+  # 5.2's supported range (3.1–3.5); PostgreSQL 17 satisfies GeoDjango's 14+ floor.
+  db:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_USER: urbenmend
+      POSTGRES_PASSWORD: urbenmend
+      POSTGRES_DB: urbenmend
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U urbenmend -d urbenmend"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # Celery broker (db 1) + cache, session store, rate-limit store (db 0).
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # S3-compatible object storage for report photos (django-storages targets this).
+  storage:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: urbenmend
+      MINIO_ROOT_PASSWORD: urbenmend-local-dev
+    volumes:
+      - storage_data:/data
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # HTTP API. ASGI/uvicorn is required, not a preference — SSE (T6.8) needs async.
+  api:
+    build:
+      context: .
+      target: runtime
+    image: urbenmend:local
+    env_file:
+      - .env.local
+    ports:
+      - "8080:8080"
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      storage: {condition: service_healthy}
+    restart: unless-stopped
+
+  # Celery worker. Same image as api, different command [doc: DevOps §2.1].
+  # ⚠️ -B runs beat IN-PROCESS and is LOCAL ONLY. Deployed, beat is a separate
+  # single-replica Deployment, never autoscaled — two schedulers double-fire the
+  # outbox relay (T6.2) and every periodic job [doc: DevOps §3.1/§6.1].
+  worker:
+    build:
+      context: .
+      target: runtime
+    image: urbenmend:local
+    command: ["celery", "-A", "urbenmend", "worker", "-B", "--loglevel=info"]
+    env_file:
+      - .env.local
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      storage: {condition: service_healthy}
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  redis_data:
+  storage_data:

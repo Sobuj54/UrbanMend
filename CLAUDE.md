@@ -27,9 +27,13 @@ assignment live on the **Issue**, never on the Report.
 | Lint / types | `ruff`, `mypy` |
 | Tests | `pytest-django` + `factory_boy` |
 
-Not pinned anywhere in the docs: Python version (`3.12` is labelled an example; real pin is T0.1),
-Django/DRF versions, package manager (`pip` + `requirements.txt` appear only in a Dockerfile
-example), CI vendor, cloud host, LLM provider. **Do not invent these — raise them instead.**
+✅ Pinned in T0.1 (2026-08-03): **Python 3.13**, **Django 5.2.16 LTS**, **DRF 3.17.1**, deps via
+**pip-compile** (`requirements/{base,dev}.in` → `.txt`, `--generate-hashes`; `dev.txt` also needs
+`--allow-unsafe`). Base image `python:3.13-slim` (verified: GEOS 3.13.1, GDAL 3.10.3). Python 3.13
+is a ceiling, not a preference — `djangorestframework-gis` 1.2.1 caps at 3.13.
+
+Still not pinned anywhere: CI vendor, cloud host, LLM provider (Q9).
+**Do not invent these — raise them instead.**
 
 ## Context: planning docs
 

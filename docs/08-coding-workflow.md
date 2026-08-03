@@ -73,11 +73,28 @@ transitive dependency defeats the SHA-tagged deployment model [doc: DevOps §2.2
 | Observability | `structlog`, `django-prometheus`, OpenTelemetry Django + Celery instrumentation |
 | Dev/test | `pytest`, `pytest-django`, `factory_boy`, `ruff`, `mypy` |
 
-⚠️ **Versions are a T0.1 decision, deliberately unpinned in the docs.** The Python version is *not*
-settled: `python:3.12-slim` appears in the DevOps Dockerfile but is explicitly labelled "a concrete
-example; pin whichever version the team standardises on in T0.1, and **confirm GeoDjango supports it
-before pinning**" [doc: DevOps §12]. Django and DRF versions are never stated. Decide these three
-now, record the decision, and move on.
+✅ **Versions — decided in T0.1 on 2026-08-03.** These were deliberately unpinned in the docs;
+they are now settled and verified:
+
+| | Pinned | Why |
+| --- | --- | --- |
+| Python | **3.13** | Ceiling imposed by `djangorestframework-gis` 1.2.1 (supports 3.9–3.13) |
+| Django | **5.2.16 LTS** | Security support to **Apr 2028**; 6.0 ends Apr 2027 |
+| DRF | **3.17.1** | Supports Django 5.2/6.0/6.1 |
+
+GeoDjango support was confirmed before pinning, as DevOps §12 requires — verified inside
+`python:3.13-slim` with `binutils libproj-dev gdal-bin`: **GEOS 3.13.1, GDAL 3.10.3**, both inside
+Django 5.2's supported ranges (GEOS 3.8–3.14, GDAL 3.1–3.11, PROJ 6–9). The `python:3.12-slim` in
+the DevOps Dockerfile example is superseded by `python:3.13-slim`.
+
+Pinning workflow: **`pip-compile`** (pip-tools), `requirements/{base,dev}.in` → `.txt` with
+`--generate-hashes`. `dev.txt` additionally needs `--allow-unsafe` (pip-tools leaves its own
+`pip`/`setuptools` deps unpinned, which pip rejects in a hashed file).
+
+Two traps found while pinning, both recorded in `requirements/dev.in` so they are not "corrected"
+back: `django-stubs` versions track the Django release they *fully* support, so DRF-stubs 3.17
+requires `django-stubs>=6.0.4` (**6.0.7**) even though we run Django 5.2 — not `~=5.2`. And
+`types-redis` is obsolete: `redis` ships its own annotations since 5.0.
 
 ## A3. Docker Compose + Dockerfile (T0.2)
 
@@ -92,6 +109,19 @@ Dockerfile rules, all mandated [doc: DevOps §2.2]:
 - ⚠️ **Never run `migrate` in the Dockerfile or the entrypoint.** It is a separate pre-deploy step
 - `collectstatic` runs at build time with settings that don't require `SECRET_KEY`/`DATABASE_URL` —
   no secrets exist at build time
+
+⚠️ **Runtime library package names in the DevOps §2.2 example are Debian 12 (bookworm) and are stale.**
+`python:3.13-slim` is Debian 13 (trixie), where the correct names are **`libgdal36`** (not `libgdal32`)
+and **`libgeos-c1t64`** (not `libgeos-c1v5`); `libproj25`, `libpq5`, and `gdal-bin` are unchanged.
+Verified in-image: GEOS 3.13.1, GDAL 3.10.3 load successfully. Re-check with
+`apt-cache search --names-only 'libgdal[0-9]'` if the base image's Debian release changes.
+
+A **third `dev` stage** (after `runtime`) installs `requirements/dev.txt` for Compose and CI. It is
+deliberately ordered last so `--target runtime` — the deployed image — can never pick up
+pytest/ruff/mypy. Compose's `docker-compose.override.yml` targets `dev`; production targets `runtime`.
+
+Verified locally: `db` reports **PostgreSQL 17.5 / PostGIS 3.5.2** and the app role can
+`CREATE EXTENSION postgis` (A7's prerequisite); `redis` and `storage` (MinIO) both pass healthchecks.
 
 ## A4. Settings + config (T0.3)
 
