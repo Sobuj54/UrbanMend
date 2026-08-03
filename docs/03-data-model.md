@@ -5,13 +5,17 @@
 | | |
 |---|---|
 | **Document** | `docs/03-data-model.md` |
-| **Version** | 1.1 (DM-Q1–Q5/Q7/Q8 resolved) |
+| **Version** | 1.2 (provenance only — ADR-001 recorded; no domain changes) |
 | **Status** | Planning phase — pending stakeholder sign-off |
 | **Author role** | Principal Backend Architect |
-| **Date** | 2026-07-22 |
-| **Source of truth** | `docs/01-prd.md` (PRD v1.1, approved) + `docs/02-architecture.md` (SDD v1.0, approved) |
+| **Date** | 2026-08-03 |
+| **Source of truth** | `docs/01-prd.md` (PRD v1.3, approved) + `docs/02-architecture.md` (SDD v1.2, approved) |
 | **Scope of this doc** | **Business domain model only.** No schema, columns, keys, indexes, or SQL. |
 | **Downstream docs** | `04-api-specification.md`, `05-project-plan.md` |
+
+### Changelog
+- **v1.2 (2026-08-03)** — **No domain changes.** The application framework was committed to Python + Django + DRF (`docs/07-adr-001-app-framework.md`, ADR-001) after this document was written. Nothing here required amendment, which is the intended result: this model is deliberately persistence-neutral, so a framework decision cannot reach it. The mapping from these entities to Django apps lives in `02-architecture.md` §2.4, and the ORM/column-type mapping belongs to the schema design — **not** here, per the ground rules below.
+- **v1.1 (2026-07-22)** — DM-Q1–Q5/Q7/Q8 resolved.
 
 ### Ground rules
 - The PRD and Architecture are the **single source of truth.** No new features; no changed requirements. Every entity, rule, and lifecycle traces to a PRD `FR-x`/`NFR-x` or an Architecture section.
@@ -631,4 +635,4 @@ Pending ──▶ Sent ──▶ Delivered
 
 ---
 
-*End of `docs/03-data-model.md` (v1.1). Open questions DM-Q1–Q5/Q7/Q8 resolved — see Open Questions section and §16 of the PRD. Remaining open: DM-Q6 (Department entity, deferred). Next document: `04-api-specification.md`.*
+*End of `docs/03-data-model.md` (v1.2). Open questions DM-Q1–Q5/Q7/Q8 resolved — see Open Questions section and §16 of the PRD. Remaining open: DM-Q6 (Department entity, deferred). The v1.2 revision is provenance only (ADR-001); the domain model itself is unchanged and remains persistence-neutral. Next document: `04-api-specification.md`.*

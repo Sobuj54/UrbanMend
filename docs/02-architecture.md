@@ -5,13 +5,13 @@
 | | |
 |---|---|
 | **Document** | `docs/02-architecture.md` |
-| **Version** | 1.1 (ASSUMP-7 updated: Q9 resolved) |
+| **Version** | 1.2 (ASSUMP-1 resolved: Django + DRF committed — see ADR-001) |
 | **Status** | Planning phase — pending stakeholder sign-off |
 | **Author role** | Principal Backend Architect |
-| **Date** | 2026-07-22 |
+| **Date** | 2026-08-03 |
 | **Source of truth** | `docs/01-prd.md` (PRD v1.1, approved) |
 | **Scope of this doc** | **Backend architecture only.** Frontend/UI is treated as a client of the API. |
-| **Downstream docs** | `03-data-model.md` (schema detail), `04-api-specification.md` (endpoint contracts), `05-project-plan.md` |
+| **Downstream docs** | `03-data-model.md` (schema detail), `04-api-specification.md` (endpoint contracts), `05-project-plan.md`, `07-adr-001-app-framework.md` (framework decision) |
 
 ### Ground rules for this document
 - The **PRD is the source of truth.** This document introduces **no new features** and changes **no requirements**. Every component traces to a PRD `FR-x` / `NFR-x`.
@@ -93,17 +93,68 @@ The monolith is decomposed so a future extraction (e.g. pulling the classificati
 
 ### 2.3 Recommended technology stack
 
-Per PRD §16.5, the app *language/framework* choice was delegated to this document. Committed choices are forced by requirements; the framework is a **recommendation to confirm** (candidate for an ADR).
+Per PRD §16.5, the app *language/framework* choice was delegated to this document. Committed choices are forced by requirements; the framework was a recommendation to confirm — **now resolved as Python + Django + DRF in `docs/07-adr-001-app-framework.md` (ADR-001, Accepted).**
 
 | Layer | Recommendation | Status | Rationale |
 |-------|----------------|--------|-----------|
 | Primary datastore | **PostgreSQL + PostGIS** | **Committed** (NFR-1) | Only mainstream store that gives ACID + first-class geospatial in one engine; avoids a second specialized DB. |
-| Queue / cache | **Redis** (+ a durable job library) | Recommended | Simplest reliable async at this scale; doubles as cache and rate-limit store. |
-| Object storage | **S3-compatible** (cloud S3, or self-hosted MinIO) | Recommended | Keeps large binaries out of the DB; presign/stream support. |
-| App framework | **Python + FastAPI** *(primary rec)* or **TypeScript + NestJS** *(viable alt)* | **Assumption — confirm (ASSUMP-1)** | Python: excellent geospatial libs, first-class LLM SDKs, familiar in academia. NestJS: strong typing/structure if the team prefers TS. Either satisfies every requirement. |
-| Migrations | Framework-native migration tool | Recommended | Versioned, reproducible schema (feeds doc 03). |
+| Queue / cache | **Redis** (+ a durable job library) | **Committed** | Simplest reliable async at this scale; doubles as cache and rate-limit store. |
+| Object storage | **S3-compatible** (cloud S3, or self-hosted MinIO) | **Committed** | Keeps large binaries out of the DB; presign/stream support. |
+| App framework | **Python + Django + DRF** | **Committed (ADR-001)** | Server-validated sessions, RBAC, admin-driven reference data, and migrations are built in; GeoDjango is the most mature spatial ORM (NFR-1). Full rationale in ADR-001. |
+| Async worker / queue | **Celery (Redis broker) + Celery beat** | **Committed (ADR-001)** | Same codebase, worker process pattern (§2.2); `transaction.on_commit` for task enqueue, outbox relay on beat. |
+| Geospatial / mapping | **GeoDjango + `djangorestframework-gis`** | **Committed (ADR-001)** | `geography`-typed columns, GiST indexes, `ST_DWithin`/KNN/grid aggregation via the ORM — NFR-1 is core, not optional. |
+| Object-store client | **`django-storages`** | **Committed (ADR-001)** | S3-compatible uploads/streaming from the app. |
+| App server | **ASGI (uvicorn)** | **Committed (ADR-001)** | Keeps the SSE notification stream (ASSUMP-3) off sync worker threads. |
+| Migrations | **Django migrations** | **Committed (ADR-001)** | Versioned, reproducible schema (feeds doc 03); first migration enables the PostGIS extension. |
 
-> The architecture does **not** depend on the framework choice — all framework-specific detail is confined to the API and persistence layers.
+> The module boundaries remain framework-agnostic (ADR-001 §4), but the framework is no
+> longer open — all framework-specific detail is confined to the API and persistence layers.
+
+---
+
+### 2.4 Module → Django app mapping (ADR-001)
+
+Each §3 module becomes one Django app; the modular-monolith boundaries of §2.1 are enforced by
+codebase layout and service interfaces, not by the framework. This subsection records the
+framework-level decisions only — detailed schema stays in doc 03, endpoints in doc 04.
+
+| §3 module | Django app |
+|-----------|-----------|
+| Identity & Access | `identity` |
+| Reporting | `reporting` |
+| Media | `media` |
+| Classification | `classification` |
+| Issues & Clustering | `issues` |
+| Geospatial | `geo` |
+| Dashboard & Query | served by `issues` / `geo` selectors |
+| Notifications | `notifications` |
+| Administration & Moderation | `moderation` |
+| Audit & Integrity | `audit` |
+| Export | `export` |
+| Platform (cross-cutting) | `platform` |
+
+**Framework-level decisions:**
+
+- **Layering (§3.1).** DRF views stay thin; business rules, RBAC checks, and transactions live
+  in `services.py` (writes) and `selectors.py` (reads) per app. DRF permission classes are
+  defence-in-depth, **not** the enforcement point — FR-3 requires service-layer authorization.
+- **Custom user model** is declared before the first migration (irreversible afterwards).
+- **RBAC** is an explicit `role` field plus an authority↔category scope relation evaluated in
+  the service layer. `django.contrib.auth` Groups/Permissions are **not** used for this: they
+  cannot express the category/department scoping in BR-26.
+- **Sessions (§8)** use Django's session framework on the `cached_db` backend — the opaque
+  cookie-borne token this document already specifies; revocation deletes session rows.
+- **CSRF** is carried by DRF `SessionAuthentication` for state-changing requests (API §2).
+- **Task enqueue** always fires via `transaction.on_commit`, so a worker can never observe an
+  uncommitted Report (§4.1).
+- **Outbox (§7.1)** is a real table written in the state-change transaction, polled by a Celery
+  beat relay using row-level skip-locked reads. An in-process commit hook alone cannot survive
+  the crash this pattern exists to guard against.
+- **Clustering find-or-create (§4.3)** takes a transaction-scoped Postgres advisory lock keyed
+  on geohash-cell + category inside an atomic block.
+- **Reference data and moderation (FR-30/FR-31)** are surfaced through Django admin.
+- **SSE (§7.2, ASSUMP-3)** is served from the ASGI stack; polling remains the sanctioned
+  fallback.
 
 ---
 
@@ -262,7 +313,7 @@ Append-only `audit_log` capturing actor, action, timestamp, and before/after for
 
 - **Registration/verification (FR-1):** email or phone; phone via OTP, email via link/code. Passwords hashed with a modern adaptive algorithm (Argon2/bcrypt) (NFR-5).
 - **Authority provisioning (FR-2):** authority role is granted **only** by an admin action, itself audited (FR-32). Authorities are scoped to one or more departments/categories; that scope constrains their queue (FR-22) and permissions.
-- **Sessions:** **server-validated sessions** (opaque token in an httpOnly cookie) recommended over stateless JWTs, because the app needs reliable **immediate revocation** (moderation, deprovisioning) and has no cross-service token-sharing need. *Trade-off:* JWTs scale statelessly but are hard to revoke; at this scale, revocation clarity wins. (Framework-level detail; candidate ADR.)
+- **Sessions:** **server-validated sessions** (opaque token in an httpOnly cookie) recommended over stateless JWTs, because the app needs reliable **immediate revocation** (moderation, deprovisioning) and has no cross-service token-sharing need. *Trade-off:* JWTs scale statelessly but are hard to revoke; at this scale, revocation clarity wins. **Committed:** Django's session framework (`cached_db` backend) is exactly this design — see ADR-001 §2.
 - **RBAC (FR-3):** a central authorization component evaluates the §4.2 role/permission matrix in the service layer on every mutating and sensitive read action. Department scoping is part of the check for authorities.
 - **Abuse baseline (FR-4, FR-33):** rate-limited login with backoff/lockout; optional 2FA for authority/admin; submission rate limits and Sybil-resistance heuristics feed the honest-corroboration rule (T1–T3).
 
@@ -324,9 +375,9 @@ Formal HA/DR is explicitly out of scope for the prototype (A10); the design degr
 
 | # | Assumption | Why it's an assumption | Impact if wrong |
 |---|-----------|------------------------|-----------------|
-| ASSUMP-1 | App framework is **Python/FastAPI** (or TS/NestJS). | PRD delegated stack choice (§16.5) but didn't fix a language. | Confined to API + persistence layers; core design unaffected. |
+| ASSUMP-1 | **RESOLVED (ADR-001):** app framework is **Python + Django + DRF**. Previously "Python/FastAPI (or TS/NestJS) — confirm". | PRD delegated stack choice (§16.5) but didn't fix a language; the team has now decided. | None — decision recorded; framework-specific detail stays confined to the API + persistence layers. |
 | ASSUMP-2 | Deployment is **container-based and cloud-agnostic** (managed Postgres+PostGIS or self-hosted; S3 or MinIO). | PRD doesn't name a host. | Affects ops/deploy doc, not module design. |
-| ASSUMP-3 | In-app notification delivery uses **polling or SSE**, not websockets. | 1-min SLA (FR-27) doesn't require real-time push. | Trivial to change; isolated to Notifications module. |
+| ASSUMP-3 | In-app notification delivery uses **polling or SSE**, not websockets. SSE is served from the **ASGI** stack (ADR-001) so a long-lived stream does not pin a sync worker thread; polling remains the sanctioned fallback. | 1-min SLA (FR-27) doesn't require real-time push. | Trivial to change; isolated to Notifications module. |
 | ASSUMP-4 | Clustering **radius and time-window** are configurable per-category defaults, tuned later. | PRD specifies the signals (FR-18) but not exact values. | Wrong values → over/under-merge; tunable as reference data (RISK-10). |
 | ASSUMP-5 | A single **reverse-geocoding provider** is available behind an adapter. | FR-6 requires an address; PRD doesn't name a source. | Swappable adapter; degrades to coordinates-only if unavailable. |
 | ASSUMP-6 | A **city boundary polygon** is available to enforce the "outside city" edge case. | Implied by the edge case, not provided. | Without it, out-of-city reports can't be auto-flagged. |
@@ -359,6 +410,11 @@ None of these introduce features; they record decisions the PRD deferred.
 
 **What I deliberately did *not* add** (to respect scope and avoid over-engineering): message brokers beyond Redis, a separate search engine, CQRS/event-sourcing, service mesh, or multi-region concerns. At this project's scale and timeline they would be liabilities, not strengths.
 
+**Framework-committed observations (ADR-001):**
+
+1. **Django admin materially reduces P8.3 effort.** Reference data (categories, POIs, severity keywords, clustering rules) and moderation (FR-30/FR-31) ship largely as admin configuration rather than hand-built CRUD — a direct, scheduled relief for the R-10 bandwidth risk.
+2. **New soft spot — Django's idiom vs §3.1 layering.** Django's conventions (fat models, logic in views/serializers) push against the mandated API → service → data-access layering, and authorization must live in the service layer (FR-3). *Mitigation:* the `services.py`/`selectors.py` convention is established in §2.4 as a day-one rule, DRF permission classes are defence-in-depth only, and authorization coverage is already a T10.2 review item.
+
 ---
 
 ## 15. Traceability — PRD → Architecture
@@ -378,7 +434,8 @@ None of these introduce features; they record decisions the PRD deferred.
 | NFR-3,4 Async/degradation | §4 core flow, §12 Failure modes |
 | NFR-5,9,11,13 Cross-cutting | §11 Cross-Cutting Concerns |
 | NFR-12 Export | §3 Export module, §11 |
+| Framework decision | ADR-001 (`07-adr-001-app-framework.md`) |
 
 ---
 
-*End of `docs/02-architecture.md` (v1.1). Open question Q9 resolved: LLM provider deferred to implementation; no-training-data policy locked; adapter remains provider-agnostic (ASSUMP-7 updated). Detailed schema in `03-data-model.md`; endpoint contracts in `04-api-specification.md`. No implementation code and no new requirements were introduced.*
+*End of `docs/02-architecture.md` (v1.2). ASSUMP-1 resolved: app framework is **Python + Django + DRF**, recorded in ADR-001 (`07-adr-001-app-framework.md`); §2.4 maps modules to Django apps. Open question Q9 resolved: LLM provider deferred to implementation; no-training-data policy locked; adapter remains provider-agnostic (ASSUMP-7). Detailed schema in `03-data-model.md`; endpoint contracts in `04-api-specification.md`. No implementation code and no new requirements were introduced.*

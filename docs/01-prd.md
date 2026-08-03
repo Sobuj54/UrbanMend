@@ -5,15 +5,16 @@
 | | |
 |---|---|
 | **Document** | `docs/01-prd.md` |
-| **Version** | 1.2 (Open questions Q2/Q4/Q7/Q8/Q9/DM-Q5/Q7/Q8 resolved) |
+| **Version** | 1.3 (§16.5 stack deferral now closed by ADR-001) |
 | **Status** | Planning phase — pending stakeholder sign-off |
 | **Author role** | Senior Backend Architect |
-| **Date** | 2026-07-22 |
+| **Date** | 2026-08-03 |
 | **Source of truth** | `PROJECT PROPOSAL.pdf` (submitted 2026-01-11) |
-| **Supersedes** | v1.0 |
-| **Next document** | `docs/02-*` (NOT to be written yet) |
+| **Supersedes** | v1.0, v1.1, v1.2 |
+| **Next document** | `docs/02-architecture.md` (written; v1.2) |
 
 ### Changelog
+- **v1.3 (2026-08-03)** — No requirement changes. §16.5 deferred the stack choice to the architecture document; that deferral is now **closed**: the architecture document's ASSUMP-1 is resolved as **Python + Django + Django REST Framework** in `docs/07-adr-001-app-framework.md` (ADR-001, Accepted). This PRD stays implementation-neutral — the entry is recorded here only so the delegation in §16.5 has a visible terminus.
 - **v1.1 (2026-07-22)** — Two decisions incorporated: (1) AI is a **hosted LLM API** (OpenAI/Claude/Gemini), **not** a custom-trained model; (2) the **weighted numeric priority score is removed** — issues are triaged by an LLM-assigned **severity label**; frequency and proximity are retained as **display-only context**, not score inputs. See §16 and §18.
 - **v1.0 (2026-07-22)** — Initial draft.
 
@@ -371,7 +372,7 @@ Removing the numeric score **lowers** — but does not eliminate — gaming stak
 2. **AI approach:** **Hosted LLM API** (OpenAI/Claude/Gemini) for categorization + severity, with a **keyword fallback**; **no custom model trained or hosted** (→ A4, A11, FR-10–13a, NFR-13, S1).
 3. **Triage model:** **Severity label only** — the weighted numeric priority score is **removed**. Frequency (corroboration count) and proximity are **display-only context**, not score inputs. Narrowing of the proposal's 3-signal scoring is **accepted** (→ §2.2, §5.4, §18).
 4. **Authorities:** Simulated / admin-provisioned roles (→ A3, FR-2).
-5. **Technology:** Architect to recommend the best-fit stack; **geospatial-first is still required** for proximity context, clustering, and the map (→ NFR-1). Specific stack deferred to the architecture document.
+5. **Technology:** Architect to recommend the best-fit stack; **geospatial-first is still required** for proximity context, clustering, and the map (→ NFR-1). Specific stack deferred to the architecture document. *(Deferral closed 2026-08-03: the architecture document resolved this as **Python + Django + DRF** on PostgreSQL/PostGIS — see `docs/07-adr-001-app-framework.md`. The requirement above is unchanged; only the delegation is now discharged.)*
 6. **Q2 RESOLVED — Severity enum:** Four bands: **Critical / High / Medium / Low**. Critical = life-safety emergency (collapse, live wire, gas leak, severe flooding). High = significant risk/disruption. Medium = moderate. Low = minor inconvenience.
 7. **Q4 RESOLVED — Anonymous reporting:** Not supported. All submissions require a verified citizen login.
 8. **Q7 RESOLVED — Public visibility:** Map and issue list are publicly visible to unauthenticated users. Exact coordinates shown publicly.
@@ -408,4 +409,4 @@ Two deliberate deviations from `PROJECT PROPOSAL.pdf`, recorded for your supervi
 
 ---
 
-*End of `docs/01-prd.md` (v1.2). Open questions Q2/Q4/Q7/Q8/Q9 and domain questions DM-Q5/Q7/Q8 are now resolved — see §15 and §16. Remaining open: ❓Q1 (taxonomy), ❓Q3 (POI source), ❓Q5 (notification channels), ❓Q6 (EXIF default), ❓Q10 (accuracy bar).*
+*End of `docs/01-prd.md` (v1.3). Open questions Q2/Q4/Q7/Q8/Q9 and domain questions DM-Q5/Q7/Q8 are resolved — see §15 and §16 — and the §16.5 stack deferral is closed by ADR-001 (`docs/07-adr-001-app-framework.md`). Remaining open: ❓Q1 (taxonomy), ❓Q3 (POI source), ❓Q5 (notification channels), ❓Q6 (EXIF default), ❓Q10 (accuracy bar).*

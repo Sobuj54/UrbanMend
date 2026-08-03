@@ -5,17 +5,21 @@
 | | |
 |---|---|
 | **Document** | `docs/04-api-specification.md` |
-| **Version** | 1.1 (Q2/Q4/Q7/Q8/Q9/DM-Q5/Q7/Q8 resolved) |
+| **Version** | 1.2 (provenance only — ADR-001 recorded; no contract changes) |
 | **Status** | Planning phase — pending stakeholder sign-off |
 | **Author role** | Principal Backend Architect |
-| **Date** | 2026-07-22 |
-| **Source of truth** | `01-prd.md` (v1.1) · `02-architecture.md` (v1.0) · `03-data-model.md` (v1.0) — all approved |
+| **Date** | 2026-08-03 |
+| **Source of truth** | `01-prd.md` (v1.3) · `02-architecture.md` (v1.2) · `03-data-model.md` (v1.2) · `07-adr-001-app-framework.md` — all approved |
 | **Scope** | Backend REST API only. Client/UI is a consumer. |
 
 ### Ground rules
 - The three approved docs are the **single source of truth.** This spec introduces **no new business rules or features.** Every endpoint traces to a `FR-x`/`NFR-x` or a Domain rule (`BR-x`).
 - Where behavior depends on an **unresolved open question**, the endpoint **references it** (PRD `❓Qx`, Domain `DM-Qx`, `ASSUMP-x`) and does **not** invent an answer.
 - **No implementation code.** Schemas are described as JSON contracts, not database or language artifacts.
+
+### Changelog
+- **v1.2 (2026-08-03)** — **No contract changes: no endpoint, payload, status code, or header was altered.** The framework was committed to Python + Django + DRF (`docs/07-adr-001-app-framework.md`, ADR-001); two informational notes were added (§2 on CSRF, §1.2 on GeoJSON) recording which library supplies a mechanism this spec already required. **This spec remains the authority over the implementation, not the reverse** — where DRF's defaults differ from the contracts below (notably the §4.1 error envelope and the §1.2 cursor pagination shape), the implementation is customised to match this document (Project Plan T0.6).
+- **v1.1 (2026-07-22)** — Q2/Q4/Q7/Q8/Q9/DM-Q5/Q7/Q8 resolved.
 
 ---
 
@@ -55,6 +59,13 @@ All list endpoints return:
 ```
 Single-resource endpoints return the bare resource object (no envelope).
 
+> *Implementation note (ADR-001, informational — no contract change):* three conventions above are **not** DRF defaults and must be built to match this spec, not inherited (Project Plan T0.6):
+> - the `data`/`page`/`meta` envelope and opaque cursors require a custom pagination class — DRF's built-in cursor pagination emits a different shape;
+> - `camelCase` bodies require an explicit renaming layer — DRF serializers emit `snake_case` field names by default, and this is the single easiest way for the implementation to silently drift from the contract;
+> - map payloads as GeoJSON `FeatureCollection` are supplied by `djangorestframework-gis` (`GeoFeatureModelSerializer`), which satisfies the coordinate convention above.
+>
+> These are named so the gap is visible during implementation. The conventions themselves are unchanged.
+
 ---
 
 ## 2. Authentication Strategy
@@ -70,6 +81,8 @@ Single-resource endpoints return the bare resource object (no envelope).
 - **Public reads**: **Q7 RESOLVED — map and issue list are publicly visible** to unauthenticated users.
 
 > *Note:* mechanics of OTP/token storage are implementation (Architecture §8) and out of scope here; this spec defines only the request/response contract.
+
+> *Implementation note (ADR-001, informational — no contract change):* the mechanism specified above is supplied directly by Django's session framework on the `cached_db` backend, with DRF's `SessionAuthentication` enforcing the CSRF requirement in this section on unsafe methods; 2FA (FR-4) comes from `django-otp`. Named here only so the contract has a visible implementation path — **the contract above governs**, and any divergence in cookie flags, exemptions, or the CSRF header name is a defect in the implementation, not an amendment to this section.
 
 ### 2.1 Authorization model
 Every protected endpoint states required **role** (Citizen / Authority / Admin) and any **conditions** (own-resource, authority category-scope BR-26, pre-triage editability, mandatory reason). Authorization is enforced in the service layer (FR-3).
@@ -741,4 +754,4 @@ Moderation (FR-31) is expressed as **actions on existing resources**, not a sepa
 
 ---
 
-*End of `docs/04-api-specification.md` (v1.0). Contracts derive solely from the approved PRD, Architecture, and Domain Model; no new business rules were introduced. Endpoints touching unresolved questions (❓Q2/Q4/Q7/Q8, DM-Q5/Q7/Q8) reference them explicitly and must be finalized before implementation. Next: `05-project-plan.md`.*
+*End of `docs/04-api-specification.md` (v1.2). Contracts derive solely from the approved PRD, Architecture, and Domain Model; no new business rules were introduced, and the v1.2 revision changes no endpoint, payload, or status code — it records the ADR-001 framework decision and flags where DRF's defaults must be customised to match this spec (§1.3, §2, §4.1). Endpoints touching unresolved questions (❓Q2/Q4/Q7/Q8, DM-Q5/Q7/Q8) reference them explicitly and must be finalized before implementation. Next: `05-project-plan.md`.*

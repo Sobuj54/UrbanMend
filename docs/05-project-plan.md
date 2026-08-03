@@ -5,11 +5,11 @@
 | | |
 |---|---|
 | **Document** | `docs/05-project-plan.md` |
-| **Version** | 1.1 (Q2/Q4/Q7/Q8/Q9/DM-Q5/DM-Q7/DM-Q8 resolved) |
+| **Version** | 1.2 (ASSUMP-1 resolved: task notes retargeted to Django + DRF per ADR-001) |
 | **Status** | Planning phase — pending stakeholder sign-off |
 | **Author role** | Principal Software Engineer & Technical Lead |
-| **Date** | 2026-07-22 |
-| **Source of truth** | `01-prd.md` (v1.1) · `02-architecture.md` (v1.0) · `03-data-model.md` (v1.0) · `04-api-specification.md` (v1.0) — all approved |
+| **Date** | 2026-08-03 |
+| **Source of truth** | `01-prd.md` (v1.2) · `02-architecture.md` (v1.2) · `03-data-model.md` · `04-api-specification.md` · `07-adr-001-app-framework.md` (ADR-001, Accepted) — all approved |
 | **Scope** | Backend implementation roadmap only (API process + Worker process). Client/UI is out of scope. |
 
 ### Ground rules
@@ -94,32 +94,35 @@ Phases are ordered by dependency, not by perceived importance. P6 and P7 can par
 Legend — **Cx** = complexity, **Dep** = depends on.
 
 ### P0 — Foundation (M0)
+
+> **Stack note (ADR-001):** Django + DRF; Celery on Redis; GeoDjango. Development runs **in Docker** (`postgis/postgis`, `redis`, `minio`) because GeoDjango requires GDAL/GEOS system libraries — ⚠️ awkward to install natively on Windows, this team's platform. Containers are the development environment of record.
+
 | Task | Cx | Dep | Notes / Traces |
 |------|----|-----|----------------|
-| T0.1 Monorepo/codebase layout for modular monolith (API + Worker share code) | Low | — | Architecture §2.1 |
-| T0.2 Provision PostgreSQL **+ PostGIS**, Redis, S3-compatible object store (local/dev) | Med | — | Architecture §2.2, NFR-1 |
-| T0.3 Config/secrets management, environment profiles (dev/stage/prod) | Med | T0.1 | NFR-5 |
-| T0.4 Schema migration tooling + baseline migration framework | Med | T0.2 | Data model → schema |
-| T0.5 CI pipeline (lint, test, migration check, build) | Med | T0.1 | NFR-9 |
-| T0.6 Base API process (routing, `/api/v1`, error envelope, request validation harness) | Med | T0.1 | API §4.1/§5 |
-| T0.7 Base Worker process (job/queue consumer skeleton on Redis) | Med | T0.2 | Architecture §2.2 |
+| T0.1 Monorepo/codebase layout for modular monolith (API + Worker share code) | Low | — | Architecture §2.1/§2.4 — Django project + one app per module; `services.py`/`selectors.py` convention from day one |
+| T0.2 Provision PostgreSQL **+ PostGIS**, Redis, S3-compatible object store (local/dev) | Med | — | Architecture §2.2, NFR-1 — docker-compose (`postgis/postgis`, `redis`, `minio`) |
+| T0.3 Config/secrets management, environment profiles (dev/stage/prod) | Med | T0.1 | NFR-5 — settings split (`base`/`dev`/`prod`) + `django-environ` |
+| T0.4 Schema migration tooling + baseline migration framework | Med | T0.2 | Data model → schema — Django migrations; first migration enables the PostGIS extension |
+| T0.5 CI pipeline (lint, test, migration check, build) | Med | T0.1 | NFR-9 — `ruff`/`mypy`/`pytest-django`; add a `makemigrations --check --dry-run` gate to catch model↔migration drift |
+| T0.6 Base API process (routing, `/api/v1`, error envelope, request validation harness) | Med | T0.1 | API §4.1/§5 — DRF with a custom exception handler for the §4.1 envelope and cursor pagination as the default |
+| T0.7 Base Worker process (job/queue consumer skeleton on Redis) | Med | T0.2 | Architecture §2.2 — Celery app sharing Django settings; same image, different entrypoint |
 | T0.8 `GET /health` with dependency degradation flags | Low | T0.6 | API §6.16, NFR-4 |
-| T0.9 Structured logging, correlation/trace IDs, error tracking | Med | T0.6 | API §4.1 `traceId` |
-| T0.10 Baseline schema for core entities (Users, Reports, Issues, Media, Categories) | High | T0.4 | Domain model |
+| T0.9 Structured logging, correlation/trace IDs, error tracking | Med | T0.6 | API §4.1 `traceId` — `structlog` + middleware, propagated into Celery task headers |
+| T0.10 Baseline schema for core entities (Users, Reports, Issues, Media, Categories) | High | T0.4 | Domain model — ⚠️ the **custom user model must be declared before the first migration** (irreversible afterwards) |
 
 **DoD (M0):** CI green; API and Worker both boot; migrations apply cleanly from zero; `/health` reports each dependency; a trivial round-trip request works with the standard error envelope.
 
 ### P1 — Identity & Access (M1)
 | Task | Cx | Dep | Traces |
 |------|----|-----|--------|
-| T1.1 User entity + roles (Citizen/Authority/Admin) + status states | Med | T0.10 | FR-1/2, Domain |
-| T1.2 Registration + email/phone verification (OTP/link) | Med | T1.1 | FR-1, `/auth/*` |
-| T1.3 Server-validated sessions (cookie, `HttpOnly`/`Secure`/`SameSite`) + revocation | High | T1.1 | Arch §8, API §2 |
-| T1.4 CSRF protection for state-changing requests | Med | T1.3 | API §2 |
-| T1.5 RBAC enforcement layer (role + authority category-scope checks) | High | T1.3 | FR-3, BR-26/27 |
+| T1.1 User entity + roles (Citizen/Authority/Admin) + status states | Med | T0.10 | FR-1/2, Domain — custom `AUTH_USER_MODEL`, declared before the first migration |
+| T1.2 Registration + email/phone verification (OTP/link) | Med | T1.1 | FR-1, `/auth/*` — Argon2 hashing (`argon2-cffi`), NFR-5 |
+| T1.3 Server-validated sessions (cookie, `HttpOnly`/`Secure`/`SameSite`) + revocation | High | T1.1 | Arch §8, API §2 — Django sessions on the `cached_db` backend; revocation deletes session rows |
+| T1.4 CSRF protection for state-changing requests | Med | T1.3 | API §2 — carried by DRF `SessionAuthentication` |
+| T1.5 RBAC enforcement layer (role + authority category-scope checks) | High | T1.3 | FR-3, BR-26/27 — explicit `role` + category-scope relation checked in `services.py`; **not** `contrib.auth` Groups/Permissions (cannot express BR-26 scoping) |
 | T1.6 Admin: provision authority accounts + set category scope | Med | T1.5 | FR-2, `/users/authorities` |
-| T1.7 2FA for authority/admin (optional per policy) | Med | T1.3 | FR-4 |
-| T1.8 Login/OTP rate limiting + account lockout | Med | T1.2 | FR-4, NFR-13 |
+| T1.7 2FA for authority/admin (optional per policy) | Med | T1.3 | FR-4 — `django-otp` |
+| T1.8 Login/OTP rate limiting + account lockout | Med | T1.2 | FR-4, NFR-13 — DRF throttling on the Redis cache backend |
 | T1.9 Profile read/update, account deletion → **PII anonymization** | Med | T1.1 | P6, BR-33, C-14 |
 
 **DoD (M1):** A citizen can register→verify→log in; an admin can provision a scope-limited authority; RBAC denies out-of-scope/role actions with `403`; sessions revoke immediately on logout/suspend; auth endpoints are rate-limited; auth flows covered by integration tests.
@@ -127,11 +130,11 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 ### P2 — Reporting & Media (M2)
 | Task | Cx | Dep | Traces |
 |------|----|-----|--------|
-| T2.1 Report entity + validation (location required, media-or-description, in-city boundary) | Med | T1.5, T0.10 | FR-5/6, BR-2/3/35 |
-| T2.2 `POST /reports` — synchronous fast write, returns `202 processing`, enqueue triage job | High | T2.1, T0.7 | FR-5, NFR-3, API §6.3 |
-| T2.3 Idempotency-Key handling for submission | Med | T2.2 | BR-5, API §4.6 |
-| T2.4 Media upload (`POST /media`), size/type limits, async processing | High | T0.2, T1.5 | FR-7, API §6.4 |
-| T2.5 **EXIF/GPS stripping** + compression + thumbnail generation (worker) | Med | T2.4, T0.7 | P3 |
+| T2.1 Report entity + validation (location required, media-or-description, in-city boundary) | Med | T1.5, T0.10 | FR-5/6, BR-2/3/35 — GeoDjango `PointField(geography=True, srid=4326)`; boundary via polygon containment |
+| T2.2 `POST /reports` — synchronous fast write, returns `202 processing`, enqueue triage job | High | T2.1, T0.7 | FR-5, NFR-3, API §6.3 — ⚠️ enqueue via `transaction.on_commit` so the worker never sees an uncommitted Report |
+| T2.3 Idempotency-Key handling for submission | Med | T2.2 | BR-5, API §4.6 — Redis-backed, resolved in the service before the write |
+| T2.4 Media upload (`POST /media`), size/type limits, async processing | High | T0.2, T1.5 | FR-7, API §6.4 — `django-storages` to S3/MinIO |
+| T2.5 **EXIF/GPS stripping** + compression + thumbnail generation (worker) | Med | T2.4, T0.7 | P3 — Pillow; orient via EXIF orientation **before** stripping |
 | T2.6 Attach media to report; media lifecycle states | Low | T2.4, T2.1 | Domain |
 | T2.7 `GET /reports/{id}` + `GET /reports` (own-report tracking, spatial/status filters) | Med | T2.1 | FR-1, API §6.3 |
 | T2.8 Pre-triage report edit / re-categorize; edit-lock after triage | Med | T2.1 | FR-11, BR (edit window) |
@@ -144,9 +147,9 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 ### P3 — Classification (M3)
 | Task | Cx | Dep | Traces |
 |------|----|-----|--------|
-| T3.1 `ClassificationService` interface (category + severity signal + confidence + source) | Med | — | Arch §6 |
-| T3.2 Hosted **LLM adapter** (provider-agnostic) with PII-minimized prompts | High | T3.1 | FR-9–13, A11/P7 |
-| T3.3 Deterministic **keyword fallback** classifier (bilingual, admin-managed keywords) | Med | T3.1 | FR-13a |
+| T3.1 `ClassificationService` interface (category + severity signal + confidence + source) | Med | — | Arch §6 — a plain ABC with **no Django imports**, keeping S1 provider-swappability and unit-testability |
+| T3.2 Hosted **LLM adapter** (provider-agnostic) with PII-minimized prompts | High | T3.1 | FR-9–13, A11/P7 — provider chosen by settings |
+| T3.3 Deterministic **keyword fallback** classifier (bilingual, admin-managed keywords) | Med | T3.1 | FR-13a — reads the `SeverityKeyword` reference table |
 | T3.4 LLM **cost/rate cap** + graceful degradation to fallback (never blocks intake) | High | T3.2, T3.3 | NFR-13, RISK-3 |
 | T3.5 Classification worker job: consume submission, classify, persist result on Report | High | T3.2, T2.2 | Arch §4, FR-10 |
 | T3.6 Timeout/retry/circuit-breaker on LLM calls | Med | T3.2 | NFR-4, Arch §12 |
@@ -160,9 +163,9 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 | Task | Cx | Dep | Traces |
 |------|----|-----|--------|
 | T4.1 Issue entity + Report↔Issue relationship (severity/status/assignment on Issue only) | Med | T0.10 | Domain, BR |
-| T4.2 Geospatial setup: `geography(Point,4326)`, GiST index, `ST_DWithin`/KNN queries | High | T0.2 | Arch §9, NFR-1 |
-| T4.3 Clustering rules (per-category radius/time-window), admin-managed | Med | T4.1 | FR-18, ASSUMP-4 |
-| T4.4 **Concurrency-safe find-or-create** clustering (spatial+category lock, geohash cell) | High | T4.2, T3.5 | Arch §4.3, race-safety |
+| T4.2 Geospatial setup: `geography(Point,4326)`, GiST index, `ST_DWithin`/KNN queries | High | T0.2 | Arch §9, NFR-1 — GeoDjango `dwithin`/`Distance` annotations; GiST indexes in `Meta.indexes` |
+| T4.3 Clustering rules (per-category radius/time-window), admin-managed | Med | T4.1 | FR-18, ASSUMP-4 — surfaced through Django admin |
+| T4.4 **Concurrency-safe find-or-create** clustering (spatial+category lock, geohash cell) | High | T4.2, T3.5 | Arch §4.3, race-safety — Postgres **transaction-scoped advisory lock** keyed on geohash-cell + category, inside `atomic()` |
 | T4.5 Clustering worker step: run after classification (category required first) | High | T4.4, T3.5 | Arch §4.2 |
 | T4.6 Issue severity = **max of member reports**; recompute on new member; enum is **Critical / High / Medium / Low** (Q2 RESOLVED) | Med | T4.5 | FR-14, BR-... |
 | T4.7 Confirmation ("me-too"): one per citizen per issue; derived corroboration count | Med | T4.1, T1.5 | FR-16, BR-22/23, C-10 |
@@ -175,7 +178,7 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 ### P5 — Issue Triage Workflow (M5)
 | Task | Cx | Dep | Traces |
 |------|----|-----|--------|
-| T5.1 Issue status state machine + transition validation; **reopen = new linked Issue** (Q8/DM-Q8 RESOLVED) | High | T4.1 | §6.3, BR-16, API §6.5 |
+| T5.1 Issue status state machine + transition validation; **reopen = new linked Issue** (Q8/DM-Q8 RESOLVED) | High | T4.1 | §6.3, BR-16, API §6.5 — transition map validated in the service layer; no FSM library (small transition set, custom reason-required rules) |
 | T5.2 `PATCH /issues/{id}/status` (+ mandatory reason on reject/duplicate/etc.) | Med | T5.1 | FR-24, BR-19 |
 | T5.3 Status Event emission (append-only history) | Med | T5.1 | FR-32, C-9 |
 | T5.4 Assignment (`PATCH …/assignment`), scope-validated | Med | T5.1, T1.5 | FR-24, BR-26 |
@@ -191,14 +194,14 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 ### P6 — Notifications & Outbox (M6)
 | Task | Cx | Dep | Traces |
 |------|----|-----|--------|
-| T6.1 **Transactional outbox** (event written in same tx as state change) | High | T5.3 | Arch §7, reliability |
-| T6.2 Outbox dispatcher worker (at-least-once, idempotent consumers) | High | T6.1, T0.7 | Arch §7 |
+| T6.1 **Transactional outbox** (event written in same tx as state change) | High | T5.3 | Arch §7, reliability — a real table in the state-change transaction; an in-process commit hook alone cannot survive the crash this pattern guards against |
+| T6.2 Outbox dispatcher worker (at-least-once, idempotent consumers) | High | T6.1, T0.7 | Arch §7 — Celery beat relay with row-level skip-locked reads; `transaction.on_commit` only nudges it for latency |
 | T6.3 Notification entity + generation on status change | Med | T6.1 | FR-27/29, BR-29 |
 | T6.4 In-app delivery + `GET /notifications` + mark-read | Med | T6.3 | FR-27 |
-| T6.5 Email channel adapter | Med | T6.3 | FR-29 |
+| T6.5 Email channel adapter | Med | T6.3 | FR-29 — Django email backend |
 | T6.6 SMS channel adapter — **gated to High severity server-side** | Med | T6.3 | BR-30, RISK-9 |
 | T6.7 Notification preferences (opt-outs; SMS gate not bypassable) | Med | T6.4 | FR-28 |
-| T6.8 SSE stream (`/notifications/stream`) for in-app real-time | Med | T6.4 | ASSUMP-3, API §6.11 |
+| T6.8 SSE stream (`/notifications/stream`) for in-app real-time | Med | T6.4 | ASSUMP-3, API §6.11 — ⚠️ **requires the ASGI stack**; under WSGI each open stream pins a worker thread. Polling remains the ASSUMP-3-sanctioned fallback |
 
 **DoD (M6):** A status change reliably produces a notification even across a worker crash (outbox replays); citizens receive in-app notifications within SLA; email works; SMS fires only for High severity regardless of preference; preferences are honored; SSE pushes new notifications.
 
@@ -208,7 +211,7 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 | T7.1 Authority **queue**: `GET /issues` sorted severity DESC then age, cursor pagination, scope filter | High | T5.1, T4.6 | FR-22, §5.1, API §4.4 |
 | T7.2 Filtering/sorting/search allowlists on issues | Med | T7.1 | API §4.4 |
 | T7.3 `GET /issues/{id}` detail + `GET /issues/{id}/reports` (paged members) | Med | T4.1 | API §6.5 |
-| T7.4 Map endpoint `GET /map/issues` as GeoJSON + server-side aggregation at low zoom | High | T4.2 | FR-23, API §6.9 |
+| T7.4 Map endpoint `GET /map/issues` as GeoJSON + server-side aggregation at low zoom | High | T4.2 | FR-23, API §6.9 — `GeoFeatureModelSerializer`; low-zoom aggregation via `ST_SnapToGrid` |
 | T7.5 Analytics `GET /analytics/summary` (counts, time-to-resolution, scope-limited) | Med | T5.3 | FR-26 |
 
 **DoD (M7):** The queue returns correctly ranked, scope-filtered, paginated Issues; the map returns valid GeoJSON that aggregates at low zoom to bound payload; analytics reflect real status-event data; citizens see the public subset (**Q7 RESOLVED** — exact coordinates publicly visible).
@@ -218,9 +221,9 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 ### P8 — Moderation, Audit & Reference Data (M8)
 | Task | Cx | Dep | Traces |
 |------|----|-----|--------|
-| T8.1 **Append-only audit log** for privileged actions + `GET /audit-events` | High | T5.x | FR-32, NFR-10, C-9 |
+| T8.1 **Append-only audit log** for privileged actions + `GET /audit-events` | High | T5.x | FR-32, NFR-10, C-9 — enforce append-only **at the database level** by revoking UPDATE/DELETE from the application role; application discipline alone will not satisfy NFR-10 |
 | T8.2 Moderation actions on report/issue/media/comment (hide/remove + reason → `410`) | Med | T5.8, T2.4 | FR-31 |
-| T8.3 Reference data admin CRUD: categories, POIs, severity keywords, clustering rules | Med | T1.6 | FR-30, NFR-11 |
+| T8.3 Reference data admin CRUD: categories, POIs, severity keywords, clustering rules | Med | T1.6 | FR-30, NFR-11 — largely Django admin; see §6 for the earlier-start note |
 | T8.4 City boundary management endpoint | Low | T4.2 | BR-35 |
 | T8.5 `GET /meta/enums` (severities/statuses/categories/types) for client sync | Low | — | API §6.16 |
 
@@ -229,8 +232,8 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 ### P9 — Export (M9)
 | Task | Cx | Dep | Traces |
 |------|----|-----|--------|
-| T9.1 Async export jobs (`POST /exports`, `GET /exports/{id}`), CSV/GeoJSON | Med | T7.5, T0.7 | NFR-12, API §6.15 |
-| T9.2 Short-lived signed download URLs (scope-limited data) | Med | T9.1 | API §9 security |
+| T9.1 Async export jobs (`POST /exports`, `GET /exports/{id}`), CSV/GeoJSON | Med | T7.5, T0.7 | NFR-12, API §6.15 — Celery job |
+| T9.2 Short-lived signed download URLs (scope-limited data) | Med | T9.1 | API §9 security — presigned object-store URLs |
 
 **DoD (M9):** Authorities/admins can request scope-limited exports that generate asynchronously and download via an expiring signed link.
 
@@ -270,7 +273,7 @@ Key hard dependencies to respect (rework risks if violated):
 Parallelizable with 2 engineers:
 - During P0/P1: one engineer on platform/CI (P0), the other on auth/data modeling.
 - After P4: read paths (P7) and notifications (P6) can proceed in parallel once status events exist.
-- Reference-data admin CRUD (P8.3) can begin early where its consumers (keywords P3.3, clustering rules P4.3) need it — build the config surfaces alongside the consumers.
+- Reference-data admin CRUD (P8.3) can begin early where its consumers (keywords P3.3, clustering rules P4.3) need it — build the config surfaces alongside the consumers. **Resolution (ADR-001):** with Django admin providing the surface, start the reference-data admin alongside its P3/P4 consumers instead of waiting for P8; the admin *management endpoints* are still completed in P8 (closes the §12 timing warning).
 
 ---
 
@@ -289,6 +292,7 @@ Parallelizable with 2 engineers:
 | R-9 | Scope creep beyond approved features | Timeline, grading | This plan schedules only traced work; changes require doc updates first | All |
 | R-10 | 2-person bandwidth / capstone timeline | Missed milestones | MVP-first ordering; P8/P9 are trimmable; buffer in P10 | All |
 | R-11 | Bangla/Banglish handling weakness | Misclassification | UTF-8 end-to-end, bilingual keyword fallback, test corpus in both | P3 |
+| R-12 | Service-layer discipline erodes under Django's idiom, scattering authorization into views/serializers | Privilege escalation, FR-3 breach | `services.py`/`selectors.py` convention from day one (Arch §2.4); DRF permission classes as defence-in-depth, not the enforcement point; authorization coverage is a T10.2 review item | All |
 
 ---
 
@@ -297,7 +301,7 @@ Parallelizable with 2 engineers:
 ### 8.1 Testing checkpoints (per phase)
 | Phase | Testing focus |
 |-------|---------------|
-| P0 | Migration up/down, CI gate, health check, config loading |
+| P0 | Migration up/down, CI gate, health check, config loading; **write the P4 clustering-concurrency test as a failing test** (R-2 is most expensive to discover late) |
 | P1 | Auth flows, session revocation, RBAC allow/deny matrix, rate-limit/lockout |
 | P2 | Submission validation, `202` async contract, idempotency, EXIF-strip verification, upload limits |
 | P3 | Classification result shape, **fallback triggers when LLM down/over-budget**, cost-cap behavior, bilingual inputs |
@@ -309,7 +313,7 @@ Parallelizable with 2 engineers:
 | P9 | Export correctness, signed-URL expiry, scope limiting |
 | P10 | Load/perf vs NFR targets, security & privacy review, failure-mode drills, backup restore |
 
-**Standing test requirements (all phases):** unit + integration tests in CI; contract tests against the API spec (§04) so responses match documented schemas/status codes; regression suite grows each phase.
+**Standing test requirements (all phases):** unit + integration tests in CI (`pytest-django` + `factory_boy`); contract tests against the API spec (§04) so responses match documented schemas/status codes; regression suite grows each phase.
 
 ### 8.2 Documentation checkpoints
 | Checkpoint | When | Content |
@@ -328,7 +332,7 @@ Parallelizable with 2 engineers:
 
 - [ ] All migrations apply cleanly from zero and are reversible; migration-on-deploy strategy defined.
 - [ ] Environment configs/secrets managed per environment; no secrets in code.
-- [ ] TLS/HSTS enforced; secure session cookie flags verified in production config.
+- [ ] TLS/HSTS enforced; secure session cookie flags verified in production config — run Django's `check --deploy` in CI and before release.
 - [ ] Rate limiting active on auth, submission, and LLM-triggering paths; limits documented.
 - [ ] LLM cost caps + fallback verified in a staging failure drill.
 - [ ] Transactional outbox dispatcher verified for at-least-once delivery after crash.
@@ -394,7 +398,7 @@ These were blocking dependencies; all 8 are now closed. Only ❓Q10 (accuracy ba
 
 ### Are dependencies respected?
 - ✅ §6 maps hard dependencies; each task lists `Dep`. Geospatial setup (P4.2) precedes every spatial consumer. Status events (P5.3) precede analytics (P7.5). RBAC precedes all privileged features.
-- ⚠️ **Reference data timing:** severity keywords (P3.3) and clustering rules (P4.3) need admin CRUD (P8.3). Resolved by building the *config surfaces* alongside their consumers in P3/P4 and completing the *admin management UX/endpoints* in P8 — flagged in §6 so it isn't missed.
+- ✅ **Reference data timing** (was ⚠️): severity keywords (P3.3) and clustering rules (P4.3) need admin CRUD (P8.3). Resolved by building the *config surfaces* alongside their consumers in P3/P4 and completing the *admin management UX/endpoints* in P8 — flagged in §6 so it isn't missed. Django admin (ADR-001) makes the early surface nearly free, so this is now a scheduled resolution rather than an open tension.
 
 ### Any implementation gaps?
 - ✅ Every approved API resource and FR maps to a task (traceability columns throughout). Cross-cutting concerns (validation, rate limiting, audit, privacy) are embedded per phase, not deferred.
@@ -427,9 +431,10 @@ All 8 decision gates collected during planning are now closed. Decisions are enc
 - **DM-Q5 RESOLVED** — confirmations are revocable; `DELETE …/confirmations/me` enabled; count can decrease.
 - **DM-Q7 RESOLVED** — merge/split re-attributes all Reports/Confirmations to surviving Issue; severity recomputed as max.
 - **DM-Q3 RESOLVED** — (via Q7) public map and list confirmed.
+- **ASSUMP-1 RESOLVED (ADR-001)** — app framework is Python + Django + DRF; task notes in §5 are retargeted accordingly.
 
 Only ❓Q10 (accuracy bar / confidence thresholds) remains open; it does not block the adapter abstraction (T3.2).
 
 ---
 
-*End of `docs/05-project-plan.md` (v1.1). This roadmap schedules only work traceable to the approved PRD, Architecture, Domain Model, and API Specification; it introduces no new features or requirements. All 8 open-question decision gates (Q2/Q4/Q7/Q8/Q9/DM-Q5/DM-Q7/DM-Q8) are now closed (§10); only ❓Q10 (accuracy bar) remains open. This completes the 5-document planning set (01–05).*
+*End of `docs/05-project-plan.md` (v1.2). This roadmap schedules only work traceable to the approved PRD, Architecture, Domain Model, API Specification, and ADR-001; it introduces no new features or requirements — the Django notes added in v1.2 record how existing tasks are implemented, not what is built. All 8 open-question decision gates (Q2/Q4/Q7/Q8/Q9/DM-Q5/DM-Q7/DM-Q8) are closed (§10), and ASSUMP-1 is resolved by ADR-001; only ❓Q10 (accuracy bar) remains open.*
