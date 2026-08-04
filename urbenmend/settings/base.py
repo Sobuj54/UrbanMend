@@ -47,17 +47,24 @@ SILENCED_SYSTEM_CHECKS = ["rest_framework.W001"]
 # --------------------------------------------------------------------------------------
 # Applications
 # --------------------------------------------------------------------------------------
-# Custom apps will be added in A5 / T0.1. Custom user model (A6) must be declared before
-# the first migration and will be listed first.
-# Custom apps are added in A5 / T0.1, listed before django.contrib so their templates take
-# precedence over contrib's. `AUTH_USER_MODEL` (A6) is resolved by app label, not by
-# position, so ordering does not affect it.
+# Custom apps are listed before django.contrib so their templates take precedence over
+# contrib's. `AUTH_USER_MODEL` (A6) is resolved by app label, not by position.
 INSTALLED_APPS = [
-    # ⚠️ A5 / T0.1 — one app per architecture module [doc: Arch §2.4]:
-    #   identity reporting media classification issues geo
-    #   notifications moderation audit export platform
-    # ⚠️ They are nested under `urbenmend.` (not top-level) because a root-level `platform`
-    # package would shadow the stdlib `platform` module that Django itself imports.
+    # One app per architecture module [doc: Arch §2.4]. Dashboard & Query intentionally has
+    # no app — it is served by `issues` / `geo` selectors.
+    # ⚠️ Nested under `urbenmend.` (not top-level) because a root-level `platform` package
+    # would shadow the stdlib `platform` module that Django itself imports (A4 decision).
+    "urbenmend.identity",
+    "urbenmend.reporting",
+    "urbenmend.media",
+    "urbenmend.classification",
+    "urbenmend.issues",
+    "urbenmend.geo",
+    "urbenmend.notifications",
+    "urbenmend.moderation",
+    "urbenmend.audit",
+    "urbenmend.export",
+    "urbenmend.platform",
     # Django contrib.
     "django.contrib.admin",
     "django.contrib.auth",

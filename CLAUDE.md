@@ -53,21 +53,23 @@ The rest are large; **read on demand** rather than loading every session:
 
 ## Repo structure
 
-**Today the repo contains only `docs/` and `.git`. No source code, no dependency manifest.**
-
-Planned layout (from `02-architecture.md` §2.4 — not yet built):
+✅ Built in A4–A5 (2026-08-03). Actual layout:
 
 ```
-manage.py
-requirements.txt
-docker-compose.yml            # mandated local env (GDAL/GEOS/PROJ on Windows)
-urbenmend/                    # Django project: asgi.py, celery.py, settings split
-identity/  reporting/  media/  classification/  issues/  geo/
-notifications/  moderation/  audit/  export/  platform/
+manage.py  pyproject.toml  Dockerfile  docker-compose.yml  requirements/
+urbenmend/
+  settings/{base,dev,prod,build}.py  urls.py  asgi.py  wsgi.py
+  identity/  reporting/  media/  classification/  issues/  geo/
+  notifications/  moderation/  audit/  export/  platform/
 ```
 
-One Django app per architecture module. Each app carries **`services.py` (writes + authorization)**
-and **`selectors.py` (reads)** from day one; DRF views stay thin.
+⚠️ Apps are **nested under `urbenmend/`** and import as `urbenmend.<label>` — a root-level
+`platform` package shadows the stdlib module Django imports. App labels are unchanged.
+
+Each app carries `apps.py`, `models.py`, **`services.py` (writes + authorization)**,
+**`selectors.py` (reads)**, `admin.py`, `migrations/` and `tests/` from day one. DRF views stay thin.
+`urbenmend/platform/tests/test_app_skeleton.py` enforces this structurally — add the same file set
+when adding an app, or it fails.
 
 ✅ Resolved (A1): the settings split is **`base`/`dev`/`prod`** (plan T0.3 naming). DevOps §3.2's
 `urbenmend.settings.local` was amended to `urbenmend.settings.dev`. Do not reintroduce `settings.local`.

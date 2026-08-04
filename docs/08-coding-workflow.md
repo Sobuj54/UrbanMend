@@ -208,6 +208,32 @@ named mitigation: the risk is that "service-layer discipline erodes under Django
 authorization into views/serializers", and the countermeasure is the convention existing from the
 start so there is never a moment where putting logic in a view is the path of least resistance.
 
+✅ **Built and verified (2026-08-03).** All 11 apps exist under `urbenmend/`, each carrying
+`__init__.py`, `apps.py`, `models.py`, `services.py`, `selectors.py`, `admin.py`, `migrations/` and
+`tests/` — 97 Python files, no app missing a file.
+
+`startapp` was **not** used. It emits an `AppConfig` whose `name` is the bare label (wrong here — the
+apps import as `urbenmend.<label>`), omits `services.py`/`selectors.py` entirely, and adds a
+`tests.py` that collides with the `tests/` package. The tree was written directly by a throwaway
+script, then deleted.
+
+Each `AppConfig` sets an explicit `label` so the short name survives the dotted path, and a
+`verbose_name` matching the Arch §3 module name — that is what Django admin shows, and FR-30/31
+surface reference data and moderation through admin. The docstring headers in `services.py` and
+`selectors.py` carry the layering rules (authorize before mutating; `transaction.atomic` for
+multi-write; enqueue via `transaction.on_commit`; selectors never write and apply the caller's
+visibility rules) so the constraint is visible where the code gets written, not only in this doc.
+
+**The conventions are now enforced by a test**, not just documented:
+`urbenmend/platform/tests/test_app_skeleton.py` asserts the app set matches Arch §2.4 exactly, that
+every app imports as `urbenmend.<label>`, that all five layering modules import in each app, and that
+each app owns a migrations package — 68 cases. This also stops `pytest` exiting 5 ("no tests ran"),
+which would otherwise fail the CI test stage (A9) for a reason unrelated to code quality.
+
+Verified in the container: `manage.py check` clean, `makemigrations --check --dry-run` reports no
+changes (exit 0), `ruff check`, `ruff format --check`, `mypy --strict` (87 files) and `pytest`
+(68 passed) all pass. Django resolves all 11 labels to their `urbenmend.*` paths.
+
 ## A6. ⚠️ Custom user model — before the first migration (T0.10 / T1.1)
 
 **Declare `AUTH_USER_MODEL` and create the `identity` user model before you run `migrate` even
