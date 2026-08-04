@@ -133,8 +133,11 @@ if DATABASES["default"]["ENGINE"] != "django.contrib.gis.db.backends.postgis":
 # --------------------------------------------------------------------------------------
 # Auth & sessions
 # --------------------------------------------------------------------------------------
-# Custom user model (A6 / T0.10 / T1.1) — MUST be set before the first migration.
-# AUTH_USER_MODEL = "identity.User"  # ⚠️ Uncommented in A6.
+# ⚠️ Custom user model (A6 / T0.10 / T1.1). Declared BEFORE the first migration —
+# irreversible afterwards; changing it later means dropping the database [doc: Arch §2.4].
+# RBAC is the model's own `role` field plus an authority↔category scope relation evaluated
+# in services.py — NOT contrib.auth Groups/Permissions, which cannot express BR-26 scoping.
+AUTH_USER_MODEL = "identity.User"
 
 # Password validation.
 AUTH_PASSWORD_VALIDATORS = [

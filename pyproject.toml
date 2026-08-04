@@ -38,6 +38,10 @@ ignore = [
 # Both are documented as never-deployed; prod.py has no fallback and is NOT exempted.
 "urbenmend/settings/dev.py" = ["F403", "F405", "S105", "S106"]
 "urbenmend/settings/build.py" = ["F403", "F405", "S105", "S106"]
+# Test fixtures assign literal passwords by necessity — a test that hashes and checks a
+# password has to name one. Scoped to test files only, so a literal in application code
+# still fails. The literals used are deliberately self-describing (`pw-for-test-only`).
+"**/tests/*.py" = ["S105", "S106"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -57,6 +61,13 @@ ignore_errors = true
 # in the settings modules, where every value is immediately assigned to a Django setting.
 [[tool.mypy.overrides]]
 module = "environ.*"
+ignore_missing_imports = true
+
+# django-otp ships no py.typed marker. Nothing in this codebase imports it — the django-stubs
+# plugin pulls its models in because `otp_totp` is in INSTALLED_APPS (2FA, FR-4), so the error
+# surfaces against whichever of our modules the plugin happens to be resolving.
+[[tool.mypy.overrides]]
+module = "django_otp.*"
 ignore_missing_imports = true
 
 [tool.django-stubs]

@@ -244,6 +244,68 @@ The model carries an explicit `role` field (Citizen/Authority/Admin) plus an aut
 scope relation. **Do not use `django.contrib.auth` Groups/Permissions for RBAC** — they cannot
 express BR-26 category scoping [doc: Arch §2.4, Plan T1.5].
 
+✅ **Built and verified (2026-08-04).** `AUTH_USER_MODEL = "identity.User"` is set in
+`settings/base.py`; `urbenmend/identity/models.py` holds `User`, `UserManager`, and the `Role` /
+`UserStatus` / `Language` enums; `admin.py` registers it and `tests/test_models.py` covers it in
+28 cases.
+
+`User(AbstractBaseUser, PermissionsMixin)` with a **UUID PK** (API §1.2 forbids guessable IDs in
+URLs — a sequential integer leaks the user count and enables enumeration). Choices that were
+judgement calls rather than doc-derived, with the reasoning, so a later reader does not re-litigate
+them:
+
+- **`email` and `phone` are both nullable and both UNIQUE**, with a `CheckConstraint`
+  (`identity_user_has_contact_or_anonymized`) requiring at least one. Absence is `NULL`, never `""` —
+  Postgres permits many NULLs under a UNIQUE index but only one empty string, so `""` would let the
+  second contactless account collide with the first.
+- **The constraint has a `status=deleted` escape hatch.** Without it, the anonymization that
+  `DELETE /users/me` requires (P6, BR-33, C-14) would be impossible: clearing PII while retaining the
+  row is exactly the state the constraint would otherwise reject.
+- **Verification is two timestamps, not two booleans.** The API's `verified: {email, phone}`
+  (API §6.2) is derivable from timestamps; the reverse loses *when* verification happened, which the
+  T2 trust signal and FR-32 audit both need.
+- **`is_active` is a derived read-only property**, not a column, so it can never contradict `status`.
+  `registered` counts as active (an unverified account may sign in with limited capability, BR-30).
+  Assignment raises `AttributeError` on purpose — callers must move `status` (T1.9). mypy flags the
+  narrowing as unsound (`AbstractBaseUser.is_active` is writable); the `type: ignore[override]` is
+  deliberate and commented.
+- **Contact normalization runs in `save()`, not only `clean()`** — DRF serializers never call
+  `full_clean()`, so `clean()` alone would leave the API path unnormalized. `clean()` also skips
+  `super()`: `AbstractBaseUser.clean()` raises `TypeError` when `USERNAME_FIELD` is `None`, which is
+  legitimate here for phone-only accounts.
+- **`PermissionsMixin` is inherited for admin plumbing only** — admin needs `is_staff`,
+  `is_superuser`, `has_perm()` to function, and FR-30/31 surface moderation through admin. ⚠️ Domain
+  RBAC must never live in `groups`/`user_permissions`; a test asserts the two stay independent.
+
+Two fields are **deliberately absent**, both commented in the model: the Authority↔Category M2M
+(Category is T0.10 baseline-schema scope, and adding the M2M later is an ordinary additive migration
+with none of this file's irreversibility — until then no Authority can be scoped, so no scoped read
+passes, which is the safe direction to fail) and the T1/T2 trust signal (computable from
+`date_joined` plus the verification timestamps; storing a score would invent a weighting the docs do
+not specify, and FR-21 already removed the one tunable numeric score).
+
+`BaseUserAdmin` needed two adjustments: `add_fieldsets` was replaced because the default names
+`username`, which does not exist here, and the class is subscripted only under `TYPE_CHECKING` —
+django-stubs types it as generic but the runtime class is not subscriptable, so `BaseUserAdmin[User]`
+in a base-class list raises `TypeError` during admin autodiscovery.
+
+Verified in the container: `manage.py check` clean (1 silenced), `ruff check`, `ruff format --check`
+and `mypy --strict` (88 files) all pass.
+
+⚠️ **`pytest` ends A6 at 79 passed / 17 errored, and `makemigrations --check --dry-run` exits 1.
+Both are the correct A6 end state, not defects.** `django.contrib.admin`'s migration now depends on
+`('identity', '__first__')`, so every database-backed test errors with *"Dependency on app with no
+migrations: identity"* until A7 creates it. The 17 were confirmed green against a throwaway
+`makemigrations identity` (28/28 passed against real PostGIS — CheckConstraint, the
+case-insensitive UNIQUE collision and the anonymization path all hold), and that migration was then
+deleted so **A7 owns the real `0001`, which must lead with `CreateExtension('postgis')`**.
+
+Two tooling exemptions were added to `pyproject.toml`: `django_otp.*` gets
+`ignore_missing_imports` (no `py.typed`; nothing here imports it — the django-stubs plugin pulls it
+in because `otp_totp` is in `INSTALLED_APPS`, so the error lands on an unrelated file), and
+`**/tests/*.py` gets `S105`/`S106` (a test that hashes a password has to name one; application code
+is still checked).
+
 ## A7. First migration enables PostGIS (T0.4)
 
 The very first migration runs `CreateExtension('postgis')` before any geometry column exists

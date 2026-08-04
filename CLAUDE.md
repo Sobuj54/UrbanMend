@@ -86,6 +86,32 @@ uvicorn boots. Three A4 decisions that bind later work:
 - **`DEFAULT_PAGINATION_CLASS` is unset**, `rest_framework.W001` silenced. No DRF built-in emits the
   `{data, page, meta}` envelope; T0.6 adds the custom class and removes the silencer.
 
+✅ Built in A6 (2026-08-04): `AUTH_USER_MODEL = "identity.User"` — **the irreversible step is done.**
+`urbenmend/identity/models.py` holds `User` (UUID PK), `UserManager`, and the `Role` / `UserStatus` /
+`Language` enums; `admin.py` and 28 tests accompany it. Decisions that bind later work:
+
+- **`email` and `phone` are both nullable + UNIQUE**, at-least-one enforced by the
+  `identity_user_has_contact_or_anonymized` CheckConstraint. Absence is **`NULL`, never `""`** —
+  Postgres allows many NULLs under UNIQUE but only one `""`. The constraint has a `status=deleted`
+  escape hatch; without it the C-14/BR-33 anonymization would be impossible. Don't tighten it.
+- **`is_active` is a derived read-only property**, not a column — assignment raises `AttributeError`
+  by design; move `status` instead. `registered`/`verified`/`active` are the authenticating states.
+- **Verification is timestamps** (`email_verified_at`, `phone_verified_at`), not booleans. The API's
+  `verified: {email, phone}` is derived from them.
+- **Contact normalization lives in `save()`**, not just `clean()` — DRF never calls `full_clean()`.
+- ⚠️ **`PermissionsMixin` is inherited for Django-admin plumbing only.** Domain RBAC is `role` +
+  category scope in `services.py`. Never put it in `groups`/`user_permissions`.
+- **Still deliberately absent:** the Authority↔Category M2M (waits for Category, T0.10 — an ordinary
+  additive migration later) and the T1/T2 trust signal (derivable; a stored score would invent a
+  weighting, and FR-21 removed the one tunable score).
+- Tooling: `django_otp.*` is `ignore_missing_imports` in mypy (no `py.typed`; pulled in by the
+  django-stubs plugin, not by our imports); `**/tests/*.py` is exempt from ruff `S105`/`S106`.
+
+⚠️ **A6 deliberately leaves `pytest` at 79 passed / 17 errored and `makemigrations --check` at
+exit 1.** `contrib.admin` now depends on `('identity', '__first__')`, so DB-backed tests error until
+A7 creates it. The 17 were confirmed green against a throwaway migration that was then deleted —
+**A7 owns the real `identity/0001`, and it must lead with `CreateExtension('postgis')`.**
+
 ## Commands
 
 Sourced from `docs/06-devops-guide.md` §4.1 and its Dockerfile example. **No manifest or task
