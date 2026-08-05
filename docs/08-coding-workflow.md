@@ -449,6 +449,46 @@ Before leaving P0, write the **P4 clustering-concurrency test as a failing test*
 R-2 (duplicate Issues under concurrent submission) is the single most expensive defect to discover
 late, and a red test sitting in the suite from P0 is what stops it shipping.
 
+✅ **Built and verified (2026-08-05)** — `urbenmend/issues/tests/test_clustering_concurrency.py`.
+One test, `xfail(strict=True)`, currently **XFAIL** with the rest of the suite green
+(183 passed, 1 xfailed).
+
+**What it asserts.** Two distinct citizens submit reports of the same real-world issue at the same
+coordinate in the same category, and `cluster_report()` is called for both **in parallel**
+(`ThreadPoolExecutor`, `django_db(transaction=True)` so each thread holds a real connection and a
+real transaction — which is what makes the advisory lock observable). Three assertions:
+both calls return the same Issue id; `Issue.objects.count() == 1`; and both Reports are attached.
+The third matters — a lock that serialises correctly but drops the second attachment would
+satisfy "one Issue" while losing a citizen's submission.
+
+**Four judgment calls:**
+
+- **`xfail(strict=True)`, not a bare failing assert.** A permanently-red test fails CI stage 5,
+  which gates stages 6–7 — no image would build for the whole of P1–P3, and an always-red gate
+  stops being read (the same reasoning behind Trivy's `ignore-unfixed`). `strict=True` keeps the
+  forcing function intact from the other side: an **unexpected pass is a failure**, so when T4.4
+  lands this test cannot go quietly green. Someone has to delete the marker deliberately.
+  `skip` was rejected outright — it would not run at all.
+- **It calls the future `cluster_report()` rather than inlining a find-or-create.** The first
+  draft reimplemented the query-then-insert inside the test body; that only ever tests itself,
+  and would still pass in P4 while the real service raced. The seam asserted is the one T4.4
+  must implement.
+- **No radius is asserted.** Radius and time-window are per-category reference data
+  (ASSUMP-4, NFR-11, Arch §4.3/§349 "not hard-coded"). The draft's hard-coded 50 m would have
+  contradicted that; identical coordinates are inside *any* conservative radius, so the test
+  cannot become tuning-dependent.
+- **`type: ignore[attr-defined]` on the four not-yet-existent imports.** `strict = true` implies
+  `warn_unused_ignores`, so mypy errors on those very lines the moment T4.4 defines the names —
+  the same self-cleaning property as the strict xfail, applied to the type checker.
+
+The three `_seed_*` helpers stand in for the `factory_boy` factories T2.1/T4.2 will own (they
+cannot be written before the models). When the models land, the diff is confined to those
+helpers; the assertions stand unchanged.
+
+⚠️ **The test has never actually exercised a lock** — it XFAILs at the first import. It pins the
+contract, not the implementation. T4.4 is where it first runs for real, and a green run there is
+only meaningful if the marker is removed in the same commit.
+
 ## M0 gate — do not start P1 until all of these hold
 
 - [ ] CI is green on all stages
