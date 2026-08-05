@@ -1,0 +1,303 @@
+# UrbanMend — CI pipeline (A9, T0.5).
+#
+# Seven stages, in the order DevOps §4.1 fixes them. Cheap gates run first so a lint error
+# does not wait on a PostGIS service to spin up:
+#
+#   lint & type-check → model drift → deploy check → unit → integration → build & scan → push
+#
+# ⚠️ The CI vendor was unpinned in every planning doc (CLAUDE.md lists it beside the cloud
+# host and the LLM provider). GitHub Actions was chosen in A9 and is now the recorded answer;
+# the stage list itself is doc-mandated and vendor-independent.
+#
+# ⚠️ Every stage runs INSIDE the `dev` image, never on the bare runner. GeoDjango dlopen()s
+# GEOS/GDAL, so `mypy` and `pytest` both fail on a runner without them — and the runtime
+# library package names are Debian 13 (trixie) specific, verified in-image in A3. `ubuntu-latest`
+# is Ubuntu noble, where those same libraries are named differently (libgdal34, libgeos-c1v5).
+# Installing them by hand here would fork the dependency set the deployed image actually uses,
+# which is the drift A3 documented at length. Building the image is also stage 6's job, so this
+# costs one buildx cache hit rather than a second dependency chain.
+#
+# Runs on every push and pull request [doc: testing.md]. All stages must pass before a merge
+# to `staging` or `main`. Stage 7 is gated on the ref: a PR builds and scans but does not push,
+# because a PR from a fork must never obtain registry credentials.
+
+name: CI
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+
+# A second push to the same branch cancels the first — the earlier result is already stale.
+# ⚠️ Not applied to `main`: an interrupted run there would leave a merged commit with no
+# pushed image, and the deploy would then reference a tag that was never built.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# Least privilege by default; the two jobs that need more raise it locally.
+permissions:
+  contents: read
+
+jobs:
+  # ====================================================================================
+  # Stage 1 — lint & type-check
+  # ====================================================================================
+  lint:
+    name: 1. Lint & type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/dev-image
+
+      # Three separate steps, not one `&&` chain, so a failure names which gate failed in
+      # the job summary without anyone expanding the log.
+      - name: ruff check
+        run: docker run --rm -v "$PWD:/app" -w /app urbenmend:ci ruff check
+
+      - name: ruff format --check
+        run: docker run --rm -v "$PWD:/app" -w /app urbenmend:ci ruff format --check
+
+      # Reads pyproject.toml (strict + the django-stubs plugin). Needs no DATABASE_URL:
+      # the plugin loads settings.dev, which carries local fallbacks and opens no connection.
+      - name: mypy
+        run: docker run --rm -v "$PWD:/app" -w /app urbenmend:ci mypy
+
+  # ====================================================================================
+  # Stage 2 — model drift
+  # ====================================================================================
+  # ⚠️ The gate that catches a model edited without its migration. That combination passes
+  # locally against an already-migrated dev database and then fails on a fresh deploy — this
+  # stage moves the failure forward to the PR [doc: testing.md].
+  drift:
+    name: 2. Model drift
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/dev-image
+
+      # No database service: makemigrations compares models against the migration files on
+      # disk and never connects. settings.dev supplies a parseable DATABASE_URL.
+      - name: makemigrations --check --dry-run
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app urbenmend:ci \
+            python manage.py makemigrations --check --dry-run
+
+  # ====================================================================================
+  # Stage 3 — deploy check
+  # ====================================================================================
+  # Runs against PRODUCTION settings, which is the whole point: prod.py is the module with
+  # no SECRET_KEY/DATABASE_URL fallback and the strict cookie/HSTS posture (A4). Any Django
+  # security warning fails the build [doc: DevOps §4.1].
+  deploy-check:
+    name: 3. Deploy check
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/dev-image
+
+      # ⚠️ These are throwaway values that exist only so prod.py imports — they are NOT
+      # secrets and must never be read from the repository's secret store. `check --deploy`
+      # opens no connection and signs nothing, so a syntactically valid DSN is sufficient.
+      # A real DJANGO_SECRET_KEY here would be a production secret sitting in a public log.
+      #
+      # The key is 50+ characters of non-repeating filler on purpose: Django's security.W009
+      # fails a short or low-entropy key, and that warning would otherwise mask a genuine one.
+      - name: check --deploy (prod settings)
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app \
+            -e DJANGO_SETTINGS_MODULE=urbenmend.settings.prod \
+            -e DJANGO_SECRET_KEY="ci-throwaway-key-not-a-secret-0123456789abcdefghijklmnop" \
+            -e DATABASE_URL="postgis://ci:ci@127.0.0.1:5432/urbenmend" \
+            -e REDIS_URL="redis://127.0.0.1:6379/0" \
+            -e CELERY_BROKER_URL="redis://127.0.0.1:6379/1" \
+            -e DJANGO_ALLOWED_HOSTS="urbenmend.example" \
+            urbenmend:ci python manage.py check --deploy --fail-level WARNING
+
+  # ====================================================================================
+  # Stage 4 — unit tests
+  # ====================================================================================
+  # No external dependencies [doc: testing.md]. `-p no:randomly` is deliberately absent —
+  # ordering is not fixed here, and a test that depends on order is a defect worth surfacing.
+  #
+  # ⚠️ The split is by MARKER, not by directory. testing.md explicitly records that the
+  # unit-vs-integration split is unspecified ("both stages are literally pytest") and warns
+  # against inventing a layout, so this deselects the `django_db` marker rather than pointing
+  # the two stages at directories the docs never defined.
+  unit:
+    name: 4. Unit tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/dev-image
+
+      - name: pytest (no external deps)
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app urbenmend:ci \
+            pytest -m "not django_db" --durations=10
+
+  # ====================================================================================
+  # Stage 5 — integration tests
+  # ====================================================================================
+  integration:
+    name: 5. Integration tests
+    runs-on: ubuntu-latest
+    needs: [drift, deploy-check, unit]
+
+    services:
+      # ⚠️ postgis/postgis, not plain postgres — identity/0001 leads with
+      # CreateExtension("postgis") and the test database is built from zero on every run.
+      db:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: urbenmend
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d urbenmend"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/dev-image
+
+      # ⚠️ `ci` is a superuser here, which is required and is NOT the runtime application
+      # role. The test database is created and dropped per run and identity/0001 must be able
+      # to CREATE EXTENSION. testing.md is explicit that the two must differ: T8.1 enforces
+      # the audit tables' append-only rule by REVOKEing UPDATE/DELETE from the *application*
+      # role, and if CI ran as that role the revoke script itself would be untestable.
+      #
+      # --network host so the service containers published on the runner's localhost are
+      # reachable from inside our own container.
+      - name: pytest (real PostGIS + Redis)
+        run: |
+          docker run --rm --network host -v "$PWD:/app" -w /app \
+            -e DATABASE_URL="postgis://ci:ci@127.0.0.1:5432/urbenmend" \
+            -e REDIS_URL="redis://127.0.0.1:6379/0" \
+            -e CELERY_BROKER_URL="redis://127.0.0.1:6379/1" \
+            urbenmend:ci pytest --durations=10
+
+      # Migrations must apply cleanly from zero, and back down again [doc: testing.md].
+      # This is separate from the pytest run above: pytest builds the test database with
+      # `migrate` internally, but it never exercises the reverse direction.
+      #
+      # ⚠️ Reversing identity/0001 DROPs the postgis extension — destructive on a database
+      # holding geometry, which is why deployment is forward-only via a pre-deploy Job
+      # (DevOps §7). It is safe here only because this database is thrown away with the runner.
+      - name: Migrate from zero, then reverse
+        run: |
+          docker run --rm --network host -v "$PWD:/app" -w /app \
+            -e DATABASE_URL="postgis://ci:ci@127.0.0.1:5432/migration_probe" \
+            -e REDIS_URL="redis://127.0.0.1:6379/0" \
+            urbenmend:ci sh -c '
+              python - <<PY
+          import psycopg
+          with psycopg.connect("postgresql://ci:ci@127.0.0.1:5432/postgres", autocommit=True) as c:
+              c.execute("DROP DATABASE IF EXISTS migration_probe")
+              c.execute("CREATE DATABASE migration_probe")
+          PY
+              python manage.py migrate --noinput
+              python manage.py migrate identity zero --noinput
+            '
+
+  # ====================================================================================
+  # Stage 6 — build & scan
+  # ====================================================================================
+  # Builds the `runtime` target — the artifact that actually deploys. NOT `dev`: the deployed
+  # image must never carry pytest/ruff/mypy, which is why the dev stage is ordered last in the
+  # Dockerfile (A3). Scanning `dev` would also report CVEs in tooling that never ships.
+  build:
+    name: 6. Build & scan
+    runs-on: ubuntu-latest
+    needs: integration
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          load: true
+          tags: urbenmend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ⚠️ Fails the build on CRITICAL/HIGH [doc: DevOps §4.1]. `ignore-unfixed` is set
+      # because a CVE with no available patch cannot be actioned by this pipeline — it would
+      # block every merge until an upstream Debian fix lands, and a permanently red gate stops
+      # being read. Unfixed findings still appear in the SARIF upload below.
+      - name: Trivy scan (fail on CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: urbenmend:${{ github.sha }}
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+  # ====================================================================================
+  # Stage 7 — push image
+  # ====================================================================================
+  # ⚠️ SHA-tagged, never `latest` [doc: DevOps §2.3] — a moving tag makes the deployed
+  # revision unknowable and a rollback unrepeatable.
+  #
+  # Gated on a push to main/staging. A pull_request run stops after stage 6: `secrets` and
+  # `packages: write` must not be reachable from a fork's PR, and there is nothing to deploy
+  # from an unmerged branch anyway.
+  push-image:
+    name: 7. Push image
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Rebuilds from the stage-6 cache rather than transferring the image between jobs —
+      # same layers, same digest inputs, and no multi-hundred-MB artifact round trip.
+      - name: Build & push (SHA tag only)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha

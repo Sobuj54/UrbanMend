@@ -32,7 +32,11 @@ assignment live on the **Issue**, never on the Report.
 `--allow-unsafe`). Base image `python:3.13-slim` (verified: GEOS 3.13.1, GDAL 3.10.3). Python 3.13
 is a ceiling, not a preference — `djangorestframework-gis` 1.2.1 caps at 3.13.
 
-Still not pinned anywhere: CI vendor, cloud host, LLM provider (Q9).
+✅ Pinned in A9/T0.5 (2026-08-05): **CI vendor is GitHub Actions** — chosen by the user, recorded
+here because no planning doc named one. The seven-stage order is doc-mandated (DevOps §4.1) and
+vendor-independent; only the runner syntax is Actions-specific.
+
+Still not pinned anywhere: cloud host, LLM provider (Q9).
 **Do not invent these — raise them instead.**
 
 ## Context: planning docs

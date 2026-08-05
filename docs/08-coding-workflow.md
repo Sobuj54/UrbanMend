@@ -381,6 +381,68 @@ DevOps §7) and is safe only because this migration had never been applied to a 
 
 Wire all seven stages now, before there is code to break. See Part F.
 
+✅ **Built and verified (2026-08-05).** `.github/workflows/ci.yml` (7 jobs) plus
+`.github/actions/dev-image/action.yml`, a composite action the first five jobs reuse.
+
+✅ **The CI vendor is GitHub Actions** — chosen by the user in A9. Every planning doc left it
+unpinned, so this is a recorded decision rather than a doc-derived one. The stage list and their
+fail conditions come from DevOps §4.1 and are vendor-independent.
+
+Dependency graph (not a straight line — the three cheap gates fan out from `lint` and run
+concurrently, which is what keeps the critical path at roughly build+scan time):
+
+```
+lint ──┬── drift ────────┐
+       ├── deploy-check ─┼── integration ── build ── push-image
+       └── unit ─────────┘
+```
+
+⚠️ **Every gate runs inside the Dockerfile's `dev` stage, not on the bare runner.** GeoDjango
+`dlopen()`s GEOS/GDAL, so `mypy` and `pytest` both fail without them — and the A3 runtime library
+names are Debian 13 (trixie) specific, while `ubuntu-latest` is Ubuntu noble where the same
+libraries are named `libgdal34`/`libgeos-c1v5`. Hand-installing them on the runner would fork the
+dependency set the deployed image actually uses, which is precisely the drift A3 documented. The
+buildx GHA cache is keyed on `requirements/*.txt`, so an app-code-only change restores every
+dependency layer and rebuilds only the final `COPY`.
+
+Four decisions this step forced, none pre-answered by the docs:
+
+1. **The unit/integration split is by pytest MARKER, not by directory.** `testing.md` explicitly
+   records that this split is unspecified ("both stages are literally `pytest`") and warns against
+   inventing a test layout. Stage 4 therefore runs `pytest -m "not django_db"` — verified as
+   **166 passed, 17 deselected** — and stage 5 runs the full suite against real services. No
+   files moved, and the marker is already on every DB-backed test.
+2. **Stage 3 uses a throwaway 50-character `DJANGO_SECRET_KEY` inline, not a repository secret.**
+   `check --deploy` opens no connection and signs nothing, so a real secret would be a production
+   credential sitting in a public build log for no benefit. The key is long and non-repeating
+   because Django's own `security.W009` fails a short or low-entropy one — and that warning would
+   otherwise mask a genuine finding. `--fail-level WARNING` makes any Django security warning fatal.
+3. **The CI database role is a superuser named `ci`, deliberately *not* the application role.**
+   `identity/0001` must `CREATE EXTENSION postgis` against a database built from zero. `testing.md`
+   requires the two roles differ: T8.1 enforces the audit tables' append-only rule by REVOKEing
+   `UPDATE`/`DELETE` from the *application* role, and if CI ran as that role the revoke script
+   itself would be untestable.
+4. **Trivy runs with `ignore-unfixed`.** A CVE with no available patch cannot be actioned by this
+   pipeline; without the flag an upstream Debian lag would block every merge, and a permanently red
+   gate stops being read. `CRITICAL`/`HIGH` with a fix available still fail the build.
+
+Also settled here: stage 5 runs migrations **from zero and then back down** (`migrate identity zero`)
+as a step separate from `pytest`, because pytest builds its test database with `migrate` but never
+exercises the reverse direction — the reversibility gate `testing.md` asks for would otherwise be
+unchecked. ⚠️ That reverse DROPs the postgis extension, which is safe *only* because the probe
+database is thrown away with the runner; deployment stays forward-only via a pre-deploy Job
+(DevOps §7). Stage 6 builds `--target runtime`, never `dev`, so the scanned and pushed artifact
+cannot carry pytest/ruff/mypy. Stage 7 is gated on a push to `main`/`staging` and is the only job
+granted `packages: write` — a fork's PR must never reach registry credentials — and it tags the
+image with the commit SHA only, never `latest` (DevOps §2.3).
+
+Verified: both YAML files parse and the `needs:` graph resolves in the order above; the stage-4
+marker filter deselects exactly the 17 DB-backed tests; the nested heredoc in the migration step
+survives YAML block-scalar de-indentation and executes (checked by running the parsed string).
+⚠️ The workflow has **not** been executed on GitHub — that needs a push, and stages 5–7 need the
+runner's service containers and `GITHUB_TOKEN`. The first push is where a service-container
+hostname or a registry permission would surface.
+
 ## A10. Write one failing test on purpose
 
 Before leaving P0, write the **P4 clustering-concurrency test as a failing test** [doc: Plan §8.1].

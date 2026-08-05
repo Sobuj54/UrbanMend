@@ -1,0 +1,30 @@
+# Build (or restore) the `dev` image once per job (A9, T0.5).
+#
+# Five jobs need an environment with GEOS/GDAL/PROJ and the dev toolchain. Rather than
+# apt-installing them on the runner — which would fork the dependency set the deployed image
+# uses, the exact drift A3 documented — each job materialises the Dockerfile's `dev` stage.
+#
+# The buildx GHA cache makes this cheap after the first job: the dependency layers are keyed
+# on requirements/*.txt, so an app-code-only change restores every layer and rebuilds only
+# the final COPY.
+#
+# ⚠️ The `dev` target, not `runtime`. It is the only stage carrying pytest/ruff/mypy, and it
+# is deliberately ordered last in the Dockerfile so `--target runtime` can never pick them up.
+
+name: Dev image
+description: Build the Dockerfile's dev stage as urbenmend:ci, restoring from the buildx cache.
+
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v3
+
+    - name: Build dev image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        target: dev
+        load: true
+        tags: urbenmend:ci
+        cache-from: type=gha,scope=dev
+        cache-to: type=gha,scope=dev,mode=max
