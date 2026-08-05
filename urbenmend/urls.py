@@ -1,21 +1,25 @@
 """
-Root URLconf (A4, T0.3) — deliberately close to empty.
+Root URLconf (A4, T0.3; routes added in A8, T0.6).
 
-`manage.py check` (and therefore the `collectstatic` step in the Dockerfile) imports
-ROOT_URLCONF, so this module has to exist before anything else can run. The actual
-`/api/v1` router is A8 / T0.6, and every route must trace to `docs/04-api-specification.md`.
+URI versioning lives here — `api/v1/` is applied once at this level so no individual route
+repeats it [doc: API §5].
 
-⚠️ Do not add endpoints here ahead of the spec. `/api/v1/health` (API §6.16) is the K8s
-readiness probe target [doc: DevOps §8.2] and lands with the rest of T0.6.
+⚠️ Do not add endpoints here ahead of the spec. Every route must trace to
+`docs/04-api-specification.md`, which is authoritative over the implementation.
 """
 
-from django.urls import URLPattern, URLResolver
+from django.contrib import admin
+from django.urls import URLPattern, URLResolver, include, path
 
-# Annotated because the list is empty — mypy cannot infer an element type otherwise.
-urlpatterns: list[URLPattern | URLResolver] = []
-
-# A8 / T0.6 will add:
-#   path("api/v1/", include("urbenmend.api_urls")),
-#   path("admin/", admin.site.urls),         # FR-30/31, reference data + moderation
-# ⚠️ /metrics is served by django_prometheus but must NOT be exposed on the Ingress
-# [doc: DevOps §8.2] — mount it on a separate port or restrict it at the proxy.
+# Annotated because mypy cannot infer the element type from a heterogeneous list.
+urlpatterns: list[URLPattern | URLResolver] = [
+    path("api/v1/", include("urbenmend.api.urls")),
+    # FR-30/FR-31 — reference data and moderation are surfaced through Django admin
+    # [doc: Arch §2.4]. This is also the only consumer of `PermissionsMixin` on the user model.
+    path("admin/", admin.site.urls),
+    # django_prometheus' own URLconf, which serves /metrics.
+    # ⚠️ Included so a pod-port scrape works [doc: DevOps §8.2], but it MUST NOT be reachable
+    # through the Ingress — exposing it publishes the operational picture of the deployment.
+    # Blocking it is an Ingress/proxy concern (§6.4); Django cannot enforce it here.
+    path("", include("django_prometheus.urls")),
+]

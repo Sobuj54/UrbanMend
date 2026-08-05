@@ -38,11 +38,10 @@ WSGI_APPLICATION = "urbenmend.wsgi.application"
 # take an explicit UUID PK. This default is NOT a licence to expose integer IDs.
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# rest_framework.W001 fires because PAGE_SIZE is set while DEFAULT_PAGINATION_CLASS is not.
-# That combination is deliberate — see the REST_FRAMEWORK block below. Silenced so CI's
-# `manage.py check --deploy` (A9 / T0.5) stays at zero warnings and a real one is visible.
-# ⚠️ Remove this entry when T0.6 lands the custom pagination class.
-SILENCED_SYSTEM_CHECKS = ["rest_framework.W001"]
+# ✅ SILENCED_SYSTEM_CHECKS is intentionally absent. A4 silenced `rest_framework.W001`
+# (PAGE_SIZE set without DEFAULT_PAGINATION_CLASS); T0.6 set the pagination class in A8, so the
+# warning no longer fires and the silencer was removed. `check --deploy` is clean with zero
+# silenced checks — keep it that way so a real warning stays visible in CI (A9 / T0.5).
 
 # --------------------------------------------------------------------------------------
 # Applications
@@ -83,6 +82,9 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django_prometheus.middleware.PrometheusBeforeMiddleware",
+    # Immediately after the metrics opener so every later middleware — including the error
+    # paths — logs with a trace id already bound (T0.9) [doc: DevOps §8.3].
+    "urbenmend.platform.middleware.TraceIdMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -263,14 +265,13 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",  # Explicit per-view override when public (Q7).
     ],
-    # ⚠️ DEFAULT_PAGINATION_CLASS is intentionally UNSET. Pagination is mandatory on every
-    # collection (NFR-2), but none of DRF's built-ins emit the required `{data, page, meta}`
-    # envelope with opaque cursors (API §1.3, §4.4). Naming a built-in here would silently
-    # ship the wrong contract on every list view. T0.6 adds the custom class; until then a
-    # list view without explicit pagination is unpaginated and therefore visibly wrong.
-    "PAGE_SIZE": 20,  # API §4.4 default; max 100 enforced by the T0.6 class.
-    # camelCase bodies (API §1.2) also need an explicit renaming layer — DRF serializers
-    # emit snake_case. Both gaps are named in API §1.2's implementation note.
+    # ✅ T0.6 (A8). Emits the `{data, page, meta}` envelope with opaque cursors that no DRF
+    # built-in produces (API §1.3, §4.4). Cursor, not offset: the authority queue is sorted and
+    # mutated concurrently, so offsets skip and repeat rows.
+    "DEFAULT_PAGINATION_CLASS": "urbenmend.api.pagination.StandardCursorPagination",
+    "PAGE_SIZE": 20,  # API §4.4 default; max 100 enforced by the pagination class.
+    # ✅ T0.6 (A8). `{error: {code, message, details, traceId}}` for every error (API §4.2).
+    "EXCEPTION_HANDLER": "urbenmend.api.exceptions.urbenmend_exception_handler",
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
@@ -280,8 +281,12 @@ REST_FRAMEWORK = {
     ],
     # ISO-8601 UTC (API §1.2). DRF renders `Z` for UTC by default; stated for clarity.
     "DATETIME_FORMAT": "iso-8601",
-    # T0.6 also replaces the exception handler to emit
-    # `{error: {code, message, details, traceId}}` (API §4.2).
+    # ⚠️ The camelCase layer (API §1.2) is NOT a setting. DRF serializers emit snake_case, and
+    # the docs call this gap "the single easiest way for the implementation to silently drift".
+    # It is applied per-serializer via `urbenmend.api.serializers.CamelCaseSerializerMixin`,
+    # because a global renderer-level rename would also rewrite keys that must stay verbatim —
+    # `details[].field` values, which name the client's own submitted field, and GeoJSON's
+    # fixed `type`/`geometry`/`coordinates`/`properties` keys (API §1.2, §4.3).
 }
 
 # --------------------------------------------------------------------------------------

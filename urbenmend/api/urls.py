@@ -1,0 +1,31 @@
+"""
+`/api/v1` URL surface (A8, T0.6).
+
+Mounted at `api/v1/` by the root URLconf, so this module carries no version prefix of its own —
+URI versioning lives in one place [doc: API §5].
+
+⚠️ Every route added here must trace to an endpoint in `docs/04-api-specification.md`. That
+spec is authoritative over the implementation; if code needs to differ, the spec is amended
+first [doc: CLAUDE.md, API §1].
+"""
+
+from __future__ import annotations
+
+from django.urls import path
+
+from urbenmend.platform import views as platform_views
+
+app_name = "api"
+
+urlpatterns = [
+    # API §6.16 — liveness/readiness with dependency degradation flags. The K8s readiness
+    # probe targets this path [doc: DevOps §8.4].
+    path("health", platform_views.health, name="health"),
+]
+
+# Remaining §6 resources land with their phases, not here:
+#   /auth, /users            → P1 (T1.2–T1.4)
+#   /reports, /media         → P1/P3
+#   /issues, /map, /comments → P2/P4
+#   /meta/enums              → needs the Category taxonomy (Q1 open — do not invent it)
+# ⚠️ No `POST /issues` ever: Issues form only via async clustering [doc: API §3, CLAUDE.md].

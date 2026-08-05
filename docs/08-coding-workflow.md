@@ -315,6 +315,53 @@ The very first migration runs `CreateExtension('postgis')` before any geometry c
 docker compose run --rm api python manage.py migrate
 ```
 
+✅ **Built and verified (2026-08-05).** `urbenmend/identity/migrations/0001_initial.py` leads with
+`CreateExtension("postgis")`, then creates `User`. 22 migrations apply from an empty database;
+**`pytest` is now 96 passed** (the 79 + 17 A6 predicted) and **`makemigrations --check --dry-run`
+exits 0** — both A6 red signals are closed.
+
+**The extension operation lives in `identity`, not in `geo`/`reporting`** — the apps that will
+actually own geometry. Those migrations do not exist yet, and Django orders by the dependency graph,
+not by app name, so there is no "first app alphabetically" to rely on. `identity.0001` is the
+earliest project-owned node in that graph: `AUTH_USER_MODEL` points at it, so `contrib.admin`,
+`otp_totp`, and every future model with an FK to the user depend on it transitively.
+⚠️ A geometry-bearing app must still name this migration in its `dependencies` if it has no other
+path to it — do not assume app-registry order will save you.
+
+⚠️ **`postgis/postgis` pre-creates the extension in its initdb scripts, so the obvious check proves
+nothing.** On the dev database `sqlmigrate identity 0001` renders the operation as literally
+`-- (no-op)`: Django probes `pg_extension` first and emits `CREATE EXTENSION IF NOT EXISTS` only
+when needed. A green `migrate` against the compose database is therefore *not* evidence the
+operation works. It was verified against a database created with `CREATE DATABASE` and confirmed to
+hold only `plpgsql`:
+
+```bash
+docker compose exec -T db psql -U urbenmend -d postgres -c "CREATE DATABASE a7_probe;"
+docker compose run --rm -e DATABASE_URL="postgis://urbenmend:urbenmend@db:5432/a7_probe" \
+  api python manage.py migrate
+docker compose exec -T db psql -U urbenmend -d a7_probe -c "SELECT extname FROM pg_extension;"
+```
+
+`postgis` was present afterwards, and a `geography(Point,4326)` column then accepted
+`POINT(90.4125 23.8103)` — the shape the Report and POI columns will use. The probe database was
+dropped. Anyone re-verifying this must use an empty database; the compose one cannot show a failure.
+
+Schema confirmed in Postgres: UUID PK, `email`/`phone` both nullable with UNIQUE constraints, the
+`identity_user_has_contact_or_anonymized` CHECK (rendered
+`email IS NOT NULL OR phone IS NOT NULL OR status::text = 'deleted'::text`), the
+`(role, status)` index, and `otp_totp_totpdevice` / `django_admin_log` FKs resolving to
+`identity_user` — proof `AUTH_USER_MODEL` took effect rather than silently falling back.
+
+⚠️ **The reverse operation DROPs the extension**, which on a database holding geometry data is
+destructive. Forward-only in deployment: migrations run as a pre-deploy Job, never rolled back
+in place [doc: DevOps §7].
+
+The generated migration was **hand-edited before first application** — `makemigrations` does not
+know about the extension, so a reviewed edit is the only way it leads. That is the documented
+posture (a generated migration is "a draft to be reviewed, not an artifact to be trusted",
+DevOps §7) and is safe only because this migration had never been applied to a shared environment.
+⚠️ It is frozen now.
+
 ## A8. Base API + Worker + observability (T0.6–T0.9)
 
 - **API base (T0.6)** — `/api/v1` routing; a **custom DRF exception handler** emitting the §4.1 error

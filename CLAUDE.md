@@ -107,10 +107,22 @@ uvicorn boots. Three A4 decisions that bind later work:
 - Tooling: `django_otp.*` is `ignore_missing_imports` in mypy (no `py.typed`; pulled in by the
   django-stubs plugin, not by our imports); `**/tests/*.py` is exempt from ruff `S105`/`S106`.
 
-⚠️ **A6 deliberately leaves `pytest` at 79 passed / 17 errored and `makemigrations --check` at
-exit 1.** `contrib.admin` now depends on `('identity', '__first__')`, so DB-backed tests error until
-A7 creates it. The 17 were confirmed green against a throwaway migration that was then deleted —
-**A7 owns the real `identity/0001`, and it must lead with `CreateExtension('postgis')`.**
+✅ Built in A7 (2026-08-05): `urbenmend/identity/migrations/0001_initial.py` — **the baseline
+migration.** Leads with `CreateExtension("postgis")`, then creates `User`. Closes both A6 red
+signals: `pytest` is **96 passed**, `makemigrations --check --dry-run` exits **0**.
+
+- ⚠️ **`CreateExtension("postgis")` must stay the first operation of the first migration.** It lives
+  in `identity` — not `geo`/`reporting`, which will own the geometry — because Django orders by the
+  dependency graph, not app name, and `identity.0001` is the earliest project-owned node
+  (`AUTH_USER_MODEL` points at it). A geometry-bearing app must still name it in `dependencies` if
+  it has no other path to it.
+- ⚠️ **`postgis/postgis` pre-creates the extension, so `migrate` against the compose DB cannot fail
+  and proves nothing.** `sqlmigrate` shows the operation as `-- (no-op)` there. Verified instead
+  against a fresh `CREATE DATABASE` holding only `plpgsql`; a `geography(Point,4326)` column then
+  worked. Re-verify only on an empty database.
+- ⚠️ **`identity/0001` is frozen** — it has been applied. It was hand-edited before that (the
+  documented posture: a generated migration is a draft, DevOps §7). Reversing it DROPs the
+  extension; deployment is forward-only via a pre-deploy Job.
 
 ## Commands
 

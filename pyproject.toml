@@ -70,6 +70,20 @@ ignore_missing_imports = true
 module = "django_otp.*"
 ignore_missing_imports = true
 
+# Celery ships no py.typed marker and has no stub package (celery-types is unmaintained
+# against 5.x). Only `urbenmend/celery.py` and `platform/celery_tracing.py` import it.
+[[tool.mypy.overrides]]
+module = "celery.*"
+ignore_missing_imports = true
+
+# ⚠️ Narrowly scoped: Celery's signal decorators are untyped, so under `strict` every receiver
+# they wrap is reported as untyped — an error about Celery's annotations, not ours. Disabled for
+# these two modules only, so a genuinely untyped decorator anywhere else still fails. Receiver
+# bodies keep their own annotations and are still checked.
+[[tool.mypy.overrides]]
+module = ["urbenmend.celery", "urbenmend.platform.celery_tracing"]
+disallow_untyped_decorators = false
+
 [tool.django-stubs]
 # The plugin loads settings to resolve model fields, so it needs a module that imports
 # without external services. dev.py provides local fallbacks for SECRET_KEY/DATABASE_URL
