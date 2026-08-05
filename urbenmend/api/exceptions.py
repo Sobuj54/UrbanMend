@@ -28,6 +28,36 @@ from rest_framework.views import exception_handler as drf_exception_handler
 
 from urbenmend.platform.tracing import get_trace_id
 
+# --------------------------------------------------------------------------------------
+# Domain exceptions for the status codes API §4.2 names but DRF has no built-in for.
+#
+# Services raise Django-native exceptions (`PermissionDenied`, `ValidationError`) and the
+# handler below translates them, which keeps `services.py` free of DRF imports. These two
+# cover the cases where that translation cannot infer the right status: a state conflict is
+# a 409, and a business-rule violation is a 422, but both arrive as ordinary exceptions.
+#
+# ⚠️ `code` is passed through to the envelope verbatim, so pass the spec's code
+# (`ALREADY_CONFIRMED`, `OUT_OF_CITY`, `INVALID_TRANSITION`) when the spec names one.
+# Defaults are the §4.3 generic buckets.
+# --------------------------------------------------------------------------------------
+
+
+class Conflict(APIException):
+    """`409` — state conflict. API §4.2: NOT_EDITABLE, INVALID_TRANSITION, ALREADY_CONFIRMED."""
+
+    status_code = http_status.HTTP_409_CONFLICT
+    default_detail = "The request conflicts with the current state of the resource."
+    default_code = "CONFLICT"
+
+
+class UnprocessableEntity(APIException):
+    """`422` — business-rule violation, e.g. OUT_OF_CITY (C-11) or an expired code."""
+
+    status_code = http_status.HTTP_422_UNPROCESSABLE_ENTITY
+    default_detail = "The request could not be processed."
+    default_code = "VALIDATION_FAILED"
+
+
 # API §4.3 base codes, plus the status-specific codes §4.2 names. Anything not listed falls
 # back to the generic bucket for its status class, so an unmapped status can never produce a
 # response with no `code` at all.

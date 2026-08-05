@@ -33,6 +33,9 @@ local_settings.py
 htmlcov/
 .tox/
 
+# Celery beat schedule (local-only: worker runs `-B` locally via override)
+celerybeat-schedule*
+
 # Editors / OS
 .idea/
 .vscode/

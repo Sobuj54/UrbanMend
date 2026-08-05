@@ -54,6 +54,7 @@ The rest are large; **read on demand** rather than loading every session:
 | `docs/05-project-plan.md` | Phases and task IDs (T0.1, T1.5, …) |
 | `docs/06-devops-guide.md` | Containers, CI stages, migration policy, K8s, observability |
 | `docs/07-adr-001-app-framework.md` | Why Django/DRF; why FastAPI and NestJS were rejected |
+| `docs/09-operations.md` | **DC-1** — local setup, env vars, runbook skeleton, migration guide |
 
 ## Repo structure
 
@@ -127,6 +128,31 @@ signals: `pytest` is **96 passed**, `makemigrations --check --dry-run` exits **0
 - ⚠️ **`identity/0001` is frozen** — it has been applied. It was hand-edited before that (the
   documented posture: a generated migration is a draft, DevOps §7). Reversing it DROPs the
   extension; deployment is forward-only via a pre-deploy Job.
+
+✅ Built in T1.2 (2026-08-05): registration + channel verification. `VerificationCode` + `Channel`
+in `identity/models.py`, migration `0002`, `register_citizen`/`send_verification_code`/`verify_code`
+services, `identity/serializers.py`, `identity/views.py`, `POST /auth/register` + `POST /auth/verify`,
+read-only `VerificationCodeAdmin`, 22 tests. `pytest` **205 passed / 1 xfailed**, mypy/ruff clean.
+
+- ⚠️ **Code delivery is NOT wired up — ❓Q5 is open.** Codes are issued and verifiable; nothing
+  transmits them. The `transaction.on_commit(...)` enqueue sits as a comment at the exact line it
+  belongs on in `send_verification_code()`. Q5's resolution is an insertion, not a redesign.
+- ⚠️ **`verify_code()` must never be decorated `@transaction.atomic`.** The attempt increment has to
+  commit *before* the comparison that may reject it, or a wrong code rolls the counter back,
+  `MAX_ATTEMPTS` never fires, and a 6-digit code gets unlimited guesses. Two separate `atomic()`
+  blocks, `select_for_update()` on the first.
+- **The verification code is Argon2-hashed like a password**, and the plaintext is returned as the
+  second tuple element rather than an attribute, so passing the row to a serializer or log cannot
+  leak it. Never log it, never put it in a response body.
+- **`CODE_LENGTH=6`, `TTL=10min`, `MAX_ATTEMPTS=5` are our policy, not spec-derived** — API §6.1
+  fixes only the shape and the expired-code `422`.
+- **Pre-session `/auth/verify` returns one generic message for every failure** (no enumeration
+  oracle); an authenticated caller gets the specific reason. A test asserts the unknown-address and
+  wrong-code replies are identical.
+- **`VerificationCodeAdmin` is fully read-only and never surfaces `code_hash`** — a writable
+  `attempts` or `consumed_at` would defeat the service's controls.
+- **Verification failure is always an exception, never a `False` return** — a bool invites
+  `if verify_code(...)` with no `else`, which fails open.
 
 ## Commands
 

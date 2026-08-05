@@ -489,15 +489,40 @@ helpers; the assertions stand unchanged.
 contract, not the implementation. T4.4 is where it first runs for real, and a green run there is
 only meaningful if the marker is removed in the same commit.
 
-## M0 gate — do not start P1 until all of these hold
+## A11. DC-1 — operations documentation
 
-- [ ] CI is green on all stages
-- [ ] API and Worker both boot
-- [ ] Migrations apply cleanly **from zero**
-- [ ] `/health` reports each dependency's state
-- [ ] A trivial round-trip request returns the standard error envelope on failure
-- [ ] Python/Django/DRF versions pinned; settings-module naming conflict resolved
-- [ ] DC-1 written: environment/setup notes + runbook skeleton + migration guide
+The M0 gate's documentation deliverable [doc: Plan §8.2]: environment/setup notes, runbook
+skeleton, migration guide.
+
+✅ **Written and verified (2026-08-05)** — [09-operations.md](09-operations.md). Three sections
+matching the checkpoint's three deliverables, plus an open-questions table.
+
+⚠️ **§2 (runbook) is explicitly a skeleton, and says so at the top.** No environment has been
+deployed, so subsections for deploy, rollback, backup/restore and on-call are marked **(DC-6)** and
+state the *questions they must answer* rather than procedures. Writing them out would have been
+fiction, and a runbook that reads as verified but was never executed is worse than an obvious gap.
+DC-6 (end of P10) completes them. §2.9 is the exception — it condenses DevOps §9.1, which already
+specifies the common operations, and is labelled unrehearsed rather than unwritten.
+
+§1 and §3 describe what actually exists. Every documented command was executed against the running
+stack before the doc was committed, which caught a real error in my own draft: the §1.6 line
+`docker compose exec api ruff check && ruff format --check` runs the second command **on the host**,
+where ruff is not installed. Corrected to one command per line, with the `sh -c '...'` form noted
+for chaining.
+
+Verified: ruff clean, mypy clean (105 files), `pytest` 183 passed / 1 xfailed,
+`makemigrations --check` "No changes detected", `migrate` idempotent on re-run, and
+`GET /api/v1/health` → `200 {"status":"ok","dependencies":{"database":{"status":"ok"},"cache":{"status":"ok"}}}`.
+`.env.local` confirmed git-ignored (`.gitignore:25`); only `.env.example` is tracked.
+
+## M0 gate — do not start P1 until all of these hold
+- [ ] CI is green on all stages — ⚠️ **workflow authored but never executed on GitHub** (A9)
+- [x] API and Worker both boot
+- [x] Migrations apply cleanly **from zero**
+- [x] `/health` reports each dependency's state
+- [x] A trivial round-trip request returns the standard error envelope on failure
+- [x] Python/Django/DRF versions pinned; settings-module naming conflict resolved
+- [x] DC-1 written: environment/setup notes + runbook skeleton + migration guide
 
 ---
 
@@ -697,8 +722,67 @@ apply from zero.** Every later phase assumes this.
 - T1.8: rate limiting on login/OTP uses DRF throttling backed by Redis. Test that the `429` fires
   and includes `Retry-After`.
 
+### T1.2 — registration + channel verification
+
+✅ **Built and verified (2026-08-05).** `identity/models.py` gains `VerificationCode` and the
+`Channel` enum; `migrations/0002_verificationcode.py`; three service functions
+(`register_citizen`, `send_verification_code`, `verify_code`); `serializers.py`; `views.py` with
+`RegisterView`/`VerifyView`; `POST /auth/register` and `POST /auth/verify` in `api/urls.py`;
+`admin.py` gains a read-only `VerificationCodeAdmin`; 22 new tests in
+`identity/tests/test_registration.py`.
+
+⚠️ **Delivery is deliberately not wired up — ❓Q5 (notification channels) is open.** The code is
+generated, hashed, stored and verifiable, but nothing transmits it. `send_verification_code()`
+carries the `transaction.on_commit(...)` enqueue as a comment at the exact line it belongs on, so
+Q5's resolution is an insertion rather than a redesign. Registration is therefore complete and
+testable end-to-end via the service return value; a user cannot yet receive a code out-of-band.
+
+Six decisions this task forced, none pre-answered by the docs:
+
+1. **The code is hashed with the project's Argon2 hasher, not stored plaintext.** It is a
+   credential — the only thing between a stranger who knows an address and a verified account on
+   it. Same reasoning and same policy as passwords [doc: auth.md].
+2. **`CODE_LENGTH = 6`, `TTL = 10 minutes`, `MAX_ATTEMPTS = 5` are policy, not doc-derived.**
+   API §6.1 fixes only the request/response shape and that an expired code yields `422`. Recorded
+   here because a reader will otherwise assume a spec citation exists.
+3. **⚠️ `verify_code()` is deliberately NOT `@transaction.atomic`.** The attempt counter must
+   survive the exception a wrong code raises. Under one enclosing transaction the raise rolls the
+   increment back, the counter stays at 0 forever, `MAX_ATTEMPTS` never fires, and an attacker gets
+   unlimited guesses at a 6-digit code. Two separate `atomic()` blocks: the first claims an attempt
+   and commits, the second spends the code. `select_for_update()` on the first so two concurrent
+   attempts cannot both read `attempts=4`.
+4. **Failure is always an exception, never a `False` return.** A bool return invites
+   `if verify_code(...)` written without an `else`, which fails open.
+5. **The pre-session verify path returns one generic message for every failure.** The endpoint is
+   unauthenticated, so forwarding the service's specific reason ("already used", "expired", "too
+   many attempts") would make it an enumeration oracle — each one confirms the account exists. An
+   authenticated caller has already proved who they are, so it gets the detail. A test asserts the
+   unknown-address and wrong-code replies are byte-identical in status, code and message.
+6. **`VerificationCodeAdmin` is fully read-only and never lists `code_hash`.** A writable
+   `attempts` would let anyone with admin reset the brute-force counter; a writable `consumed_at`
+   would un-spend a used code. Both defeat the controls the service enforces. One
+   `tuple[str, ...]` feeds both `fields` and `readonly_fields` so a field cannot be added to the
+   form but left writable — a tuple rather than a list because the two attributes are typed
+   differently upstream and only a covariant tuple satisfies both under `mypy --strict`.
+
+Also settled here: the plaintext code is returned as the *second tuple element* rather than an
+attribute on the row, so passing the row to a serializer or a log line cannot carry the secret with
+it by accident; the verify lookup normalizes the identifier the same way `User.save()` does, or
+someone who registered as `Citizen@Example.test` could never verify by typing it back as they wrote
+it; and duplicate registration is caught as `IntegrityError` on the UNIQUE index rather than a
+pre-check `exists()`, which would race.
+
+Verified in the container: `ruff check` and `ruff format --check` clean, `mypy --strict` clean
+(108 files), `pytest` **205 passed / 1 xfailed**, `makemigrations --check --dry-run` exit 0.
+
 **M1 gate:** a citizen can register → verify → log in; an admin can provision a scope-limited
 authority; RBAC denies out-of-scope actions; sessions revoke immediately.
+
+- [x] register → verify (T1.2)
+- [ ] log in (T1.3 — sessions)
+- [ ] admin provisions a scope-limited authority (T1.4/T1.6 — needs Category, ❓Q1)
+- [ ] RBAC denies out-of-scope actions (T1.5)
+- [ ] sessions revoke immediately (T1.3)
 
 ## C3. P2 Reporting & Media
 - T2.2: the `POST /reports` response is `202 Accepted` — the report is written synchronously, triage

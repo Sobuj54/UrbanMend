@@ -22,6 +22,7 @@ Group. Do not put domain RBAC in `groups` or `user_permissions`.
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from typing import Any, ClassVar
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
@@ -274,3 +275,85 @@ class User(AbstractBaseUser, PermissionsMixin):
         # so clean() alone would leave the API path unnormalized.
         self._normalize_contact()
         super().save(*args, **kwargs)
+
+
+class Channel(models.TextChoices):
+    """A contact channel that can be verified [doc: API §6.1 `{"channel": "phone"}`].
+
+    Values match the wire format exactly, for the same reason `Role` does: a mapping layer
+    between stored and emitted values is a place for them to drift apart.
+    """
+
+    EMAIL = "email", _("Email")
+    PHONE = "phone", _("Phone")
+
+
+class VerificationCode(models.Model):
+    """A single-use code proving control of one contact channel (FR-1, T1.2).
+
+    ⚠️ **The code is stored hashed, never in plaintext.** It is a credential: it is the only
+    thing standing between a stranger who knows an address and a verified account on it. A
+    DB read — a backup, a log of a query, an admin inspecting rows — must not yield working
+    codes, which is exactly the reasoning applied to passwords. The hasher is the project's
+    configured Argon2 [doc: auth.md], so both credentials share one policy.
+
+    ⚠️ **Rows are retained after use, not deleted.** `consumed_at` marks a code spent. A
+    delete-on-use design cannot distinguish "this code never existed" from "this code was
+    already used", and the second is a replay attempt worth being able to see.
+
+    Why a table and not Redis: Redis here is also the cache and rate-limit store, so a code
+    is subject to eviction under memory pressure — which would strand a user mid-registration
+    with no way to tell them why. The attempt counter also has to increment atomically with
+    the check it guards (`select_for_update`), which a table gives directly.
+    """
+
+    # Length and lifetime are policy, not derived from any spec statement — API §6.1 fixes
+    # only the request/response shape and that an expired code yields 422. Six digits is the
+    # OTP convention users expect from an SMS; the brute-force defence is MAX_ATTEMPTS below,
+    # not the keyspace.
+    CODE_LENGTH = 6
+    TTL = timedelta(minutes=10)
+
+    # ⚠️ The real protection on a 6-digit code. 10**6 guesses is trivially brute-forceable, so
+    # the code is retired after this many failures and a fresh one must be requested. Returns
+    # 429 per API §6.1 ("too many attempts"). This is per-code and intrinsic to the lifecycle;
+    # per-IP/per-account request throttling is T1.8's separate concern.
+    MAX_ATTEMPTS = 5
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        "identity.User",
+        on_delete=models.CASCADE,
+        related_name="verification_codes",
+    )
+    channel = models.CharField(max_length=8, choices=Channel.choices)
+    code_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        verbose_name = _("verification code")
+        verbose_name_plural = _("verification codes")
+        indexes: ClassVar[list[models.Index]] = [
+            # The verify path's only query: newest live code for (user, channel).
+            models.Index(
+                fields=["user", "channel", "-created_at"],
+                name="identity_vcode_lookup_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.channel} code for {self.user_id}"
+
+    @property
+    def is_expired(self) -> bool:
+        return timezone.now() >= self.expires_at
+
+    @property
+    def is_usable(self) -> bool:
+        """Not yet spent, not expired, and attempts remain."""
+        return (
+            self.consumed_at is None and not self.is_expired and self.attempts < self.MAX_ATTEMPTS
+        )
