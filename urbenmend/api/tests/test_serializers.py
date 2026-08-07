@@ -106,16 +106,77 @@ def test_geojson_structural_keys_are_untouched() -> None:
         assert to_camel_case(key) == key
 
 
-def test_error_detail_field_names_are_not_renamed() -> None:
-    """`error.details[].field` echoes the client's own submitted field name (API §4.2).
+def test_the_envelope_builder_does_no_renaming_of_its_own() -> None:
+    """The rename belongs to the serializer, which knows its field names; `exceptions.py` does not.
 
-    The error envelope is built in `exceptions.py`, which never routes through this mixin — this
-    asserts the separation holds, since renaming there would report a field the client did not
-    send.
+    `_flatten_validation_detail` walks a detail tree that may contain a carried payload or a
+    localized message. Renaming keys there would rewrite content the API is merely transporting,
+    which is the same reason the project has no global camelCase renderer.
     """
     from urbenmend.api import exceptions
 
     assert not hasattr(exceptions, "to_camel_case")
+
+
+def test_rejected_field_names_are_reported_in_camel_case() -> None:
+    """⚠️ `error.details[].field` must name the field the client actually sent (API §4.2).
+
+    DRF raises with its own `snake_case` field names, so without the rename a rejected `createdAt`
+    comes back as `created_at` — a field the client never sent, and one it cannot map back to an
+    input to highlight. The inbound rename alone leaves the request half-translated.
+    """
+    serializer = ExampleSerializer(data={"reportId": "r-1", "status": "submitted"})
+
+    assert not serializer.is_valid()
+    assert set(serializer.errors) == {"createdAt"}
+
+
+def test_a_rejected_nested_field_keeps_its_dotted_camel_path() -> None:
+    """The `location.lng` path in the envelope has to be camelCase at every segment."""
+
+    class Inner(CamelCaseSerializer):
+        max_speed = serializers.IntegerField()
+
+    class Outer(CamelCaseSerializer):
+        speed_limit = Inner()
+
+    serializer = Outer(data={"speedLimit": {"maxSpeed": "fast"}})
+
+    assert not serializer.is_valid()
+    assert set(serializer.errors) == {"speedLimit"}
+    assert set(serializer.errors["speedLimit"]) == {"maxSpeed"}
+
+
+def test_renaming_an_error_preserves_the_machine_readable_issue_code() -> None:
+    """⚠️ The leaf must stay DRF's `ErrorDetail`, not be rebuilt as a plain `str`.
+
+    `_flatten_validation_detail` reads `.code` off the leaf to fill the contract's `issue`
+    (`REQUIRED`, `INVALID`). A rename that reconstructed leaves would drop it, and every `issue`
+    in the envelope would silently degrade to the `INVALID` fallback.
+    """
+    serializer = ExampleSerializer(data={"reportId": "r-1", "status": "submitted"})
+
+    assert not serializer.is_valid()
+    assert serializer.errors["createdAt"][0].code == "required"
+
+
+def test_an_object_level_rejection_is_renamed_too() -> None:
+    """`validate()` runs after `to_internal_value`, so the funnel has to be `run_validation`.
+
+    Wrapping the narrower method would leave object-level errors in `snake_case` — a half-fix that
+    passes every field-level test.
+    """
+
+    class Strict(CamelCaseSerializer):
+        report_id = serializers.CharField(required=False)
+
+        def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+            raise serializers.ValidationError({"report_id": "Not allowed here."})
+
+    serializer = Strict(data={"reportId": "r-1"})
+
+    assert not serializer.is_valid()
+    assert set(serializer.errors) == {"reportId"}
 
 
 def test_double_underscores_are_left_alone() -> None:

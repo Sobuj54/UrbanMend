@@ -498,9 +498,10 @@ ruff (132 files) clean, no drift, `check --deploy` clean, both apps verified rev
   `category` at intake, so keying on it would mark an unclassified report classified and T3.5's
   worker would skip it forever, silently.
 - ⚠️ **A hint is recorded with `classification_source = citizen` and is not a classification.** An
-  unknown *or retired* slug is `422`, never coerced to `Other` — that coercion (BR-7) is for LLM
-  output, where an off-taxonomy value means an unusable answer. A human on a retired node is running
-  a stale client; filing under `Other` would lose information they could have fixed.
+  unknown *or retired* slug is refused (**`400`** — see the T2.2 record; this bullet originally said
+  `422`), never coerced to `Other` — that coercion (BR-7) is for LLM output, where an off-taxonomy
+  value means an unusable answer. A human on a retired node is running a stale client; filing under
+  `Other` would lose information they could have fixed.
 - ⚠️ **`# noqa: DJ001` on `severity_signal`/`classification_source` is deliberate.** `""` is not a
   member of `SeveritySignal` — an undeclared fifth band that validates only because Django skips
   blanks, and `SEVERITY_RANK[""]` raises `KeyError` inside T4.6's `max()` at runtime. `confidence` is
@@ -529,6 +530,75 @@ ruff (132 files) clean, no drift, `check --deploy` clean, both apps verified rev
 - ⚠️ **Green output can prove nothing.** The first reversibility run reported "No migrations to
   apply" because they had never been applied; the real test is `[X]` → `[ ]` → `[X]`. Same lesson as
   A7's `CreateExtension` no-op against the compose DB.
+
+✅ Built in T2.2 (2026-08-08): **`POST /reports`** — the synchronous fast write plus the deferred
+triage enqueue. `classification/tasks.py` (`CLASSIFY_REPORT_TASK`, `classify_report` stub),
+`submit_report()` in `reporting/services.py`, `reporting/serializers.py` (`LocationSerializer`,
+`ReportSubmitSerializer`, `ReportSubmitResponseSerializer`), `ReportSubmitView`,
+`path("reports", ...)`, and a fix to the T0.6 camelCase layer (`run_validation` +
+`_camelize_error_detail` in `api/serializers.py`); 46 tests. **No migration.** `pytest`
+**491 passed / 2 xfailed**, mypy (129 files) / ruff clean, no drift, `check --deploy` clean.
+
+- ⚠️ **`transaction.on_commit` is the task, and it is asserted from the failing side.** An inline
+  `.delay()` lets an idle worker `SELECT` the report before the transaction commits — it reads
+  nothing and the report is never triaged. Load-dependent, so it survives every local run.
+  `test_the_task_is_not_published_before_the_transaction_commits` goes red the moment the wrapper is
+  dropped; its pair stops `on_commit(lambda: None)` satisfying it.
+- ⚠️ **Never configure `task_always_eager` for tests.** Eager runs the task body inside the caller's
+  uncommitted transaction, so the suite would **pass with the broken inline `.delay()`** — the bug
+  this task exists to prevent becomes a green test. Patch `.delay` at the **use** site
+  (`urbenmend.reporting.services.classify_report.delay`); the service holds a module-level reference,
+  so patching the definition site reads zero calls. Drive callbacks with
+  `TestCase.captureOnCommitCallbacks(execute=True)`.
+- ⚠️ **Only the id crosses the broker, as a `str`, bound to a local before the closure.** Capturing
+  `report` puts author id, free text and coordinates into Redis (NFR-12) and lets the worker act on a
+  pre-commit snapshot. A `UUID` arrives as a `str` anyway, making the task's annotation a lie.
+- ⚠️ **`PROCESSING` is a second UPDATE in the same transaction, not a `create_report(status=...)`
+  argument** — T2.1 refuses that parameter precisely so no caller can mark a report `triaged` and skip
+  the pipeline. `update_fields` **must list `updated_at`** (`auto_now` + `update_fields` writes only
+  the named columns, so omitting it leaves the row reading as never-modified).
+- ⚠️ **The Celery task has an explicit `name=`** — otherwise the name follows the module path and
+  moving the module silently orphans queued messages (`NotRegistered`, in the worker, post-deploy).
+  `@shared_task` is untyped so `.delay()` is `Any`: `test_tasks.py` asserts the name, that it is *not*
+  the module path, and the first parameter name, because mypy structurally cannot.
+- ⚠️ **The stub logs and returns `None`** — raising turns "not implemented" into retry/alert noise on
+  every submission, a truthy return invites treating it as a real classification, and a silent pass is
+  indistinguishable from a broken broker. T3.5 fills the body.
+- ⚠️ **`LocationSerializer.to_point` is a `staticmethod` over a mapping** — a nested serializer never
+  has `validated_data` populated, so `self.validated_data` there raises `AssertionError` at run time.
+  The `(lng, lat)` order lives in one place; transposed, it rejects every real submission as
+  out-of-city. Degree bounds on `lat`/`lng` are why `lat: 200` is `400` and not a misleading `422`.
+- ⚠️ **`mediaIds` is declared and refused (`400`), never dropped.** DRF's default discards the key, so
+  a photo-only submission would fail BR-3 with an error about `description` — a field the client left
+  empty deliberately. T2.6 wires the real count; `media_count=0` is truthful until then.
+- ⚠️ **`ReportSubmitSerializer` is a plain `Serializer`, never a `ModelSerializer` over `Report`** —
+  otherwise `status`/`severity_signal`/`confidence`/`classification_source`/`classified_at` are one
+  `fields` edit from client-settable. Unknown fields are rejected, in both spellings.
+- ⚠️ **The response reads `status` off the row, never a hardcoded `"processing"`**, which would keep
+  reporting success after the transition is moved or removed.
+- ⚠️ **`202` with no `Location` header** — the row is durable but the resource is incomplete until the
+  worker finishes (Arch §4), and `GET /reports/{id}` (T2.7) would `404`.
+- ⚠️ **No role class on the view and no local `except`** — Citizen-only is `create_report()`'s check
+  (FR-3), and `urbenmend_exception_handler` already renders `ReportValidationError` `400` and
+  `OutOfCity` `422`. A local catch is only a chance to collapse that distinction.
+- ⚠️ **T0.6 bug found and fixed: rejected field names came back `snake_case`.** DRF raises with its
+  own field names, so a rejected `mediaIds` was reported as `media_ids` — a field the client never
+  sent. Wrapped at **`run_validation`**, not `to_internal_value`: DRF runs field checks *and*
+  `validate()` inside it, so the narrower method leaves object-level errors untranslated — a half-fix
+  that passes every field-level test. **Leaves stay `ErrorDetail`**; rebuilding them as `str` drops
+  `.code` and every envelope `issue` degrades to the `INVALID` fallback.
+- ⚠️ **Ships unthrottled, deliberately — FR-33 limits are T2.9.** T1.8's buckets are the wrong shape:
+  `auth_user` at 20/15m cuts off a citizen filing several potholes on one walk, and reusing it lets
+  submissions exhaust the login allowance.
+- ⚠️ **An unknown or retired category slug is `400 VALIDATION_FAILED`, not `422`** — correcting the
+  T2.1 record above. §6.3 lists the taxonomy check among its validation rules and reserves `422` for
+  `OUT_OF_CITY`; this matches `preferredLanguage: "fr"` on `/users/me`. Behaviour (refused, never
+  coerced to `Other`) was always right; the documented code was wrong.
+- **Idempotency (BR-5) is T2.3**, with an `xfail(strict=True)` test in `test_submission.py` as its
+  target (A10 precedent). Today two identical submissions create two Reports, which cluster into one
+  Issue and inflate the corroboration count FR-16 reads as "how many people are affected".
+- **No spec amendment owed** — §6.3 already fixes the `202`, the header, the hint semantics and the
+  error set.
 
 ## Commands
 

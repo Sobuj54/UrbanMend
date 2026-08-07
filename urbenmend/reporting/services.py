@@ -19,20 +19,29 @@ Rules for this file [doc: Arch §3.1, FR-3]:
 and idempotency (T2.3) call `create_report()`; it is written to be callable without a request,
 so a management command or the T2.2 view get the same rules (FR-3).
 
+⚠️ **T2.2 adds `submit_report()` on top, and the split is deliberate.** `create_report()` is the
+pure write; `submit_report()` is the write *plus* the async hand-off. Keeping them separate means
+T2.1's rules stay testable with no broker, and every caller that must trigger triage goes through
+one place instead of remembering to enqueue.
+
 [doc: Arch §3 (FR-5, FR-8, FR-9, FR-11); BR-1..BR-3, BR-35; C-3, C-11]
 """
 
 from __future__ import annotations
 
+import structlog
 from django.contrib.gis.geos import Point
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 
 from urbenmend.api.exceptions import OutOfCity
 from urbenmend.classification.models import Category, CategoryStatus
+from urbenmend.classification.tasks import classify_report
 from urbenmend.geo.selectors import is_within_city
 from urbenmend.identity.models import Role, User
 from urbenmend.reporting.models import ClassificationSource, Report, ReportStatus
+
+logger = structlog.get_logger(__name__)
 
 # ⚠️ **BR-3's "adequate description" threshold, and it is a project decision, not doc-derived.**
 # FR-5 and BR-3 both say "at least one of {photo, adequate description}" without defining
@@ -172,3 +181,76 @@ def create_report(
         # would then have no way to find the ones still awaiting the LLM.
         classification_source=ClassificationSource.CITIZEN if category else None,
     )
+
+
+@transaction.atomic
+def submit_report(
+    *,
+    author: User,
+    location: Point | None,
+    description: str = "",
+    category_slug: str | None = None,
+    address: str = "",
+    language: str = "en",
+    media_count: int = 0,
+) -> Report:
+    """Intake for `POST /reports` (T2.2): persist, mark processing, enqueue triage (FR-5, NFR-3).
+
+    The synchronous half of Arch §4's flow. Everything expensive — the LLM call, clustering,
+    notification — happens in the worker, so the citizen's request returns as soon as the row is
+    durable. API §6.3 answers `202`, not `201`, precisely because triage has not run yet.
+
+    ⚠️ **The enqueue is registered with `transaction.on_commit`, and that is not a style
+    preference.** Calling `.delay()` inline races the transaction: Redis is not transactional, so
+    an idle worker can pick the message up and `SELECT` the report *before* this transaction
+    commits — it reads nothing, and the report is never classified. The window is small, real, and
+    load-dependent, so it survives every local test and appears under production concurrency
+    (async-worker.md: "This is not optional"; Arch §4.1).
+
+    ⚠️ **A rolled-back transaction therefore enqueues nothing**, which is the other half of the
+    same guarantee: no task ever references a report that does not exist.
+
+    ⚠️ **Only the id crosses the broker boundary**, bound to a local before the closure is built.
+    Capturing `report` would invite passing the instance itself, which puts a whole row (author id,
+    free text, coordinates) into Redis and lets the worker act on a pre-commit snapshot instead of
+    re-reading the committed row.
+
+    ⚠️ **`status` moves to `PROCESSING` here, in a second UPDATE inside the same transaction, and
+    not by passing a status into `create_report()`.** T2.1 refuses that parameter on purpose — it
+    is the thing that would let a caller mark a report `triaged` and skip the pipeline. The two
+    writes share one transaction, so no reader ever observes a submitted-but-never-queued row.
+
+    ⚠️ **Idempotency (BR-5, `Idempotency-Key`) is NOT handled here — T2.3 owns it.** Two identical
+    submissions today create two Reports, which then cluster into one Issue and inflate the
+    corroboration count FR-16 reads as "how many people are affected". The header is part of the
+    §6.3 contract, so this is a known gap with a task against it, not an oversight;
+    `tests/test_submission.py` carries the `xfail(strict=True)` test that T2.3 makes pass.
+    """
+    report = create_report(
+        author=author,
+        location=location,
+        description=description,
+        category_slug=category_slug,
+        address=address,
+        language=language,
+        media_count=media_count,
+    )
+
+    report.status = ReportStatus.PROCESSING
+    # ⚠️ `updated_at` must be listed: it is `auto_now`, and `save(update_fields=...)` writes only
+    # the named columns, so omitting it leaves the row's timestamp reading as never-modified.
+    report.save(update_fields=["status", "updated_at"])
+
+    report_id = str(report.pk)
+    transaction.on_commit(lambda: classify_report.delay(report_id))
+
+    logger.info(
+        "report.submitted",
+        report_id=report_id,
+        # ⚠️ No description, no address, no coordinate. NFR-12 keeps PII out of logs, and a
+        # report's free text is the citizen's own account of where they are.
+        category_hint=category_slug,
+        language=language,
+        media_count=media_count,
+    )
+    return report

@@ -89,10 +89,19 @@ ignore_missing_imports = true
 
 # ⚠️ Narrowly scoped: Celery's signal decorators are untyped, so under `strict` every receiver
 # they wrap is reported as untyped — an error about Celery's annotations, not ours. Disabled for
-# these two modules only, so a genuinely untyped decorator anywhere else still fails. Receiver
-# bodies keep their own annotations and are still checked.
+# these modules only, so a genuinely untyped decorator anywhere else still fails. Receiver and
+# task bodies keep their own annotations and are still checked.
+#
+# `@shared_task` (T2.2) is the same situation as the signal decorators: untyped, so every task it
+# wraps reads as untyped. ⚠️ Add a task module to this list rather than widening the rule — and
+# note the consequence at the call site: `classify_report.delay(...)` types as `Any`, so mypy
+# cannot catch a wrong argument there. `test_tasks.py` asserts the signature instead.
 [[tool.mypy.overrides]]
-module = ["urbenmend.celery", "urbenmend.platform.celery_tracing"]
+module = [
+    "urbenmend.celery",
+    "urbenmend.platform.celery_tracing",
+    "urbenmend.classification.tasks",
+]
 disallow_untyped_decorators = false
 
 # `factory/__init__.py` re-exports its public API with plain `from .declarations import ...` and

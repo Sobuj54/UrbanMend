@@ -15,6 +15,7 @@ from django.urls import path
 
 from urbenmend.identity import views as identity_views
 from urbenmend.platform import views as platform_views
+from urbenmend.reporting import views as reporting_views
 
 app_name = "api"
 
@@ -61,6 +62,13 @@ urlpatterns = [
     # swallow `me` and turn profile reads into lookups for a user whose id is "me". Order in this
     # file IS the router.
     path("users/me", identity_views.MeView.as_view(), name="users-me"),
+    # API §6.3 — reports. T2.2 adds submission only (`POST`); the reads are T2.7 and the
+    # pre-triage edit is T2.8, so this path answers `405` to `GET` today rather than pretending.
+    #
+    # ⚠️ **Registered before any `reports/<id>` route must be**, for the third time in this file:
+    # a later `reports/<str:pk>` cannot shadow the bare collection path, but the ordering habit is
+    # what keeps `reports/me`-style additions safe. Order in this file IS the router.
+    path("reports", reporting_views.ReportSubmitView.as_view(), name="reports"),
 ]
 
 # Remaining §6 resources land with their phases, not here:
@@ -68,7 +76,9 @@ urlpatterns = [
 #   /users/me                        → T1.9 ✅ built
 #   /users, /users/{id}              → unowned (admin list/search, role/scope/status change);
 #                                      API §6.2 names both, T1.9 scoped them out
-#   /reports, /media                 → P1/P3
+#   POST /reports                    → T2.2 ✅ built (⚠️ unthrottled — FR-33 limits are T2.9)
+#   GET /reports, GET /reports/{id}  → T2.7;  PATCH /reports/{id} → T2.8
+#   /media                           → T2.4/T2.5 (❓Q6 gates the EXIF default)
 #   /issues, /map, /comments         → P2/P4
 #   /meta/enums                      → P1 (taxonomy confirmed — Q1 resolved 2026-08-07)
 # ⚠️ No `POST /issues` ever: Issues form only via async clustering [doc: API §3, CLAUDE.md].
