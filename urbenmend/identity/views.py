@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -41,6 +42,7 @@ from urbenmend.identity.models import Channel, User
 from urbenmend.identity.serializers import (
     LoginResponseSerializer,
     LoginSerializer,
+    ProfileUpdateSerializer,
     ProvisionAuthoritySerializer,
     RegisterSerializer,
     TwoFactorEnrollResponseSerializer,
@@ -383,6 +385,93 @@ def _resolve_caller(request: Request) -> User:
         raise AccountLocked(str(exc)) from exc
     except services.AuthenticationError as exc:
         raise InvalidCredentials(str(exc)) from exc
+
+
+class MeView(RateLimitHeadersMixin, APIView):
+    """`/users/me` — read, update, or anonymize the caller's own account (API §6.2, T1.9).
+
+    Three methods on one view because all three share the same authorization: API §6.2 gives each
+    of them "Auth: Session. Authorization: Self." That "self" is **structural** — the account comes
+    from `request.user`, and no method reads an id from the path or the body, so there is no
+    selector to tamper with and nothing for a scope check to compare (FR-3 is satisfied by the
+    absence of a target parameter, not by an omitted check).
+
+    ⚠️ **`GET /users` and `PATCH /users/{id}` are NOT here.** Both are Admin endpoints in API §6.2
+    and both are out of T1.9's scope; `api/urls.py` records them as unowned rather than leaving
+    them silently absent.
+    """
+
+    permission_classes = [IsAuthenticated]
+    # ⚠️ `auth_user` only. `api-conventions.md`: "All protected endpoints implicitly return 401 and
+    # 429". The per-IP bucket is deliberately absent — it is sized for pre-session auth attempts,
+    # and applying it here would let one user's profile edits exhaust the login allowance for
+    # everyone else behind the same NAT.
+    throttle_classes = [AuthUserRateThrottle]
+
+    def get(self, request: Request) -> Response:
+        """API §6.2 `GET /users/me` — the caller's profile, one shape for all three roles."""
+        return Response(
+            UserSerializer(cast("User", request.user)).data,
+            status=status.HTTP_200_OK,
+        )
+
+    def patch(self, request: Request) -> Response:
+        """API §6.2 `PATCH /users/me` — update own phone and/or language.
+
+        ⚠️ `partial=True` is **not** set and must not be. This is a plain `Serializer`, not a
+        `ModelSerializer`, and every field on it is already `required=False`; `partial=True` would
+        additionally suppress the empty-body and unknown-field rejections `validate()` performs,
+        turning `PATCH {"role":"admin"}` back into a silent `200`.
+        """
+        serializer = ProfileUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            user = services.update_profile(
+                user=cast("User", request.user),
+                # ⚠️ `.get()` with no default, so an omitted field stays `None` — which the service
+                # reads as "not submitted". A `""` default here would turn every language-only
+                # update into a phone deletion.
+                phone=data.get("phone"),
+                preferred_language=data.get("preferred_language"),
+            )
+        except services.ProfileUpdateError as exc:
+            # API §6.2 lists `409` (identity in use) for this endpoint. The message is specific:
+            # the caller is authenticated and editing their own profile, so naming the collision
+            # tells them nothing a registration attempt would not, and withholding it leaves them
+            # unable to tell a typo from a genuine conflict.
+            raise Conflict(str(exc)) from exc
+        except DjangoValidationError as exc:
+            # Clearing the last contact channel is a business-rule rejection, so `422` — not the
+            # `400` a malformed body gets (api-conventions.md status table).
+            raise UnprocessableEntity(exc.messages[0]) from exc
+
+        return Response(UserSerializer(user).data, status=status.HTTP_200_OK)
+
+    def delete(self, request: Request) -> Response:
+        """API §6.2 `DELETE /users/me` — anonymize the account (P6, BR-33, C-14).
+
+        ⚠️ **`202`, and the session is already revoked when it is written.** The service revokes
+        every session inside its transaction, so this response goes back to a credential that no
+        longer authenticates. The `202` reflects that retained-record anonymization may extend past
+        the response (P2/P3 add Reports and media) — not that the account is still usable.
+
+        ⚠️ **No confirmation parameter, and no undo.** The spec defines neither; inventing a
+        `?confirm=true` would be a contract change made in a view.
+        """
+        try:
+            services.anonymize_account(user=cast("User", request.user))
+        except services.AccountDeletionError as exc:
+            # `403 FORBIDDEN` — an Authority or Admin may not self-delete (spec amended
+            # 2026-08-07). Raised as `PermissionDenied` so the T0.6 handler renders the generic
+            # `FORBIDDEN` code from `_STATUS_TO_CODE`; a bespoke code here would invent one the
+            # spec does not list for this endpoint (contrast `ACCOUNT_LOCKED`, which §6.1 names).
+            raise PermissionDenied(str(exc)) from exc
+
+        # ⚠️ No body. The profile is exactly what was just anonymized, so echoing it would return
+        # the PII this endpoint exists to erase.
+        return Response(status=status.HTTP_202_ACCEPTED)
 
 
 class LogoutView(APIView):

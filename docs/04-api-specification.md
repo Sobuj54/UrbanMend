@@ -274,6 +274,25 @@ verified against an unconfirmed device confirms it; against a confirmed device i
 ```
 - **Errors:** standard.
 
+**Amended 2026-08-07 (T1.9) — the response shape is identical for all three roles.** The example
+above shows an Authority; `email` and `phone` are each `null` when the account does not carry that
+channel, and every field is present regardless of role.
+
+⚠️ **`categoryScope` is always an array, and `[]` does not mean "permitted nothing".** It is the
+stored scope rows, which only an Authority has:
+
+| `role` | `categoryScope` | What it means |
+|---|---|---|
+| `authority` | the granted slugs | The **only** categories this account may view or act on (BR-26) |
+| `authority` | `[]` | Provisioned but unscoped — can act on nothing until an Admin scopes it (BR-25) |
+| `citizen` | `[]` | Not applicable — scope does not gate citizen actions |
+| `admin` | `[]` | Not applicable — **Admins bypass scope entirely**, so this is unrestricted |
+
+An Admin's `[]` and an unscoped Authority's `[]` are the same JSON and opposite permissions; `role`
+is what disambiguates them. A client must not derive capability from this field alone. It is emitted
+for every role rather than omitted or `null` so the response shape stays stable — the alternative
+makes clients branch on `role` before they can read the body at all.
+
 #### `PATCH /users/me`
 - **Purpose:** Update own profile (contact, language). Contact changes re-trigger verification.
 - **Auth:** Session. **Authorization:** Self.
@@ -281,11 +300,37 @@ verified against an unconfirmed device confirms it; against a confirmed device i
 - **Response `200`:** updated profile.
 - **Errors:** `409` (identity in use), `VALIDATION_FAILED`, standard.
 
+**Amended 2026-08-07 (T1.9) — the body above is exhaustive, and `email` is deliberately absent.**
+`role`, `status` and `categoryScope` are administrative (§6.2 `PATCH /users/{id}`) and are rejected
+here rather than ignored. Self-service **email** change is also excluded: it is the address a
+password reset is sent to, so permitting it turns one live session into a permanent account
+takeover. Changing it is an Admin action; this omission is a decision, not an oversight.
+
+⚠️ **A new `phone` clears that channel's verification and issues a fresh code** (BR-30). The account
+keeps working; the *channel* is unverified until the code is confirmed via `POST /auth/verify`, and
+no notification is sent to it in the meantime. Setting `phone` to `null` is permitted only while the
+account still has an email — the account must always retain at least one contact channel.
+
 #### `DELETE /users/me`
 - **Purpose:** Request account deletion; **PII anonymized**, public Issue records retained (P6, BR-33, C-14).
 - **Auth:** Session. **Authorization:** Self.
 - **Response `202`** (anonymization may be async).
-- **Errors:** standard.
+- **Errors:** `403` (Authority/Admin — see below), standard.
+
+**Amended 2026-08-07 (T1.9) — self-service deletion is Citizen-only.** Data-model §"Ownership &
+Permissions" grants an Authority `RU` on its own account, not `D`; Authority accounts are
+admin-provisioned (FR-2) and their grants are audited (BR-25), so their lifecycle ends with
+`PATCH /users/{id} {"status":"deprovisioned"}`, not with the holder erasing an audited grant.
+The same applies to an Admin, where self-deletion additionally risks removing the last account able
+to provision anyone. P6's "users can request account + PII deletion" and the PRD's edge case both
+name the **Citizen** case.
+
+⚠️ **`202`, and the session is already gone when it is returned.** The status code reflects that
+retained-record anonymization may extend past the response (P2/P3 add Reports and media); it does
+**not** mean the account is still usable. Every session is revoked and the contact columns are
+cleared before the response is written, so the caller cannot act again on the credential they just
+used. Anonymization is **irreversible and has no undo endpoint** — the row is retained only so
+public Issue history keeps a stable author reference (C-14).
 
 #### `GET /users` *(admin)*
 - **Purpose:** List/search accounts for administration.

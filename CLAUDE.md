@@ -398,6 +398,62 @@ views; **new root `conftest.py`**; 21 tests in `identity/tests/test_rate_limitin
   Safe only because sessions are `cached_db`.
 - **No spec amendment owed** — §4.5 and §6.1's `429`s already specify this; only the numbers are open.
 
+✅ Built in T1.9 (2026-08-07): `/users/me` — profile read/update + account deletion → PII
+anonymization (P6, BR-33, C-14). `update_profile` / `anonymize_account` + `ProfileUpdateError` /
+`AccountDeletionError` in `identity/services.py`; `ProfileUpdateSerializer`; `MeView`
+(GET/PATCH/DELETE); `GET`·`PATCH`·`DELETE /users/me`; 36 tests in `identity/tests/test_profile.py`.
+**No migration.** `pytest` **395 passed / 1 xfailed**, mypy (117 files) / ruff clean, no drift,
+`check --deploy` clean.
+
+- ⚠️ **API §6.2 was amended first, in three places** (the rule, followed): one response shape for all
+  three roles; a table for what `categoryScope: []` means per role; and Citizen-only `DELETE`.
+  ✅ **This closes the T1.6 ❓** — that record said "amend the spec before T1.9's `GET /users/me`".
+- ⚠️ **An Admin's `categoryScope: []` and an unscoped Authority's `[]` are identical JSON with
+  opposite meanings** — unrestricted vs. permitted-nothing. `role` is the only disambiguator. Emitted
+  for every role anyway so the shape stays stable; a client must not read capability from it alone.
+- ⚠️ **`DELETE /users/me` is Citizen-only**, and that came from the data-model, not §6.2: the
+  ownership matrix grants an Authority `RU`, not `D`. An Authority erasing an audited grant (FR-2,
+  BR-25) or an Admin removing the last provisioner are both `403`. The alternative path is
+  `PATCH /users/{id} {"status":"deprovisioned"}` — now named in the spec.
+- ⚠️ **Anonymization nulls PII in the *same* `save()` as the status flip.** Two UPDATEs leave a
+  window where a crash yields a `deleted` row still carrying a live email — and the constraint's
+  DELETED branch accepts it. `status=DELETED` is that escape hatch (A6); **do not tighten it.**
+- ⚠️ **The row is retained, never deleted** (C-14). `test_anonymization_retains_the_row` is what fails
+  if this is "simplified" to `user.delete()` — every PII assertion would still pass.
+- ⚠️ **The `VerificationCode`/`TOTPDevice` deletes are explicit because no cascade fires** — nothing
+  is deleted here, the user row survives. Implicit would leave a live TOTP secret on a dead account.
+- ⚠️ **Sessions are revoked inside the transaction; `is_active` is not a substitute.**
+  `status=DELETED` stops *new* authentications at commit, but a live session runs to expiry (Arch §8).
+- ⚠️ **`202` is written to a caller that can no longer authenticate.** It reflects that
+  retained-record anonymization may extend past the response (P2/P3), not that the account works.
+- ⚠️ **`PATCH /users/me` rejects unknown fields rather than dropping them.** DRF's default makes
+  `PATCH {"role":"admin"}` a `200` with an unchanged body — indistinguishable from success. Allowed
+  keys are derived from the declared fields in both spellings: the camelCase mixin rewrites keys
+  before `validate()` runs, while `initial_data` keeps the client's original.
+- ⚠️ **`ProfileUpdateSerializer` is a plain `Serializer`, never a `ModelSerializer` over `User`** —
+  otherwise `role`/`status`/`is_staff`/`require_two_factor` are one `fields` edit from being
+  self-assignable. Escalation must require adding a field, not forgetting to exclude one.
+- ⚠️ **`email` is not updatable here** — it is the password-reset address, so a self-service change
+  turns one borrowed session into permanent takeover. `update_profile` has no such parameter; the
+  test asserts the *signature*, because the guarantee is structural.
+- ⚠️ **Any submitted `phone` clears `phone_verified_at`, even when unchanged** (BR-30, fail closed).
+  Skipping on equality keeps a stale proof alive for a number that changed hands and came back.
+- ⚠️ **`""` clears the phone; `null` is refused** — aliasing them sends `null` into the E.164
+  validator as a `500`. `save()` normalizes `""` to the NULL the UNIQUE index needs.
+- ⚠️ **Clearing the last contact channel is `422`, not `400`** — a business rule, not a bad body.
+- ⚠️ **The `409` check uses `.exclude(pk=user.pk)`**, or an unchanged resubmission conflicts with
+  itself. The `IntegrityError` catch still stays — it closes the check-to-UPDATE race.
+- **`403` is Django's `PermissionDenied`, not a bespoke code** — §6.2 names none for this endpoint,
+  so it renders as the generic `FORBIDDEN`. Contrast `ACCOUNT_LOCKED`, which §6.1 does name.
+- **`MeView` carries `auth_user` only** — `auth_anon` is sized for pre-session attempts, and applying
+  it here would let one user's profile edits exhaust the login allowance for everyone behind a NAT.
+- ⚠️ **`users/me` must stay routed before any `users/<str:pk>`** — same trap as `users/authorities`.
+- ❓ **`GET /users` and `PATCH /users/{id}` (both Admin, API §6.2) are unbuilt and now explicitly
+  unowned.** `api/urls.py` used to point them at T1.9; T1.9 scoped to `/users/me` only. They need a
+  task ID — the same treatment `/auth/password/forgot`·`/reset` got. Note `PATCH /users/{id}` is the
+  documented route for Authority deprovisioning and for Admin-side email changes, so **two T1.9
+  decisions currently have no implemented alternative path.**
+
 ## Commands
 
 Sourced from `docs/06-devops-guide.md` §4.1 and its Dockerfile example. **No manifest or task

@@ -46,18 +46,28 @@ urlpatterns = [
     #
     # ⚠️ Registered before any `users/<id>` route, and it must stay that way. Django matches in
     # order, so a `users/<uuid:pk>` pattern added above this line would still not shadow it
-    # (`authorities` is not a UUID) — but a looser `users/<str:pk>` from T1.9 would swallow it and
-    # turn provisioning into a lookup for a user whose id is the literal string "authorities".
+    # (`authorities` is not a UUID) — but a looser `users/<str:pk>` for the still-unowned
+    # `PATCH /users/{id}` would swallow it and turn provisioning into a lookup for a user whose id
+    # is the literal string "authorities".
     path(
         "users/authorities",
         identity_views.ProvisionAuthorityView.as_view(),
         name="users-authorities",
     ),
+    # API §6.2 — `/users/me` (T1.9): profile read/update and account deletion→anonymization.
+    #
+    # ⚠️ This route must stay registered before any `users/<id>` pattern for the same reason the
+    # `authorities` route above must: a future `users/<str:pk>` from `PATCH /users/{id}` would
+    # swallow `me` and turn profile reads into lookups for a user whose id is "me". Order in this
+    # file IS the router.
+    path("users/me", identity_views.MeView.as_view(), name="users-me"),
 ]
 
 # Remaining §6 resources land with their phases, not here:
 #   /auth/password                   → unowned; ❓Q5 blocks delivery of the reset token
-#   /users/me, /users, /users/{id}   → T1.9
+#   /users/me                        → T1.9 ✅ built
+#   /users, /users/{id}              → unowned (admin list/search, role/scope/status change);
+#                                      API §6.2 names both, T1.9 scoped them out
 #   /reports, /media                 → P1/P3
 #   /issues, /map, /comments         → P2/P4
 #   /meta/enums                      → P1 (taxonomy confirmed — Q1 resolved 2026-08-07)

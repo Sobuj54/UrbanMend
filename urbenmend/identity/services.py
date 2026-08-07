@@ -440,6 +440,204 @@ def revoke_all_sessions(*, user: User) -> int:
 
 
 # =======================================================================================
+# Profile read/update (T1.9, API §6.2 `PATCH /users/me`)
+# =======================================================================================
+
+
+class ProfileUpdateError(Exception):
+    """A profile update collided with another account's contact detail (T1.9).
+
+    Maps to `409 CONFLICT` — API §6.2 lists `409` (identity in use) for `PATCH /users/me`.
+    Distinct from `ProvisioningError` and `RegistrationError` despite the shared status code:
+    the disclosure rules differ again. This caller is authenticated and updating *their own*
+    profile, so telling them the number is taken reveals nothing they could not learn by trying
+    to register it — and withholding it would leave them unable to tell a typo from a conflict.
+    """
+
+
+def update_profile(
+    *,
+    user: User,
+    phone: str | None = None,
+    preferred_language: str | None = None,
+) -> User:
+    """Update the caller's own contact channel and language (API §6.2 `PATCH /users/me`).
+
+    Args:
+        user: The account to update. **Authorization is structural** — this is "self", and the
+            view passes `request.user`, so there is no id in the body or the path to tamper
+            with. That is why there is no `require_role` here: every authenticated caller may
+            edit their own profile, and no caller can name a different one (FR-3 is satisfied by
+            the absence of a selector, not by an omitted check).
+        phone: New E.164 number, or `""` to clear it. `None` means "not submitted" — distinct
+            from `""`, which is an explicit removal. Re-triggers phone verification (BR-30).
+        preferred_language: `"en"` or `"bn"` (NFR-8).
+
+    Returns:
+        The updated user, refreshed.
+
+    ⚠️ **`email` is deliberately not updatable here.** Self-service email change is excluded from
+    `PATCH /users/me` (API §6.2, amended 2026-08-07): it is the address a password reset is sent
+    to, so allowing it turns one live session into a permanent account takeover. Changing an
+    email is an Admin action (`PATCH /users/{id}`). This function's caller must never receive a
+    change of email as a success.
+
+    Raises:
+        ProfileUpdateError: `409` — the new phone is already in use by a different account.
+        ValidationError: `422` — clearing the phone would leave the account with no contact
+            channel.
+    """
+    from urbenmend.identity.models import Channel, User
+
+    normalized: str | None = None
+
+    if phone is not None:
+        # ⚠️ Normalized exactly as `User._normalize_contact()` does it, because the point of the
+        # check is to predict what the UNIQUE index will see. The same `.strip().lower()` pattern
+        # `provision_authority` records: `normalize_email` lowercases only the domain, so using it
+        # here would let a collision through to an `IntegrityError` instead of the documented 409.
+        normalized = phone.strip()
+
+        if not normalized:
+            if user.email is None:
+                raise ValidationError(
+                    "An account must keep at least one contact channel — the email address or a "
+                    "phone number."
+                )
+        # ⚠️ `.exclude(pk=user.pk)`: the caller's own current number is not a conflict. Without
+        # it, re-submitting an unchanged profile would `409` against itself.
+        elif User.objects.filter(phone=normalized).exclude(pk=user.pk).exists():
+            raise ProfileUpdateError("An account with that phone number already exists.")
+
+    updated_fields: list[str] = []
+
+    if phone is not None:
+        updated_fields += ["phone", "phone_verified_at"]
+        user.phone = normalized
+        # ⚠️ **Cleared whenever the phone is submitted, even if the value is unchanged.** The
+        # timestamp is a claim that *this* number was proven, and re-verification is cheap; the
+        # alternative is comparing against the stored value and skipping when equal, which keeps
+        # a stale claim alive for a number that changed hands and came back. Fail closed:
+        # `verified.phone` reads `false` until a fresh code is confirmed (BR-30).
+        user.phone_verified_at = None
+
+    if preferred_language is not None:
+        updated_fields.append("preferred_language")
+        user.preferred_language = preferred_language
+
+    try:
+        with transaction.atomic():
+            # One UPDATE for both fields — `save()` also re-runs `_normalize_contact()`, which is
+            # what turns a submitted `""` into the NULL the UNIQUE index needs (models.py A6).
+            user.save(update_fields=updated_fields)
+
+            if normalized:
+                # ⚠️ Inside the transaction, so a failure to issue the code rolls the number back
+                # rather than leaving an unverifiable phone on the account. The Q5 delivery this
+                # is waiting on enqueues via `transaction.on_commit`, so the worker still cannot
+                # observe an uncommitted row [doc: Arch §4.1]. The plaintext code is discarded
+                # here exactly as `RegisterView` discards it — it must never reach a response.
+                send_verification_code(user=user, channel=Channel.PHONE)
+    except IntegrityError as exc:
+        # ⚠️ Not redundant with the `.exists()` above — it closes the window between that check
+        # and this UPDATE, the same race `provision_authority` records for its INSERT. Two
+        # accounts claiming one number concurrently would otherwise yield `500`, not the
+        # documented `409`.
+        raise ProfileUpdateError("An account with that phone number already exists.") from exc
+
+    return user
+
+
+# =======================================================================================
+# Account deletion → PII anonymization (T1.9, P6, BR-33, C-14)
+# =======================================================================================
+
+
+class AccountDeletionError(Exception):
+    """`DELETE /users/me` refused for a role that must not self-delete (API §6.2, amended 2026-08-07).
+
+    Maps to `403 FORBIDDEN`. An Authority's lifecycle ends with an Admin's
+    `PATCH /users/{id} {status:"deprovisioned"}`, not with the holder erasing an audited grant
+    (FR-2, BR-25); an Admin's self-deletion risks removing the last account able to provision
+    anyone. The 403 is deliberately not an `AuthorizationError`: this is a state of the *target*
+    role, not of the actor's permission tier — and `AuthorizationError` subclasses Django's
+    `PermissionDenied`, which the exception handler maps to the same 403 anyway.
+    """
+
+
+@transaction.atomic
+def anonymize_account(*, user: User) -> None:
+    """Permanently delete an account by anonymizing it (T1.9, P6, BR-33, C-14).
+
+    ⚠️ **`DELETE /users/me` is Citizen-only** (API §6.2, amended 2026-08-07). The ownership
+    matrix grants an Authority `RU` — not `D` — on its own account, and an Admin's self-deletion
+    could strand the platform without a provisioner. The data-model "Ownership & Permissions"
+    table, FR-2, and BR-25 all trace here; the spec amendment records the decision.
+
+    ⚠️ **There is no undo and no second step.** The caller's own session is revoked *inside this
+    transaction* (BR-33, Arch §8), the PII is nulled, and the response is written after commit —
+    so the `202` is emitted to a caller that can no longer authenticate. The `202` status reflects
+    that retained-record anonymization may extend past the response (P2/P3 add Reports and media),
+    **not** that the account is still usable.
+
+    ⚠️ **The row is retained, never deleted** (C-14): public Issue history keeps a stable author
+    reference. `UserStatus.DELETED` is the CheckConstraint's escape hatch — `email`/`phone` are
+    both NULL here, which the `identity_user_has_contact_or_anonymized` constraint would otherwise
+    reject (models.py T1.9 comment). **Do not tighten that constraint.**
+
+    ⚠️ **`is_active` is derived and read-only** (A6, models.py): `status=DELETED` is outside
+    `{registered, verified, active}`, so the account cannot authenticate from the moment this
+    transaction commits — the row stops being usable before the session rows are gone, not after.
+    The session revocation is still required: a deleted `is_active` does not end a *live* session
+    by itself (Arch §8, T1.3), and `cached_db` means a session row delete without the
+    `SessionStore(key).delete()` path leaves the cached copy authenticating (revoke_all_sessions'
+    entire reason for existing).
+    """
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    from urbenmend.identity.models import Role, UserStatus, VerificationCode
+
+    if user.role in (Role.ADMIN, Role.AUTHORITY):
+        raise AccountDeletionError(
+            "Authority and Admin accounts cannot be deleted through the self-service endpoint. "
+            "Contact an administrator."
+        )
+
+    # ⚠️ **Order matters: status is flipped first.** Once `status=DELETED` commits, `is_active`
+    # is False and no request can authenticate; the session revocation below is the last thing
+    # that can use the session, and a re-entrant revocation cannot be interrupted mid-flight by a
+    # credential that outlives the flip.
+    user.status = UserStatus.DELETED
+    # ⚠️ PII is nulled in the same statement as the status flip — never a separate UPDATE. A
+    # crash between the two would leave a row that is `deleted` but still carries a live email
+    # address, and the constraint's DELETED branch would happily accept it. Anonymization that
+    # can silently fail halfway is not anonymization.
+    user.email = None
+    user.phone = None
+    user.email_verified_at = None
+    user.phone_verified_at = None
+    user.save(update_fields=["status", "email", "phone", "email_verified_at", "phone_verified_at"])
+
+    # ⚠️ The category-scope M2M is cleared so a deleted Authority-ish leftover cannot be scoped
+    # retroactively, and the code/TOTP rows are removed because they are secrets and secrets are
+    # not retained after the account that minted them is gone. `verificationcode` rows cascade on
+    # user delete, but there is no delete here — the user row survives — so the cascade never
+    # fires; these are explicit.
+    user.category_scope.clear()
+    VerificationCode.objects.filter(user=user).delete()
+    TOTPDevice.objects.filter(user=user).delete()
+
+    # ⚠️ Sessions are revoked last, and the revocation itself must never be skipped. A deleted
+    # account's live session would keep authenticating until it expired — `is_active` alone does
+    # not end a session (Arch §8) — which is the exact hole BR-33 exists to prevent.
+    revoke_all_sessions(user=user)
+
+    # Structured, T8.1-funnel style: not `_audit_privileged_action` (that one takes an actor and
+    # an action; this is a self-service event whose audit semantics land with T8.1).
+    logger.info("account_anonymized", user_id=str(user.pk), role=user.role)
+
+
+# =======================================================================================
 # RBAC — the enforcement layer (T1.5, FR-3, BR-26/BR-27)
 # =======================================================================================
 #

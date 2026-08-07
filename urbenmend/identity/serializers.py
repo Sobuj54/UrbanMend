@@ -14,7 +14,11 @@ from typing import Any
 
 from rest_framework import serializers
 
-from urbenmend.api.serializers import CamelCaseModelSerializer, CamelCaseSerializer
+from urbenmend.api.serializers import (
+    CamelCaseModelSerializer,
+    CamelCaseSerializer,
+    to_camel_case,
+)
 from urbenmend.identity import services
 from urbenmend.identity.models import Channel, User
 
@@ -185,14 +189,20 @@ class ProvisionAuthoritySerializer(CamelCaseSerializer):
 class UserSerializer(CamelCaseModelSerializer):
     """User resource shape for API responses (API §6.2).
 
-    ⚠️ **`categoryScope` is emitted from the BR-26 rows, and for an Admin it reads `[]` — which
-    is the stored truth but NOT the effective permission.** Admins bypass scope entirely
-    (`scoped_category_ids()` returns `None`, "apply no filter"), so a client that renders this
-    field literally would show an Admin as able to act on nothing. API §6.2's example is a
-    `"role":"authority"` body and the spec says nothing about the other two roles. ❓Flagged for
-    T1.9 (`GET /users/me`), which is where a non-Authority reads its own profile; **the spec needs
-    amending before that ships**, and the answer is not being invented here. T1.6 is unaffected:
-    `POST /users/authorities` only ever returns an Authority.
+    ✅ **The T1.6 ❓ is resolved: API §6.2 was amended (2026-08-07, T1.9) before `GET /users/me`
+    shipped**, per the spec-first rule. The amendment fixes one response shape for all three
+    roles, with `categoryScope` always an array.
+
+    ⚠️ **`categoryScope` is the stored BR-26 rows, which is NOT the effective permission for two
+    of the three roles.** It reads `[]` for a Citizen (scope does not gate them) and `[]` for an
+    Admin — who bypasses scope entirely, `scoped_category_ids()` returning `None` for "apply no
+    filter". So an Admin's `[]` and an unscoped Authority's `[]` are byte-identical JSON meaning
+    opposite things: unrestricted, versus permitted nothing until an Admin scopes them. `role`
+    disambiguates; the spec now says so explicitly and warns clients not to derive capability
+    from this field alone.
+
+    It is emitted for every role rather than omitted or `null` so the shape stays stable — the
+    alternative makes a client branch on `role` before it can parse the body.
     """
 
     verified = serializers.SerializerMethodField()
@@ -230,6 +240,72 @@ class UserSerializer(CamelCaseModelSerializer):
         from urbenmend.identity.selectors import category_scope_for
 
         return [category.slug for category in category_scope_for(obj)]
+
+
+class ProfileUpdateSerializer(CamelCaseSerializer):
+    """PATCH /users/me request body (API §6.2, amended 2026-08-07).
+
+    Spec body: `{ "phone": "…", "preferredLanguage": "bn" }` — and that list is exhaustive.
+
+    ⚠️ **A plain `Serializer`, not a `ModelSerializer` over `User`.** A model serializer's field
+    set is whatever the model carries, so `role`, `status`, `is_staff` and `require_two_factor`
+    would all be one `fields` edit — or one careless `"__all__"` — away from being
+    self-assignable. Privilege escalation should require adding a field here, not forgetting to
+    exclude one. Same reasoning `TwoFactorEnrollResponseSerializer` records for not wrapping
+    `TOTPDevice`.
+
+    ⚠️ **`email` is absent deliberately, not by oversight.** Self-service email change is excluded
+    from the endpoint (spec amended 2026-08-07): the email is where a password reset is sent, so
+    changing it from a live session converts a borrowed session into permanent account takeover.
+
+    ⚠️ **Unknown fields are rejected, not ignored.** DRF's default is to drop them silently, so
+    `PATCH {"role":"admin"}` would return `200` with a body still showing `role: "citizen"` — and
+    a caller cannot distinguish that from a successful update. api-conventions.md asks for
+    rejection "where strictness matters"; an endpoint whose neighbours are privilege fields is
+    exactly that case.
+    """
+
+    # ⚠️ `allow_blank=True` but `allow_null=False`: `""` clears the number (the service hands it
+    # to `save()`, which normalizes it to the NULL the UNIQUE index needs), while `null` is
+    # refused. Accepting both spellings for one intent means a client sends `null` and hits the
+    # E.164 validator as a `500` instead of a `400`.
+    phone = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=False,
+        max_length=16,
+    )
+    preferred_language = serializers.ChoiceField(choices=["en", "bn"], required=False)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        """Reject an empty body, and any field this endpoint does not own.
+
+        ⚠️ An empty `PATCH` answering `200` is indistinguishable from a real update, so a client
+        with a misspelled field name would see success forever.
+        """
+        # ⚠️ Both spellings are accepted because `CamelCaseSerializerMixin.to_internal_value()`
+        # rewrites the keys *before* this runs while `initial_data` keeps the client's original —
+        # comparing against `self.fields` alone would flag the caller's own `preferredLanguage` as
+        # unknown. Derived from the declared fields rather than hardcoded so adding a field here
+        # cannot forget to allow its camelCase form.
+        # ⚠️ `.keys()`, not iteration over `self.fields`: DRF's `BindingDict` yields field *names*
+        # at runtime, but its stubs type `__iter__` as yielding `Field`, so `to_camel_case(name)`
+        # would not type-check. Iterating the keys explicitly says what is meant either way.
+        declared = {str(name) for name in self.fields.keys()}  # noqa: SIM118
+        allowed = declared | {to_camel_case(name) for name in declared}
+        submitted = set(self.initial_data) if isinstance(self.initial_data, dict) else set()
+
+        if unknown := sorted(submitted - allowed):
+            raise serializers.ValidationError(
+                dict.fromkeys(unknown, "This field is not editable through this endpoint."),
+                code="VALIDATION_FAILED",
+            )
+        if not attrs:
+            raise serializers.ValidationError(
+                "Provide at least one field to update.",
+                code="REQUIRED",
+            )
+        return attrs
 
 
 class TwoFactorEnrollResponseSerializer(CamelCaseSerializer):
