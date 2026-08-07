@@ -1140,12 +1140,91 @@ suite **338 passed / 1 xfailed**; `ruff check`, `ruff format --check` (121 files
 `check --deploy` clean on `prod`. No migration to reverse — `showmigrations otp_totp` confirms all
 three third-party migrations already applied.
 
+### T1.8 — Login/OTP rate limiting + account lockout (FR-4, API §4.5)
+
+Built `urbenmend/api/throttling.py` (`ScopedWindowRateThrottle`, `AuthAnonRateThrottle`,
+`AuthIdentityRateThrottle`, `AuthUserRateThrottle`, `RateLimitHeadersMixin`,
+`clear_identity_throttle`), `AUTH_THROTTLE_RATES` in `settings/base.py`, throttle wiring on the five
+auth views, the root `conftest.py`, and 21 tests in `identity/tests/test_rate_limiting.py`.
+**No migration** — the mechanism is entirely Redis-backed. Full suite **359 passed / 1 xfailed**,
+mypy (116 files) / ruff clean, no drift, `check --deploy` clean on `prod`.
+
+- ⚠️ **Lockout is throttle-only backoff — a scoping decision, not an oversight.** FR-4 says
+  "lockout/backoff" and API §6.1 lists `403 ACCOUNT_LOCKED`, but neither doc says what brute-force
+  protection *does*. Persistent per-account lockout state was rejected because it is a targeted DoS:
+  anyone who knows an Authority's email could hold them out on demand. Failed logins consume a
+  bucket; success clears it. `403 ACCOUNT_LOCKED` stays what T1.3 made it — a `status` denial.
+  `test_a_locked_out_identifier_does_not_lock_the_account_itself` pins the difference.
+- ⚠️ **The numbers are our policy, not spec-derived.** `api-conventions.md` lists "numeric rate
+  limits and windows" under **Not specified — do not invent**, but FR-4 and the M1 gate require the
+  endpoints to be limited. Same tension T1.2 resolved for `CODE_LENGTH`/`TTL`/`MAX_ATTEMPTS`, same
+  resolution: `10/15m` per IP, `5/15m` per identifier, `20/15m` per session — in settings,
+  env-overridable (NFR-11), labelled as chosen. They become contract only if the spec adopts them.
+- ⚠️ **`SimpleRateThrottle.parse_rate` reads only `period[0]`, so DRF cannot express a 15-minute
+  window.** `"5/15m"` there means 5-per-*minute*: 15× tighter than written, with nothing anywhere to
+  indicate it. Verified against the installed source, not assumed. `ScopedWindowRateThrottle`
+  overrides it; `test_parse_rate_honours_a_multi_unit_window` is the regression guard, and a bare
+  `"10/hour"` still parses exactly as DRF does.
+- ⚠️ **DRF emits none of the three `RateLimit-*` headers API §4.5 requires on every limited
+  endpoint** — only `Retry-After`, only on a 429. `check_throttles()` also keeps its throttle
+  instances local and stores *nothing* on the request, so there is no post-hoc state to read: the
+  first attempt read invented `request.throttle_wait`/`throttle_duration` and would have emitted no
+  headers at all, silently. `RateLimitHeadersMixin` overrides `get_throttles()` to capture the
+  instances DRF actually uses. Same family as the T0.6 camelCase and pagination gaps.
+- ⚠️ **The advertised bucket is the one with least *headroom*, not the smallest limit.** A
+  wide-but-nearly-spent bucket constrains the caller more than a narrow fresh one; advertising the
+  wrong one tells a well-behaved client it has room it does not have.
+- ⚠️ **`AuthIdentityRateThrottle` keys on the submitted `identifier`, not `request.user`.** At login
+  there is no user yet — keying on `request.user` would only throttle *after* a successful password
+  check, i.e. never during the attack it exists to stop.
+- ⚠️ **The identifier is SHA-256'd into the cache key, never stored raw.** Keys surface in
+  `redis-cli KEYS`, slow logs and dumps; an email there is PII (NFR-12) and a phone number is worse.
+  Normalized first, or casing alone multiplies the allowance.
+- ⚠️ **`get_cache_key` swallows `request.data` parse errors and returns `None`.** An exception there
+  aborts `check_throttles()` mid-list, so the per-IP bucket registered *after* it would never count
+  the request — a flood of malformed bodies would consume no budget at all.
+- ⚠️ **`clear_identity_throttle()` is success-path only, and clears the identifier bucket alone.**
+  Moving it earlier (or into a `finally`) erases the counter that makes the endpoint limited, and
+  every pre-existing test still passes because the happy path never observes it. The per-IP bucket
+  deliberately survives a success: one source working a credential dump lands a valid login every so
+  often, and clearing on those would hand it an unlimited overall budget.
+- ⚠️ **The throttle runs before the credential check**, so a correct password submitted while
+  throttled is still refused — the run that finds the password is exactly the one that must not pass.
+- ⚠️ **`AuthAnonRateThrottle` throttles authenticated callers too**, unlike DRF's `AnonRateThrottle`,
+  which returns `None` the moment a user is present. On auth endpoints the per-IP cap exists to stop
+  one source spraying *many* identifiers; exempting session-holders would leave that unlimited.
+- ⚠️ **A partial post-password session is unauthenticated by T1.7's design, so 2FA code-guessing
+  lands in `auth_anon`, not `auth_user`.** That is the bucket to tighten if OTP ever needs to be
+  stricter — narrowing `auth_user` would only constrain callers who already passed both factors.
+  Unlike `verify_code()` (T1.2), `verify_totp()` has no per-account attempt counter: `verify_token()`
+  blocks replay of a code, not a walk through the keyspace, so these buckets are the only cap.
+- ⚠️ **Rates are read at throttle *instantiation*, not bound as a class attribute.** DRF's
+  `THROTTLE_RATES = api_settings.DEFAULT_THROTTLE_RATES` binds once at import, so `override_settings`
+  would not reach it — and a limit that cannot be turned down in a test is a limit whose 429 path
+  never gets exercised.
+- ⚠️ **`DEFAULT_THROTTLE_CLASSES` is deliberately left unset.** A project-wide default would silently
+  throttle the public map and issue list, which §4.5 does not ask for and Q7 makes unauthenticated.
+- ⚠️ **The root `conftest.py` exists for one reason: throttle state is not rolled back.**
+  `pytest-django` wraps each test in a transaction, but counters live in Redis. Adding the throttles
+  turned **27 pre-existing tests red** with spurious 429s in an order-dependent way. The fix is an
+  autouse session-wide cache clear — not looser limits, and not one test rewritten to accommodate
+  the throttle. Safe because sessions are `cached_db` (the DB row is the source of truth); it would
+  not be under a pure `cache` session backend.
+- **No spec amendment was owed.** §4.5 and the `429`s in §6.1 already describe exactly this; the only
+  unspecified part is the numbers, which the docs leave open on purpose.
+
+Verified in the container: `pytest urbenmend/identity/tests/test_rate_limiting.py` **21 passed**;
+full suite **359 passed / 1 xfailed** (up from 338); `ruff check`, `ruff format --check` (124 files),
+`mypy` (116 files) clean; `manage.py check` clean (0 silenced); `makemigrations --check --dry-run`
+exit 0; `check --deploy` clean on `prod` with a realistic key.
+
 **M1 gate:** a citizen can register → verify → log in; an admin can provision a scope-limited
 authority; RBAC denies out-of-scope actions; sessions revoke immediately.
 
 - [x] register → verify (T1.2)
 - [x] log in (T1.3 — sessions)
 - [x] 2FA for authority/admin (T1.7 — TOTP; partial post-password session)
+- [x] login/OTP rate limiting + backoff (T1.8 — ⚠️ throttle-only, no per-account lock state)
 - [x] CSRF on state-changing requests (T1.4)
 - [x] category taxonomy seeded (T0.10 — ❓Q1 resolved)
 - [x] admin provisions a scope-limited authority (T1.6 — ⚠️ audited to a log line only until T8.1)

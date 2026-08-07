@@ -287,6 +287,39 @@ REST_FRAMEWORK = {
     # because a global renderer-level rename would also rewrite keys that must stay verbatim —
     # `details[].field` values, which name the client's own submitted field, and GeoJSON's
     # fixed `type`/`geometry`/`coordinates`/`properties` keys (API §1.2, §4.3).
+    #
+    # ⚠️ `DEFAULT_THROTTLE_CLASSES`/`_RATES` are deliberately unset. T1.8 scopes rate limiting to
+    # the auth endpoints (FR-4) and applies it per-view; a project-wide default would silently
+    # throttle the public map and issue list, which API §4.5 does not ask for and Q7 makes
+    # unauthenticated. Rates live in `AUTH_THROTTLE_RATES` below, read at throttle-instantiation
+    # time so `override_settings` reaches them — see `urbenmend/api/throttling.py`.
+}
+
+# --------------------------------------------------------------------------------------
+# Rate limiting (T1.8, FR-4, API §4.5)
+# --------------------------------------------------------------------------------------
+# ⚠️ **These numbers are our policy, not spec-derived.** `api-conventions.md` lists "numeric rate
+# limits and windows" under "Not specified — do not invent", but FR-4 requires rate-limited login
+# and the M1 gate requires it working. Same tension T1.2 resolved for the verification-code policy:
+# choose defensible values, keep them in config (NFR-11), and label them so nobody later mistakes
+# them for a contract. Raise them in `docs/04-api-specification.md` if they ever become one.
+#
+# ⚠️ Window syntax is `<count>/<n><unit>` and is parsed by `ScopedWindowRateThrottle`, NOT by DRF:
+# DRF's `parse_rate` reads only the first character of the period, so "5/15m" there would mean
+# 5-per-minute with the 15 silently dropped.
+#
+# Backed by the Redis `default` cache above. A cache flush resets the counters — acceptable, since
+# these are backoff windows rather than durable lockout state (the T1.8 lockout decision).
+AUTH_THROTTLE_RATES = {
+    # Per-IP, across all identifiers. Sized to absorb a household or small office behind one NAT
+    # while still capping a single source's spray. Mobile-carrier NAT in Bangladesh can put many
+    # users behind one address, which is why the per-identifier bucket below is the tighter one.
+    "auth_anon": env("AUTH_THROTTLE_RATE_ANON", default="10/15m"),
+    # Per-identifier — the FR-4 brute-force limit. Cleared on a successful login, so a legitimate
+    # user who mistypes a few times is not held out once they get it right.
+    "auth_identity": env("AUTH_THROTTLE_RATE_IDENTITY", default="5/15m"),
+    # Per-session, for auth actions taken with a session already in hand.
+    "auth_user": env("AUTH_THROTTLE_RATE_USER", default="20/15m"),
 }
 
 # --------------------------------------------------------------------------------------

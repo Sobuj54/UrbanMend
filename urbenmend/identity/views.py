@@ -29,6 +29,13 @@ from urbenmend.api.exceptions import (
     InvalidCredentials,
     UnprocessableEntity,
 )
+from urbenmend.api.throttling import (
+    AuthAnonRateThrottle,
+    AuthIdentityRateThrottle,
+    AuthUserRateThrottle,
+    RateLimitHeadersMixin,
+    clear_identity_throttle,
+)
 from urbenmend.identity import services
 from urbenmend.identity.models import Channel, User
 from urbenmend.identity.serializers import (
@@ -44,11 +51,14 @@ from urbenmend.identity.serializers import (
 )
 
 
-class RegisterView(APIView):
+class RegisterView(RateLimitHeadersMixin, APIView):
     """`POST /auth/register` — register a citizen account (FR-1, API §6.1)."""
 
     permission_classes = [AllowAny]
     authentication_classes: list[Any] = []
+    # Per-IP only: registration has no identifier to key on and no session, so `auth_anon` is the
+    # only bucket that applies. Caps automated account creation from one source (T1.8).
+    throttle_classes = [AuthAnonRateThrottle]
 
     def post(self, request: Request) -> Response:
         serializer = RegisterSerializer(data=request.data)
@@ -90,7 +100,7 @@ class RegisterView(APIView):
         )
 
 
-class VerifyView(APIView):
+class VerifyView(RateLimitHeadersMixin, APIView):
     """`POST /auth/verify` — confirm a channel with the emailed/texted code (API §6.1).
 
     API §6.1: "Auth: None (pre-session) or session." An authenticated user is verifying an
@@ -105,6 +115,11 @@ class VerifyView(APIView):
     # anyone could probe addresses and read the difference in the reply
     # [doc: api-conventions.md "no user enumeration", auth.md].
     _GENERIC_FAILURE = "The verification code is invalid or has expired."
+
+    # ⚠️ Both buckets, because this endpoint serves both caller kinds (see the docstring). The
+    # per-code `MAX_ATTEMPTS=5` in `verify_code()` (T1.2) caps guesses against *one* code; these
+    # cap the volume of attempts across many codes and accounts, which that counter cannot see.
+    throttle_classes = [AuthAnonRateThrottle, AuthUserRateThrottle]
 
     def post(self, request: Request) -> Response:
         serializer = VerifyRequestSerializer(data=request.data)
@@ -149,7 +164,7 @@ class VerifyView(APIView):
         return Response({"verified": True}, status=status.HTTP_200_OK)
 
 
-class LoginView(APIView):
+class LoginView(RateLimitHeadersMixin, APIView):
     """`POST /auth/login` — start a session (FR-1, API §6.1)."""
 
     permission_classes = [AllowAny]
@@ -159,6 +174,11 @@ class LoginView(APIView):
     # request. Leaving `SessionAuthentication` on would demand a CSRF token from a caller
     # who has never been issued one.
     authentication_classes: list[Any] = []
+    # ⚠️ **The FR-4 brute-force limit lives here**, and the per-identifier bucket is the one that
+    # matters: it caps guesses against a single account, which the per-IP bucket cannot do on its
+    # own (an attacker rotating through proxies gets a fresh IP bucket each time, but the
+    # identifier they are attacking stays the same). Both apply; whichever is tighter binds.
+    throttle_classes = [AuthIdentityRateThrottle, AuthAnonRateThrottle]
 
     def post(self, request: Request) -> Response:
         serializer = LoginSerializer(data=request.data)
@@ -191,6 +211,12 @@ class LoginView(APIView):
             services.start_partial_session(request=request._request, user=user)
         else:
             services.start_session(request=request._request, user=user)
+
+        # ⚠️ Only reachable past every `raise` above, which is the entire contract of this call
+        # (T1.8). Moving it earlier — or into a `finally` — erases the failed-attempt history the
+        # throttle is counting, and every existing test would still pass because the happy path
+        # never observes it. The per-IP bucket is deliberately left alone: see the docstring.
+        clear_identity_throttle(request=request)
 
         return Response(
             LoginResponseSerializer(user).data,
@@ -249,7 +275,7 @@ class ProvisionAuthorityView(APIView):
         )
 
 
-class TwoFactorEnrollView(APIView):
+class TwoFactorEnrollView(RateLimitHeadersMixin, APIView):
     """`POST /auth/2fa/enroll` — begin TOTP enrolment (FR-4, API §6.1 amended 2026-08-07).
 
     ⚠️ **`AllowAny`, and the reason matters.** A partial session is *not* an authenticated
@@ -261,6 +287,10 @@ class TwoFactorEnrollView(APIView):
     """
 
     permission_classes = [AllowAny]
+    # Both buckets: a partial-session caller is unauthenticated, so only `auth_anon` would apply
+    # to them, while a full-session caller lands in `auth_user`. Registering both means neither
+    # caller kind reaches this endpoint unlimited.
+    throttle_classes = [AuthAnonRateThrottle, AuthUserRateThrottle]
 
     def post(self, request: Request) -> Response:
         user = _resolve_caller(request)
@@ -285,7 +315,7 @@ class TwoFactorEnrollView(APIView):
         )
 
 
-class TwoFactorVerifyView(APIView):
+class TwoFactorVerifyView(RateLimitHeadersMixin, APIView):
     """`POST /auth/2fa/verify` — complete 2FA, or confirm a new device (FR-4, API §6.1).
 
     Two callers reach this endpoint and both are correct: a partial session completing a login,
@@ -294,6 +324,15 @@ class TwoFactorVerifyView(APIView):
     """
 
     permission_classes = [AllowAny]
+    # ⚠️ **The "OTP" half of T1.8's "login/OTP rate limiting".** A TOTP code is six digits with a
+    # 30-second window, so an unthrottled endpoint is brute-forceable outright — `verify_token()`
+    # blocks *replay* of a code, not a walk through the keyspace. There is no per-account attempt
+    # counter here the way `verify_code()` has one (T1.2), so these buckets are the only cap.
+    #
+    # ⚠️ A partial session is unauthenticated by T1.7's design, so the guessing path keys on IP via
+    # `auth_anon`. That is the bucket to tighten if this ever needs to be stricter — narrowing
+    # `auth_user` would only constrain callers who have already passed both factors.
+    throttle_classes = [AuthAnonRateThrottle, AuthUserRateThrottle]
 
     def post(self, request: Request) -> Response:
         serializer = TwoFactorVerifySerializer(data=request.data)

@@ -352,6 +352,52 @@ mypy (113 files) / ruff clean, no drift, `0004` verified reversible.
   never built. Delivery is blocked on ❓Q5. **A provisioned Authority still has no way to set a first
   password** — T1.6 creates them with an unusable one.
 
+✅ Built in T1.8 (2026-08-07): login/OTP rate limiting + lockout backoff (FR-4, API §4.5). New
+`urbenmend/api/throttling.py` — `ScopedWindowRateThrottle`, `AuthAnonRateThrottle`,
+`AuthIdentityRateThrottle`, `AuthUserRateThrottle`, `RateLimitHeadersMixin`,
+`clear_identity_throttle`; `AUTH_THROTTLE_RATES` in `settings/base.py`; throttles on all five auth
+views; **new root `conftest.py`**; 21 tests in `identity/tests/test_rate_limiting.py`.
+**No migration.** `pytest` **359 passed / 1 xfailed**, mypy (116 files) / ruff clean, no drift,
+`check --deploy` clean.
+
+- ⚠️ **Lockout is throttle-only backoff — no per-account lock state, deliberately.** FR-4 says
+  "lockout/backoff" without defining it. Persistent lockout is a targeted DoS: anyone knowing an
+  Authority's email could hold them out on demand. Failed logins consume a bucket, success clears
+  it. **`403 ACCOUNT_LOCKED` remains a `status` denial only** (T1.3) — never reuse it for throttling,
+  and never reuse `UserStatus.SUSPENDED`, which is a BR-25 moderation action.
+- ⚠️ **The rates are our policy, not spec-derived** (`api-conventions.md` lists numeric limits under
+  "do not invent"). `auth_anon` `10/15m` per IP, `auth_identity` `5/15m` per identifier, `auth_user`
+  `20/15m` per session — in settings, env-overridable (NFR-11). T1.2's precedent.
+- ⚠️ **DRF's `parse_rate` reads only `period[0]` — `"5/15m"` silently means 5 per *minute*.** 15×
+  tighter than written, nothing indicates it. `ScopedWindowRateThrottle` overrides it; a plain
+  `"10/hour"` still behaves as DRF does. Verified against installed source.
+- ⚠️ **DRF emits no `RateLimit-Limit`/`-Remaining`/`-Reset`** — API §4.5 requires all three on every
+  limited endpoint (DRF sets only `Retry-After`, only on 429). `check_throttles()` stores nothing on
+  the request, so `RateLimitHeadersMixin` overrides **`get_throttles()`** to capture the instances
+  DRF actually uses. Reading invented `request.throttle_*` attributes emits nothing, silently.
+  The advertised bucket is the one with least **headroom**, not the smallest limit.
+- ⚠️ **`AuthIdentityRateThrottle` keys on the submitted `identifier`, SHA-256'd, never raw** — cache
+  keys surface in `redis-cli KEYS` and dumps, and an email there is PII (NFR-12). Keying on
+  `request.user` would throttle only *after* a successful password check, i.e. never during the
+  attack. Normalized first or casing multiplies the allowance. Parse failures return `None` rather
+  than raising — an exception aborts `check_throttles()` and the per-IP bucket never counts.
+- ⚠️ **`clear_identity_throttle()` is success-path only and clears the identifier bucket alone.**
+  Calling it earlier or in a `finally` removes the counter entirely and every happy-path test still
+  passes. The per-IP bucket survives success on purpose.
+- ⚠️ **Throttle runs before the credential check** — a correct password while throttled is refused.
+- ⚠️ **A partial post-password session is unauthenticated (T1.7), so 2FA code-guessing lands in
+  `auth_anon`, not `auth_user`.** That is the bucket to tighten for OTP. `verify_totp()` has no
+  per-account attempt counter of its own — `verify_token()` blocks replay, not a keyspace walk.
+- ⚠️ **Rates read at instantiation, not bound as a class attribute** — DRF binds `THROTTLE_RATES` at
+  import, where `override_settings` cannot reach, making the 429 path untestable.
+- ⚠️ **`DEFAULT_THROTTLE_CLASSES` stays unset** — a global default would throttle the public map and
+  issue list, which §4.5 does not ask for and Q7 makes unauthenticated. Opt in per view.
+- ⚠️ **Throttle state is NOT rolled back between tests** — it lives in Redis, not the DB. The new
+  root `conftest.py` clears the cache autouse around every test; without it, adding throttles turned
+  **27 existing tests red** with order-dependent 429s. Any future throttled endpoint depends on it.
+  Safe only because sessions are `cached_db`.
+- **No spec amendment owed** — §4.5 and §6.1's `429`s already specify this; only the numbers are open.
+
 ## Commands
 
 Sourced from `docs/06-devops-guide.md` §4.1 and its Dockerfile example. **No manifest or task
