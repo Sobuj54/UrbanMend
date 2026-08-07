@@ -918,6 +918,8 @@ Decisions that bind later work:
   asserts it exists and is `active`.
 - **`slug` is the machine key, labels are display-only** — classification, the LLM adapter, and
   authority-scope rows all reference `slug`, so renaming an English label cannot break them.
+  ⚠️ **Corrected in T1.5:** `0001` shipped without the column and `name_en` was doing the job.
+  `classification/0002` adds and backfills it — see the T1.5 record below.
 - **`name_bn` is non-null and asserted not to equal `name_en`** (NFR-8). A placeholder-Bangla seed
   passes a not-null check and still ships an untranslated UI to every Bangla-speaking user.
 - **Taxonomy is data, not code** (NFR-11/FR-30): a seeded table, not a Python enum. `CategoryAdmin`
@@ -931,6 +933,68 @@ Verified in the container: `pytest urbenmend/classification/` **7 passed**; full
 1 xfailed**; `ruff check`, `ruff format --check`, `mypy --strict` (111 files) clean;
 `makemigrations --check --dry-run` exit 0; migration reversibility confirmed both directions.
 
+### T1.5 — RBAC enforcement layer (FR-3, BR-26/27)
+
+Built the Authority↔Category scope relation and the service-layer primitives every later
+authorization check calls: `has_role` / `require_role`, `has_category_scope` /
+`require_category_scope` / `require_scoped_visibility`, `scoped_category_ids`, plus
+`AuthorizationError` and the `category_scope_for` selector. Two migrations —
+`classification/0002_category_slug`, `identity/0003_category_scope` — and 26 tests.
+
+⚠️ **Found and fixed a T0.10 gap first.** The T0.10 record above claimed `slug` was the machine
+key, but `0001` never created the column — `name_en` was the only identifier. API §6.2 emits scope
+as `"categoryScope": ["roads","water_drainage"]` and §6.10 addresses nodes as
+`PATCH /categories/{key}`; neither is an English label, and the spec is authoritative. `0002` adds
+the column **nullable → backfill → tighten to NOT NULL UNIQUE**, the backward-compatible shape a
+single `AddField(unique=True)` cannot have against seven populated rows. `roads`,
+`water_drainage` and `electrical` are quoted verbatim in the spec, so those three are contract;
+the other four follow the same convention.
+
+Decisions that bind later work:
+
+- ⚠️ **An empty scope grants nothing.** `has_category_scope()` asks whether the category is
+  present, so a freshly provisioned Authority can act on nothing until an Admin scopes them
+  (BR-25). Reading empty as "unrestricted" would turn a forgotten provisioning step into access to
+  every category — the exact failure BR-26 exists to prevent.
+- ⚠️ **`has_role()` checks `status`, not just `role`.** A suspended Authority still reads
+  `role == "authority"`; trusting the column alone would let it keep acting until its session
+  expired, which is the failure sessions-over-JWT was chosen to prevent (Arch §8). A test asserts
+  the role column is unchanged while the check denies.
+- ⚠️ **Admins bypass scope; they are not scoped to everything.** `scoped_category_ids()` returns
+  `None` for Admin, meaning "apply no filter" — seeding a row per category would silently un-scope
+  an Admin the moment a migration adds a node.
+- ⚠️ **`403` to act, `404` to see.** `require_category_scope()` raises `403`;
+  `require_scoped_visibility()` raises `404`. API §4.2 defines `404` as "absent **or hidden from
+  this caller**", and a `403` on a scoped read confirms the id resolves to a real Issue in another
+  category — enough to enumerate ids and map another department's workload. Two functions rather
+  than a flag, so the call site states which it means.
+- ⚠️ **The scope check is `.filter(pk=...).exists()`, never `category in user.category_scope.all()`.**
+  The latter caches prefetched rows on the instance, so a scope an Admin just revoked keeps
+  passing for the life of the object — the same stale-authorization hazard `revoke_all_sessions()`
+  addresses for sessions. A test revokes mid-test and asserts the next check denies.
+- **Scope rows are allowed on any role and are inert off Authority.** No DB constraint ties them
+  to the role, because BR-25 promotes a Citizen to Authority and a constraint would have to be
+  dropped to allow it. The role check runs first, so stray rows on a Citizen grant nothing.
+- **`AuthorizationError` subclasses Django's `PermissionDenied`, not DRF's.** `services.py` stays
+  free of DRF imports (Arch §3.1) so a service is callable from a Celery task;
+  `urbenmend_exception_handler` already maps it to the `403 FORBIDDEN` envelope. A test pins that
+  mapping, since nothing else can.
+- **Denial messages name neither role nor resource.** "Authority role required", repeated across
+  endpoints, maps the §4.2 permission matrix from the outside. A test asserts the message is
+  silent on both.
+- ⚠️ **`classification/0002`'s reverse is `RunPython.noop`, deliberately.** The first version
+  cleared the column (`update(slug="")`) and **failed the down migration** — seven rows sharing
+  `""` violate the UNIQUE index. There is no state to restore: the `AddField` reversal drops the
+  column moments later. Caught by running the cycle, not by reading it, which is why
+  `database.md` gates both directions.
+
+Verified in the container: `pytest urbenmend/identity/tests/test_rbac.py urbenmend/classification/`
+**33 passed**; full suite **271 passed / 1 xfailed**; `ruff check`, `ruff format --check` (119
+files), `mypy --strict` (112 files) clean; `makemigrations --check --dry-run` exit 0;
+`check --deploy` clean on `prod`; reversibility confirmed by a real
+`migrate identity 0002` → `migrate classification zero` → `migrate` cycle, with all seven rows and
+their slugs intact afterwards.
+
 **M1 gate:** a citizen can register → verify → log in; an admin can provision a scope-limited
 authority; RBAC denies out-of-scope actions; sessions revoke immediately.
 
@@ -938,8 +1002,8 @@ authority; RBAC denies out-of-scope actions; sessions revoke immediately.
 - [x] log in (T1.3 — sessions)
 - [x] CSRF on state-changing requests (T1.4)
 - [x] category taxonomy seeded (T0.10 — ❓Q1 resolved)
-- [ ] admin provisions a scope-limited authority (T1.6 — unblocked now Category exists)
-- [ ] RBAC denies out-of-scope actions (T1.5)
+- [ ] admin provisions a scope-limited authority (T1.6 — enforcement layer now in place)
+- [x] RBAC denies out-of-scope actions (T1.5)
 - [x] sessions revoke immediately (T1.3)
 
 ## C3. P2 Reporting & Media

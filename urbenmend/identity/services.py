@@ -29,13 +29,14 @@ from django.contrib.auth import SESSION_KEY
 from django.contrib.auth import login as django_login
 from django.contrib.auth import logout as django_logout
 from django.contrib.auth.hashers import check_password, make_password
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 if TYPE_CHECKING:
     from django.http import HttpRequest
 
+    from urbenmend.classification.models import Category
     from urbenmend.identity.models import Channel, User, VerificationCode
 
 
@@ -420,3 +421,173 @@ def revoke_all_sessions(*, user: User) -> int:
         revoked += 1
 
     return revoked
+
+
+# =======================================================================================
+# RBAC — the enforcement layer (T1.5, FR-3, BR-26/BR-27)
+# =======================================================================================
+#
+# ⚠️ **This is *the* enforcement point, not one of several.** FR-3 requires authorization on
+# every server-side action and BR-27 on "every mutating and sensitive-read action". DRF
+# permission classes are defence-in-depth [doc: auth.md, Arch §3.1] — a rule that lives only in
+# a permission class is absent from every non-HTTP caller: a Celery task, a management command,
+# another service. R-12 names the erosion of this discipline as a project risk, so the
+# primitives live here and are imported by other apps' services rather than reimplemented.
+#
+# ⚠️ **`django.contrib.auth` Groups/Permissions are deliberately unused.** They cannot express
+# BR-26's per-category scope: a permission is a global verb-on-model grant with no room for
+# "roads and drainage but not electrical" [doc: auth.md, CLAUDE.md]. `PermissionsMixin` is
+# inherited for Django-admin plumbing only.
+#
+# **Shape of these functions.** Each `require_*` raises and returns `None`; the `has_*`
+# predicates return `bool` for the rare caller that must branch (building a queryset filter,
+# rendering a capability list). Callers should reach for `require_*` by default — a predicate
+# invites `if has_role(...)` written with no `else`, which fails open. The same reasoning
+# `verify_code()` records for never returning `False`.
+
+
+class AuthorizationError(PermissionDenied):
+    """`403 FORBIDDEN` — the caller is authenticated but not permitted (API §4.2).
+
+    ⚠️ Subclasses Django's `PermissionDenied` rather than DRF's, so `services.py` stays free of
+    DRF imports [doc: Arch §3.1] and a service is callable from a Celery task without dragging
+    the web framework in. `urbenmend_exception_handler` already translates Django's
+    `PermissionDenied` to a `403 FORBIDDEN` envelope, so the API mapping is inherited with no
+    view-level handling [doc: api/exceptions.py].
+
+    ⚠️ **A `403` here is a deliberate choice per case, not a default.** Where replying at all
+    would confirm that a resource exists, the caller must raise `Http404` instead — API §4.2:
+    `404` covers "absent **or hidden from this caller**". §"Cross-cutting" fixes scope leakage at
+    `403`/`404`, so both are correct; which one depends on whether existence is itself secret.
+    The scoped-read helpers below make that choice explicit at the call site rather than
+    silently.
+    """
+
+
+def has_role(user: User, *roles: str) -> bool:
+    """Whether `user` currently holds any of `roles`.
+
+    ⚠️ **`status` is checked too, not just `role`.** A suspended or deprovisioned Authority still
+    has `role == "authority"` in the database; treating that as authorization would let a
+    just-suspended account keep working until its session happened to expire, which is the exact
+    failure sessions-over-JWT was chosen to avoid (Arch §8, T1.3). `is_active` is derived from
+    `status` (A6).
+
+    An unauthenticated caller reaches this as `AnonymousUser`, which has no `role`, so the
+    `getattr` guard returns False rather than raising `AttributeError` — a crash here would
+    surface as a `500` where the contract says `401` (API §4.2).
+    """
+    if not getattr(user, "is_authenticated", False) or not user.is_active:
+        return False
+    return user.role in roles
+
+
+def require_role(user: User, *roles: str) -> None:
+    """Assert `user` holds one of `roles`, else raise.
+
+    Raises:
+        AuthorizationError: The caller's role is not in `roles`, or the account is not active.
+
+    ⚠️ The message names no role and no resource. "Authority role required" tells an attacker
+    which capability tier to go after, and repeated across endpoints it maps the whole permission
+    matrix from the outside.
+    """
+    if not has_role(user, *roles):
+        raise AuthorizationError("You do not have permission to perform this action.")
+
+
+def has_category_scope(user: User, category: Category) -> bool:
+    """Whether `user` may act on `category` (BR-26).
+
+    Resolution order, and each step matters:
+
+    1. **Admin → always true.** PRD §4.2 gives Admin every Authority capability plus more. Admins
+       bypass scope rather than being scoped to every category: seeding rows for each node would
+       silently un-scope an admin the moment a new category is added by migration.
+    2. **Not an active Authority → false.** A Citizen has no scope to consult, and a suspended
+       Authority is not an Authority (see `has_role`).
+    3. **Authority → membership test.** `.filter(pk=...).exists()` rather than
+       `category in user.category_scope.all()`, which pulls every scoped row into Python on every
+       check and, worse, caches the result on the instance — a scope revoked mid-request would
+       keep passing.
+
+    ⚠️ **An empty scope therefore grants nothing.** A freshly provisioned Authority is denied
+    until an Admin scopes them. Reading empty as "unrestricted" would make a forgotten
+    provisioning step into unrestricted access.
+    """
+    from urbenmend.identity.models import Role
+
+    if has_role(user, Role.ADMIN):
+        return True
+    if not has_role(user, Role.AUTHORITY):
+        return False
+    return user.category_scope.filter(pk=category.pk).exists()
+
+
+def require_category_scope(user: User, category: Category) -> None:
+    """Assert `user` may act on `category`, else raise `403` (BR-26).
+
+    Raises:
+        AuthorizationError: `403 FORBIDDEN` — the caller is an Authority outside their scope, or
+            lacks the role entirely.
+
+    ⚠️ Use this when the caller already knows the resource exists — acting on an Issue they were
+    shown, for instance. When a reply would itself disclose existence, use
+    `require_scoped_visibility()` instead, which raises `404`.
+    """
+    if not has_category_scope(user, category):
+        raise AuthorizationError("You do not have permission to act on this category.")
+
+
+def require_scoped_visibility(user: User, category: Category) -> None:
+    """Assert `user` may see a resource in `category`, else raise `404` (BR-26).
+
+    Raises:
+        Http404: The resource is outside the caller's scope.
+
+    ⚠️ **`404`, not `403`, and the difference is the point.** API §4.2 defines `404` as "absent
+    **or hidden from this caller**", and §"Cross-cutting" requires scope leakage to return
+    `403`/`404` to "avoid existence leaks". A `403` on a scoped *read* is itself a disclosure: it
+    confirms that an Issue with that id exists and merely belongs to another category, which lets
+    an out-of-scope Authority enumerate ids and map the workload of departments they cannot see.
+    A `404` is indistinguishable from a wrong id.
+
+    ⚠️ **`Http404` is Django's, not DRF's `NotFound`** — same reason as `AuthorizationError`:
+    no DRF import in the service layer. The exception handler translates it to the `404
+    NOT_FOUND` envelope [doc: api/exceptions.py].
+    """
+    from django.http import Http404
+
+    if not has_category_scope(user, category):
+        raise Http404("No such resource.")
+
+
+def scoped_category_ids(user: User) -> set[int] | None:
+    """The category ids `user` may act on, or `None` meaning "no restriction".
+
+    Returns:
+        `None` for an Admin — unrestricted, and NOT the same as the set of all current category
+        ids. A caller building a queryset filter must branch on `None` and apply no filter at
+        all, so a category added after the request began is still included.
+
+        A `set` for an Authority, empty when they are unscoped. An empty set filters everything
+        out, which is the correct denial.
+
+        An empty set for anyone else, so a mistaken call for a Citizen denies rather than grants.
+
+    ⚠️ For list endpoints, this belongs in the queryset, not in a post-filter over fetched rows.
+    Filtering after pagination would return short pages and let a client infer how many
+    out-of-scope rows were dropped — and API §4.4 makes cursor pagination mandatory precisely
+    because the authority queue is large and concurrently mutated.
+
+    ⚠️ **Returns ids, not a queryset.** The scope is read once here rather than joined into
+    every caller's query, so `selectors.py` in other apps needs no dependency on the shape of
+    this relation.
+    """
+    from urbenmend.identity.models import Role
+
+    if has_role(user, Role.ADMIN):
+        return None
+    if not has_role(user, Role.AUTHORITY):
+        return set()
+    return set(user.category_scope.values_list("pk", flat=True))

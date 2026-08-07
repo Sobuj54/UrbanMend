@@ -29,10 +29,13 @@ class CategoryAdmin(_CategoryAdminBase):
     the admin is for inspection only.
     """
 
-    list_display = ["name_en", "name_bn", "status", "created_at"]
+    list_display = ["slug", "name_en", "name_bn", "status", "created_at"]
     list_filter = ["status"]
-    search_fields = ["name_en", "name_bn"]
-    readonly_fields = ["name_en", "name_bn", "status", "created_at"]
+    search_fields = ["slug", "name_en", "name_bn"]
+    # ⚠️ `slug` is read-only for a stronger reason than the labels are: authority-scope rows,
+    # clustering rules and client filters all key on it, and an admin edit here would silently
+    # orphan every one of them.
+    readonly_fields = ["slug", "name_en", "name_bn", "status", "created_at"]
 
     def has_add_permission(self, request: HttpRequest) -> bool:
         """No add button — new categories come from migrations."""

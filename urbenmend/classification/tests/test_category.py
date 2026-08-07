@@ -30,6 +30,19 @@ CONFIRMED_TAXONOMY = {
     "Other / Uncategorized",
 }
 
+# The machine keys `0002` backfilled. ⚠️ `roads`, `water_drainage` and `electrical` are quoted
+# verbatim in API §6.2/§6.10, so those three are contract, not convention — a client filter
+# written against the spec breaks if they change.
+CONFIRMED_SLUGS = {
+    "roads",
+    "street_lighting",
+    "water_drainage",
+    "sanitation_waste",
+    "electrical",
+    "public_structures",
+    "other",
+}
+
 # ⚠️ Load-bearing, not filler: PRD §331 requires an out-of-set LLM category to be coerced here,
 # and FR-13a's keyword fallback needs a terminal bucket. Never retire this node.
 FALLBACK_SINK = "Other / Uncategorized"
@@ -47,6 +60,22 @@ class TestSeedTaxonomy(TestCase):
         names = set(Category.objects.values_list("name_en", flat=True))
 
         assert names == CONFIRMED_TAXONOMY
+
+    def test_every_node_has_the_machine_key_the_api_emits(self) -> None:
+        """⚠️ `0002` adds `slug` nullable, backfills, then tightens to NOT NULL. A node the
+        backfill missed would fail the third step — but only if a row existed to miss, so this
+        asserts the outcome rather than trusting the migration ran in the intended order."""
+        assert set(Category.objects.values_list("slug", flat=True)) == CONFIRMED_SLUGS
+
+    def test_api_documented_slugs_map_to_the_expected_nodes(self) -> None:
+        """API §6.2 quotes `["roads","water_drainage"]` and §6.10 `PATCH /categories/{key}`.
+        Those keys are a published contract, so which node each one points at is not free to
+        drift — a swap would silently re-scope every Authority provisioned against it."""
+        by_slug = dict(Category.objects.values_list("slug", "name_en"))
+
+        assert by_slug["roads"] == "Roads & Transport"
+        assert by_slug["water_drainage"] == "Water & Drainage"
+        assert by_slug["electrical"] == "Electrical Hazards"
 
     def test_fallback_sink_exists_and_is_active(self) -> None:
         """⚠️ Without an active `Other`, an out-of-set LLM response has nowhere to land and
@@ -82,3 +111,9 @@ class TestCategoryModel(TestCase):
     def test_str_is_the_canonical_english_name(self) -> None:
         """Admin lists and log lines render this; the Bangla label would be the wrong key."""
         assert str(Category.objects.get(name_en="Street Lighting")) == "Street Lighting"
+
+    def test_slug_is_unique(self) -> None:
+        """⚠️ Two nodes sharing a key would make `categoryScope: ["roads"]` ambiguous and an
+        authority-scope grant non-deterministic about which node it actually covered."""
+        with self.assertRaises(IntegrityError):
+            Category.objects.create(slug="roads", name_en="Roadworks", name_bn="সড়ক কাজ")

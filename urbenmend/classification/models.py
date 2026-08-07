@@ -42,9 +42,16 @@ class Category(models.Model):
     [doc: PRD §6.2 "Proposed Category Taxonomy", data-model §5, Arch §2.4/§3]
     """
 
-    # `name_en` is the canonical identifier (appears in API responses, LLM prompts, clustering
-    # keys). Unique across all statuses — retiring a category does not free its name for reuse,
-    # because historical Issues would then point at a semantically different node.
+    # ⚠️ **`slug` is the machine key; the labels are display-only.** API §6.2 emits scope as
+    # `"categoryScope": ["roads","water_drainage"]` and §6.10 addresses nodes as
+    # `PATCH /categories/{key}` — both are this value, not `name_en`. Authority-scope rows
+    # (BR-26), clustering rules, severity keywords and LLM prompts all key on it, so editing an
+    # English label can never break them. Immutable in practice: changing a slug silently
+    # invalidates every stored reference and every client filter written against it.
+    slug = models.SlugField(max_length=50, unique=True)
+
+    # Unique across all statuses — retiring a category does not free its name for reuse, because
+    # historical Issues would then point at a semantically different node.
     name_en = models.CharField(max_length=100, unique=True, db_index=True)
     name_bn = models.CharField(max_length=100)  # Bangla display label.
 

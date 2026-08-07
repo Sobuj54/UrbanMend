@@ -181,11 +181,31 @@ class User(AbstractBaseUser, PermissionsMixin):
         max_length=8, choices=Language.choices, default=Language.ENGLISH
     )
 
-    # ⚠️ Authority↔Category scope (BR-26) is deliberately NOT here yet. Category is T0.10's
-    # baseline-schema scope, and adding the M2M once that model exists is an ordinary
-    # additive migration with none of this file's irreversibility. Until then no Authority
-    # can be scoped, so no scoped read can pass — which is the safe direction to fail.
+    # Authority↔Category scope (BR-26, T1.5). "Authority **many ↔ many** Category (scope)"
+    # [doc: data-model §1 Relationships]; DM-A3 scopes against Category deliberately, with a
+    # Department entity deferred.
     #
+    # ⚠️ **An empty scope grants nothing, and that is the whole design.** `has_category_scope()`
+    # in services.py asks whether the category is present, so a newly provisioned Authority with
+    # no rows can act on nothing until an Admin scopes them (BR-25). The alternative reading —
+    # "empty means unrestricted" — turns a forgotten provisioning step into full access to every
+    # category, which is exactly the failure BR-26 exists to prevent.
+    #
+    # ⚠️ **Set on any role, meaningful only on Authority.** Nothing at the database level stops
+    # scope rows on a Citizen, because a role can change over time (BR-25 promotes a Citizen) and
+    # a constraint would have to be dropped to allow it. Enforcement is service-layer: the scope
+    # is consulted only after `role == AUTHORITY`, so stray rows on a Citizen grant nothing.
+    # Admins bypass scope entirely rather than being scoped to everything — see
+    # `require_category_scope()`.
+    category_scope = models.ManyToManyField(
+        "classification.Category",
+        related_name="scoped_authorities",
+        blank=True,
+        help_text=_(
+            "Categories an Authority may view and act on (BR-26). Ignored for other roles."
+        ),
+    )
+
     # ⚠️ The T1/T2 reporter trust signal is likewise absent by design. T2 defines it as
     # "newer/unverified accounts weigh less", which is computable from date_joined plus the
     # verification timestamps above. Storing a score would invent a weighting the docs do

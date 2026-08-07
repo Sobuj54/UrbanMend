@@ -230,7 +230,37 @@ the resolution.
   cycle, not by inspection; `database.md` gates reversibility and an unreversible data migration
   passes review and fails CI.
 - **Still deliberately absent: the Authority↔Category M2M for BR-26 scoping.** Category now exists,
-  so it is unblocked — it lands with T1.5/T1.6 as an additive migration.
+  so it is unblocked — it lands with T1.5/T1.6 as an additive migration. ✅ **Done in T1.5.**
+
+✅ Built in T1.5 (2026-08-07): the RBAC enforcement layer. `User.category_scope` M2M, migrations
+`classification/0002_category_slug` + `identity/0003_category_scope`, `AuthorizationError` and the
+primitives `has_role`/`require_role`, `has_category_scope`/`require_category_scope`/
+`require_scoped_visibility`, `scoped_category_ids` in `identity/services.py`, `category_scope_for`
+in `identity/selectors.py`, 26 tests in `identity/tests/test_rbac.py`. `pytest` **271 passed /
+1 xfailed**, mypy (112 files) / ruff clean, no drift, both migrations verified reversible.
+
+- ⚠️ **T0.10's record claimed `Category.slug` existed; it did not.** `0001` shipped `name_en` as
+  the only identifier, but API §6.2 emits `"categoryScope": ["roads","water_drainage"]` and §6.10
+  addresses `PATCH /categories/{key}`. `classification/0002` adds it **nullable → backfill →
+  tighten**, never one `AddField(unique=True)` against populated rows. `roads`, `water_drainage`,
+  `electrical` are quoted in the spec and are therefore contract, not convention.
+- ⚠️ **An empty `category_scope` grants nothing.** A provisioned-but-unscoped Authority can act on
+  nothing until an Admin scopes them (BR-25). Never read empty as "unrestricted".
+- ⚠️ **Admins bypass scope rather than holding every row.** `scoped_category_ids()` returns `None`
+  = "apply no filter"; a row-per-category Admin loses access the moment a migration adds a node.
+- ⚠️ **`has_role()` checks `status` as well as `role`** — a suspended Authority still reads
+  `role == "authority"`, and honouring that would outlive the suspension until session expiry.
+- ⚠️ **`403` to act (`require_category_scope`), `404` to see (`require_scoped_visibility`).** API
+  §4.2 defines `404` as "absent **or hidden from this caller**"; a `403` on a scoped read confirms
+  the id is a real Issue elsewhere and lets an Authority map another department's workload.
+- ⚠️ **Scope is tested with `.filter(pk=...).exists()`, never `category in scope.all()`** — the
+  latter caches on the instance, so a just-revoked scope keeps passing.
+- **`AuthorizationError` subclasses Django's `PermissionDenied`, not DRF's** — `services.py` takes
+  no DRF import, and `urbenmend_exception_handler` already maps it to `403 FORBIDDEN`.
+- **Denial messages name neither the role nor the resource** — repeated across endpoints, a
+  specific message maps the whole §4.2 matrix from outside.
+- ⚠️ **`classification/0002`'s RunPython reverse is `noop`.** Clearing the column first
+  (`update(slug="")`) fails the down migration — seven rows sharing `""` break the UNIQUE index.
 
 ## Commands
 
@@ -257,7 +287,8 @@ docker build .                             # image
   single resources return the bare object
 - Errors return `{ error: { code, message, details, traceId } }`
 - Auth is **server-validated sessions** in a `Secure`/`HttpOnly`/`SameSite` cookie + CSRF — not JWT
-- Authorization is enforced in the **service layer**, on every mutating and sensitive-read action
+- Authorization is enforced in the **service layer**, on every mutating and sensitive-read action —
+  call the T1.5 primitives in `identity/services.py`; do not reimplement a role or scope check
 - Opaque server-generated IDs in URLs; never sequential or guessable
 
 ## Do not

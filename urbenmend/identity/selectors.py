@@ -13,3 +13,35 @@ Rules for this file:
 
 [doc: Arch §3 (FR-1, FR-2, FR-3, FR-4)]
 """
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
+    from urbenmend.classification.models import Category
+    from urbenmend.identity.models import User
+
+
+def category_scope_for(user: User) -> QuerySet[Category]:
+    """The categories an Authority is scoped to, newest-first by canonical name (BR-26, T1.5).
+
+    Serializes to API §6.2's `"categoryScope": ["roads","water_drainage"]` — hence the ordering,
+    which comes from `Category.Meta.ordering`: an unordered M2M read returns rows in whatever
+    order Postgres happens to produce, so the same account's `GET /users/me` could differ between
+    two calls for no reason a client could explain.
+
+    ⚠️ **This is a display read, not the authorization check.** The check is
+    `services.has_category_scope()`, which asks the database whether one category is present.
+    Rendering the list here and comparing against it in a caller would reintroduce the
+    fetch-everything-into-Python pattern that function avoids, and would put an authorization
+    decision outside the service layer (FR-3, R-12).
+
+    ⚠️ **Returns only what the relation holds — an Admin gets an empty queryset, not everything.**
+    Admins bypass scope rather than being scoped (see `services.has_category_scope`), so an empty
+    list here means "unrestricted" for an Admin and "can act on nothing" for an Authority. The
+    role is what disambiguates; do not infer capability from this list alone.
+    """
+    return user.category_scope.all()
