@@ -1,0 +1,31 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Dhaka (development stand-in)",
+        "note": "NOT authoritative. Drawn for development so the BR-35 in-city check is testable. Replace before deployment - see README.md.",
+        "srid": 4326
+      },
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [90.3300, 23.6800],
+              [90.4600, 23.6800],
+              [90.5000, 23.7400],
+              [90.4900, 23.8300],
+              [90.4300, 23.8900],
+              [90.3600, 23.8800],
+              [90.3200, 23.8200],
+              [90.3100, 23.7500],
+              [90.3300, 23.6800]
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

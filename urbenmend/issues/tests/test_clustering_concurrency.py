@@ -33,13 +33,15 @@ from __future__ import annotations
 
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 from django.contrib.gis.geos import Point
 
 if TYPE_CHECKING:
+    from urbenmend.classification.models import Category
     from urbenmend.identity.models import User
+    from urbenmend.reporting.models import Report
 
 # Dhaka. Both reports carry the *same* coordinate, so they are inside any conservative radius
 # a category could be configured with — the test cannot become order- or tuning-dependent.
@@ -110,49 +112,58 @@ def test_concurrent_reports_of_one_real_world_issue_create_exactly_one_issue() -
 
 
 # ------------------------------------------------------------------------------------------
-# Fixtures-in-waiting.
+# Fixtures.
 #
-# ⚠️ These are the factory_boy factories that T4.2/T2.1 will own (`testing.md` mandates
-# factory_boy; the factories cannot be written before the models). They are kept as thin
-# helpers so that when the models land, the diff is confined to these three functions and the
-# assertions above stand unchanged.
+# ✅ **T2.1 replaced the hand-rolled `_seed_*` helpers with `factory_boy` factories**, which is
+# what the P0 note here anticipated ("kept as thin helpers so that when the models land, the diff
+# is confined to these three functions and the assertions above stand unchanged" — it is, and
+# they do). The forcing function that made that happen is `xfail(strict=True)` plus mypy's
+# `warn_unused_ignores`: the `type: ignore[attr-defined]` on the old `Report` import became an
+# error the moment T2.1 defined the model.
+#
+# ⚠️ `Issue` and `cluster_report` are still absent (T4.2/T4.4), so this test still xfails — at
+# the two imports inside the test body, which is exactly where it should.
 # ------------------------------------------------------------------------------------------
 def _seed_citizen(index: int) -> User:
     """One citizen account. Distinct submitters, because two reports from one account at one
-    point is the duplicate-submission case (BR-23), not the clustering case."""
-    from urbenmend.identity.models import Role, User, UserStatus
+    point is the duplicate-submission case (BR-23), not the clustering case.
 
-    return User.objects.create(
-        email=f"citizen-{index}@example.test",
-        role=Role.CITIZEN,
-        status=UserStatus.ACTIVE,
-    )
+    `index` is kept in the signature although `UserFactory` sequences emails on its own — the
+    call site reads as "citizen 0 and citizen 1", and dropping it would make the distinctness
+    the assertions depend on an invisible property of the factory.
+    """
+    from urbenmend.identity.tests.factories import UserFactory
+
+    return UserFactory.create(email=f"citizen-{index}@example.test")
 
 
-def _seed_category() -> Any:
+def _seed_category() -> Category:
     """A category from the controlled taxonomy (C-2, no free-form categories).
 
-    ⚠️ Q1 (the taxonomy itself) is unresolved and T0.10 has not seeded it, so this deliberately
-    does not name a real category slug — it creates whatever the Category model turns out to be
-    and lets the test depend only on "same category", which is all Arch §4.3 requires.
+    ✅ Q1 is resolved and `classification/0001` seeds the seven real nodes, so this now returns
+    a **real** one rather than inventing `test-category`. Clustering keys on category, and a node
+    no report will ever carry would make the match trivially true.
+
+    ⚠️ The clustering radius is deliberately still not asserted anywhere here: radius and time
+    window are per-category reference data (ASSUMP-4, NFR-11, Arch §4.3) that T4.3 owns, and
+    `Category` carries no such column today.
     """
-    from urbenmend.geo.models import Category  # type: ignore[attr-defined]  # noqa: PLC0415
+    from urbenmend.classification.models import Category
 
-    return Category.objects.create(name="test-category", clustering_radius_m=50)
+    return Category.objects.get(slug="roads")
 
 
-def _seed_report(*, category: Any, location: Point, submitter: User) -> Any:
+def _seed_report(*, category: Category, location: Point, submitter: User) -> Report:
     """A classified Report, ready to cluster.
 
     ⚠️ Pre-classified on purpose. Clustering matches on category, and category is produced by
     classification, so classification must complete first *within the same triage job*
     (Arch §4.2). This test isolates the clustering race; it is not a triage-pipeline test.
-    """
-    from urbenmend.reporting.models import Report  # type: ignore[attr-defined]
 
-    return Report.objects.create(
-        category=category,
-        location=location,
-        submitted_by=submitter,
-        severity="medium",
-    )
+    ⚠️ Built with `ReportFactory`, not `create_report()`. The service enforces BR-35 against the
+    seeded city boundary, and this test's fixed `LOCATION` is a clustering coordinate, not an
+    intake case — routing through intake would make a boundary change break a concurrency test.
+    """
+    from urbenmend.reporting.tests.factories import ClassifiedReportFactory
+
+    return ClassifiedReportFactory.create(category=category, location=location, author=submitter)

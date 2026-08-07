@@ -52,6 +52,17 @@ plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
 files = ["urbenmend"]
 exclude = ["migrations/"]
 strict = true
+# ⚠️ Narrowly scoped to the `factory` package, the same posture as the Celery decorator override
+# below: an untyped call to anything else still fails. `factory_boy` 3.3 ships `py.typed` and
+# annotates the parts that matter (`Factory.create()`/`build()` are `-> T`), but its declaration
+# helpers — `Sequence`, `SubFactory`, `LazyFunction`, `LazyAttribute` — are unannotated. Those are
+# the entire vocabulary of a factory class body, so without this every factory module is a wall of
+# errors about factory_boy's annotations rather than ours.
+#
+# ⚠️ This does NOT excuse the `UserFactory()` shorthand. That reads as the factory class rather
+# than the model (`FactoryMetaClass.__call__` is unannotated), so call sites use the typed
+# `UserFactory.create()` / `.build()` and keep real type checking on every fixture.
+untyped_calls_exclude = ["factory"]
 # Migrations are generated code — Django's own writer emits untyped constructs.
 [[tool.mypy.overrides]]
 module = "*.migrations.*"
@@ -83,6 +94,16 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["urbenmend.celery", "urbenmend.platform.celery_tracing"]
 disallow_untyped_decorators = false
+
+# `factory/__init__.py` re-exports its public API with plain `from .declarations import ...` and
+# declares no `__all__`, so under `strict` (which implies `no_implicit_reexport`) every
+# `factory.Sequence` reads as "not explicitly exported". Verified against the installed package:
+# `hasattr(factory, "__all__")` is False. The alternative is importing from the private-ish
+# `factory.declarations` at each site, which pins us to factory_boy's internal layout to satisfy a
+# lint about its packaging.
+[[tool.mypy.overrides]]
+module = "factory.*"
+implicit_reexport = true
 
 [tool.django-stubs]
 # The plugin loads settings to resolve model fields, so it needs a module that imports

@@ -1320,6 +1320,122 @@ authority; RBAC denies out-of-scope actions; sessions revoke immediately.
 - [x] profile read/update + deletion→anonymization (T1.9 — ⚠️ `/users/me` only; ⚠️ deletion is
       Citizen-only)
 
+### T2.1 — Report entity + validation (P2, FR-5/6, BR-2/3/35, C-3/C-11)
+
+Built the `Report` model and the `geo` app that makes its location checkable: `geo/models.py`
+(`CityBoundary`), `geo/selectors.py` (`active_city_boundary`, `is_within_city`, `BoundaryUnavailable`),
+`reporting/models.py` (`Report`, `ReportStatus`, `SeveritySignal`, `SEVERITY_RANK`,
+`ClassificationSource`), `reporting/services.py` (`create_report`, `validate_location`,
+`validate_report_content`, `ReportValidationError`), `OutOfCity` in `api/exceptions.py`, two admins,
+migrations `geo/0001_initial` + `geo/0002_seed_city_boundary` + `reporting/0001_initial`,
+`docs/city-boundary/dhaka-demo.geojson`, four `factory_boy` factory modules, and 59 tests across
+`geo/tests/test_city_boundary.py`, `reporting/tests/test_models.py`, `reporting/tests/test_services.py`.
+**No endpoint** — `POST /reports` is T2.2; this task ships the enforcement point it will call.
+Full suite **454 passed / 1 xfailed** (up from 395), mypy (124 files) / ruff (132 files) clean, no
+drift, `check --deploy` clean on `prod`, both new apps verified reversible in both directions.
+
+- ⚠️ **Intake fails closed when no boundary is configured, declining the degradation Arch §409
+  offers.** §409 sanctions skipping a check whose dependency is missing; C-11 says an out-of-city
+  location "is not accepted". A silently-disabled containment check leaves no trace and is
+  discovered months later in the data, so an empty boundary table rejects *everything* loudly
+  instead. `active_city_boundary()` raises rather than returning `None`, precisely so no caller can
+  write `if boundary and not contains(...)` — which accepts every location on Earth the moment the
+  table empties. `test_intake_fails_closed_when_no_boundary_is_configured` is the assertion.
+- ⚠️ **`GistIndex`, never `models.Index`, on `location`.** `models.Index` emits a B-tree, which
+  cannot serve `ST_Within`/`ST_DWithin` — every spatial query silently degrades to a sequential scan
+  while the migration reads as indexed. Paired with `spatial_index=False` on the field so Django does
+  not also create a duplicate auto-named index. BR-35 containment, T4.4 clustering and the T7.4 map
+  bbox all depend on this one line.
+- ⚠️ **`422 OUT_OF_CITY` is its own exception type, not a `ReportValidationError`.** A well-formed
+  coordinate outside the city is a business-rule violation, not a malformed body; collapsing it into
+  the generic `400 VALIDATION_FAILED` leaves a client unable to distinguish "fix your JSON" from "we
+  do not serve your city". Two tests pin the pair — one on the code, one on the types differing.
+- ⚠️ **Location is validated before content, and the order is observable.** A submission that is both
+  out-of-city and under-described returns the `422`: reporting the description first sends a citizen
+  off to write more prose about a place UrbanMend does not serve, and they get the `422` on retry
+  anyway. Authorization precedes both, so a non-Citizen learns nothing about which rules they broke.
+- ⚠️ **The city boundary is seeded data, not code** (NFR-11, and the user's decision when asked).
+  `geo/0002` loads `docs/city-boundary/dhaka-demo.geojson` through `apps.get_model()` and supplies a
+  **real reverse callable** that deletes only the row named `Dhaka (development stand-in)` — never
+  `.objects.all()`. Verified by a genuine down/up cycle, not by inspection: the first attempt reported
+  "No migrations to apply" because they had never been applied, which is a green output proving
+  nothing. GEOS is imported *inside* the function so `makemigrations --check` runs on a machine
+  without the library.
+- ⚠️ **Replacing the boundary is add-and-retire, never edit-in-place**, and `CityBoundaryAdmin`
+  enforces it: `area` is read-only on change but writable on add, delete is denied outright. Exactly
+  one row must be active — `active_city_boundary()` raises on zero *and* on two, so a half-finished
+  swap surfaces as an error rather than validating reports against whichever row sorted first.
+- ⚠️ **`ReportStatus` holds no Issue-workflow value, and a test asserts it by name.**
+  `Acknowledged`/`In Progress`/`Resolved`/`Closed` are Issue statuses (PRD §6.3); adding one here
+  would give two rows one answer to "is this fixed?" and let them disagree. It is a one-line,
+  entirely plausible edit, which is why the assertion names the forbidden values rather than counting.
+  `Draft` is omitted too — FR-8 marks it SHOULD and offline drafts are a PWA concern.
+- ⚠️ **`SeveritySignal` is declared in `reporting` and shared with `issues`, and has four bands.**
+  `03-data-model.md` §3 and BR-8 still show a stale three. Two independently declared enums would let
+  one gain a band the other lacks, and BR-11's `max()` across them would then be undefined.
+  `SEVERITY_RANK` exists **only** so "highest" is computable — it is not a score (FR-21 removed
+  those), not tunable, not exposed, and must never be summed or weighted against corroboration or
+  proximity, both display-only (C-10).
+- ⚠️ **`is_classified` keys on `classified_at`, not on `category`.** A citizen's category *hint*
+  populates `category` at intake (API §6.3), so keying on it would report an unclassified report as
+  classified and T3.5's worker would skip it forever — with nothing logging an error.
+- ⚠️ **A category hint is recorded *with its source*, and is not a classification.**
+  `classification_source = citizen` (FR-11) attributes the choice instead of silently absorbing it,
+  and `classified_at` stays null so the worker still picks the report up. An unknown *or retired* slug
+  is refused `422`, never coerced to `Other` — that coercion (BR-7) is for LLM output, where a value
+  outside the taxonomy means an unusable answer; a human picking a retired node is running a stale
+  client, and filing their report under `Other` would lose information they could have corrected.
+- ⚠️ **`# noqa: DJ001` on `severity_signal` and `classification_source` is deliberate, against
+  ruff's default advice.** DJ001 warns that a nullable string column has two spellings for empty —
+  correct in general, wrong here: `""` is not a member of `SeveritySignal`, so it would be an
+  undeclared fifth band that only validates because Django skips blanks, and `SEVERITY_RANK[""]`
+  raises `KeyError` inside T4.6's `max()` at runtime. `confidence` is a `FloatField` that must be
+  NULL when unclassified, so mixing conventions inside one block makes T3.5's queue query depend on
+  knowing which applies per column. (DJ001 never fired on `identity.email`/`phone` because it exempts
+  `unique=True` — worth knowing before "fixing" it.)
+- ⚠️ **`author` is `PROTECT`, not `CASCADE`** (C-14): BR-33 implements deletion as anonymization, so
+  the cascade should never fire, and `PROTECT` makes a hard-delete attempt fail loudly instead of
+  quietly erasing the reports that give an Issue its corroboration count (FR-16).
+- ⚠️ **The Issue FK is deliberately absent until T4.1.** A test asserts the absence so it reads as a
+  decision rather than an oversight, and points whoever adds it at BR-6's at-most-one-Issue rule
+  instead of a loose UUID column.
+- ⚠️ **A registered-but-unverified citizen may submit.** BR-30 gates *notification* on verification,
+  not intake, and the limited capability set for unverified accounts is explicitly unspecified
+  ("don't invent it"). Someone who just registered can still report a live hazard.
+- ⚠️ **`create_report()` takes no `status` parameter, and the test asserts the signature.** Testing it
+  by passing one would only prove that call was rejected; the guarantee is that the parameter cannot
+  exist, or a caller could mark a report `triaged` and skip the whole pipeline.
+- ⚠️ **`ReportFactory` builds through `objects.create()`, bypassing `create_report()`, and builds
+  *unclassified*.** Routing fixtures through the service would make a validation bug fail unrelated
+  suites and force every test to seed a boundary first. Unclassified because BR-9 says a Report
+  validly exists before classification — a pre-filled factory makes the async path untestable from
+  its real starting state, and every "worker picks up unclassified work" query returns nothing while
+  looking correct.
+- ⚠️ **`CityBoundaryFactory` defaults `is_active = False`, unlike the model.** The migration already
+  seeds one active row and `active_city_boundary()` raises on two, so an `is_active=True` default
+  would break every test that merely needs *a* boundary — and the failure would look like a selector
+  bug rather than a fixture bug.
+- ⚠️ **Two mypy settings were added for `factory_boy`, both narrowly scoped**, matching the existing
+  Celery-decorator precedent. `untyped_calls_exclude = ["factory"]` because the declaration helpers
+  (`Sequence`, `SubFactory`, `LazyFunction`, `LazyAttribute`) are unannotated despite the package
+  shipping `py.typed`; `implicit_reexport` for `factory.*` because `factory/__init__.py` declares no
+  `__all__` (verified against the installed package, not assumed). **Neither excuses the `F()`
+  shorthand** — `FactoryMetaClass.__call__` is unannotated, so `UserFactory()` types as the *factory*
+  and silently defeats checking on every fixture. All call sites use `F.create()` / `F.build()`,
+  which are annotated `-> T`; that one change cleared 92 of 118 errors.
+- ⚠️ **The P4 concurrency test's `_seed_*` helpers were de-rotted, and mypy forced it.** A
+  `# type: ignore[attr-defined]` on its `Report` import became an *unused-ignore* error the moment
+  T2.1 defined the model — the ignore comment worked exactly as a self-cleaning device should. The
+  test still xfails at the `Issue`/`cluster_report` imports (T4.2/T4.4), as intended.
+- ⚠️ **The deliberate `author=None` test keeps a `type: ignore[misc]`, and that is the point.** mypy
+  rejecting it is the first line of defence; the test asserts the second, because typing does not
+  cover raw SQL, a data migration, or `**kwargs` assembled from a request body.
+- **No spec amendment owed.** API §6.3 already specifies `OUT_OF_CITY`, the category hint, and the
+  `-createdAt` default order; T2.1 ships no endpoint, so nothing diverges.
+- ❓ **Unchanged and still open:** Q6 (EXIF default) lands with T2.5 — BR-4 already fixes the
+  authoritative location as the explicit report coordinate, never photo EXIF, so nothing here
+  depends on it. Q10 (accuracy bar) is why `confidence` stores a value and encodes no threshold.
+
 ## C3. P2 Reporting & Media
 - T2.2: the `POST /reports` response is `202 Accepted` — the report is written synchronously, triage
   is async. The response body is the created report resource (not empty). Return immediately; do not
@@ -1334,6 +1450,16 @@ authority; RBAC denies out-of-scope actions; sessions revoke immediately.
 **M2 gate:** report + photo submitted → `202` immediately; photo stored with EXIF stripped; citizen
 can retrieve own reports; out-of-city and invalid submissions rejected correctly; duplicate submits
 are idempotent.
+
+- [x] Report entity + validation primitives (T2.1 — ⚠️ service is the enforcement point; ⚠️ intake
+      fails closed with no boundary configured)
+- [x] out-of-city rejected `422 OUT_OF_CITY` (T2.1 — C-11; ⚠️ distinct type from `VALIDATION_FAILED`)
+- [x] BR-3 "at least one of {photo, adequate description}" (T2.1 — ⚠️ `media_count` is a parameter
+      until T2.4 associates real media)
+- [ ] report + photo submitted → `202` immediately (T2.2)
+- [ ] duplicate submits are idempotent (T2.3)
+- [ ] photo stored with EXIF stripped (T2.5 — ❓Q6)
+- [ ] citizen can retrieve own reports (T2.7)
 
 ## C4. P3 Classification
 - T3.1: `ClassificationService` is a plain Python ABC with no Django imports. This is what makes it

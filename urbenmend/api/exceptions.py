@@ -58,6 +58,25 @@ class UnprocessableEntity(APIException):
     default_code = "VALIDATION_FAILED"
 
 
+class OutOfCity(APIException):
+    """`422 OUT_OF_CITY` — the location falls outside the served city (BR-35, C-11, T2.1).
+
+    ⚠️ **A distinct class, not `UnprocessableEntity`.** API §6.3 names `OUT_OF_CITY` explicitly
+    for `POST /reports`, and `UnprocessableEntity.default_code` is the generic
+    `VALIDATION_FAILED` — so raising that one would answer with the right status and the wrong
+    code, leaving a client unable to tell "your coordinates are outside Dhaka" (move the pin)
+    from "your description is too short" (rewrite the text). Same reasoning as `AccountLocked`.
+
+    ⚠️ **`422`, not `400`.** The body is well-formed and the coordinate is a valid point; it
+    violates a business rule (api-conventions.md: `422` is "business-rule violation — e.g.
+    `OUT_OF_CITY`").
+    """
+
+    status_code = http_status.HTTP_422_UNPROCESSABLE_ENTITY
+    default_detail = "This location is outside the area UrbanMend serves."
+    default_code = "OUT_OF_CITY"
+
+
 class InvalidCredentials(APIException):
     """`401 UNAUTHENTICATED` — the generic login failure (API §6.1).
 
