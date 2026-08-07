@@ -53,6 +53,7 @@ class UserAdmin(_UserAdminBase):
         "date_joined",
     ]
     list_filter = ["role", "status", "is_staff"]
+    filter_horizontal = ["category_scope", "groups", "user_permissions"]
 
     fieldsets = [
         (
@@ -65,7 +66,29 @@ class UserAdmin(_UserAdminBase):
         ),
         (
             _("Role & Status"),
-            {"fields": ["role", "status", "preferred_language"]},
+            {"fields": ["role", "status", "preferred_language", "require_two_factor"]},
+        ),
+        (
+            # BR-26 scope (T1.6). Surfaced here because FR-30/31 route reference data and
+            # moderation through admin, and an Admin correcting a mis-scoped authority should not
+            # need an API client.
+            #
+            # ⚠️ **This bypasses `set_category_scope()` and therefore the audit trail.** Admin
+            # writes the M2M directly — Django's `LogEntry` records that the row changed, but not
+            # in the `GET /audit-events` sense FR-32 means. The API path is the audited one; this
+            # is the break-glass. T8.1 should reconsider whether admin may write it at all.
+            #
+            # ⚠️ `filter_horizontal`, not a raw multi-select: seven nodes today, but a
+            # multi-select silently becomes unusable as the taxonomy grows and an Admin
+            # mis-clicking here grants or revokes real authority over a category.
+            _("Authority scope (BR-26)"),
+            {
+                "fields": ["category_scope"],
+                "description": _(
+                    "Categories this Authority may view and act on. Ignored for other roles — "
+                    "an empty scope grants nothing."
+                ),
+            },
         ),
         (
             _("Admin — permissions"),

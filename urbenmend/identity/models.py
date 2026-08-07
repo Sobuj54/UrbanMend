@@ -211,6 +211,25 @@ class User(AbstractBaseUser, PermissionsMixin):
     # verification timestamps above. Storing a score would invent a weighting the docs do
     # not specify — and FR-21 already removed the one tunable numeric score from the design.
 
+    # Set at provisioning time (API §6.2 sends `"requireTwoFactor": true` in the
+    # `POST /users/authorities` body), enforced by the login flow in T1.7 (FR-4: "Authority/Admin
+    # may be required to use it, optional per policy").
+    #
+    # ⚠️ **Stored in T1.6 but not yet enforced anywhere.** The column exists because the spec's
+    # documented request body carries the value, and silently discarding a documented input is a
+    # defect — an Admin who ticks it would otherwise be told the account requires 2FA when nothing
+    # recorded that it does. T1.7 reads it; until then it is inert, and that gap is recorded rather
+    # than hidden.
+    #
+    # ⚠️ Per-account policy, not a global switch, and it does not belong on `django_otp`'s device
+    # rows: those record which factors were *enrolled*, which is a different question from whether
+    # this account is *required* to have one. An account can be required to use 2FA before it has
+    # enrolled any device — that is precisely the state T1.7 must handle at first login.
+    require_two_factor = models.BooleanField(
+        default=False,
+        help_text=_("Whether this account must complete 2FA at login (FR-4). Enforced in T1.7."),
+    )
+
     is_staff = models.BooleanField(
         _("staff status"),
         default=False,

@@ -995,6 +995,80 @@ files), `mypy --strict` (112 files) clean; `makemigrations --check --dry-run` ex
 `migrate identity 0002` → `migrate classification zero` → `migrate` cycle, with all seven rows and
 their slugs intact afterwards.
 
+### T1.6 — Admin provisions authority accounts + category scope (FR-2, BR-25)
+
+`POST /users/authorities`. Two services — `provision_authority()` and `set_category_scope()` — plus
+the shared `_resolve_category_scope()` slug resolver, `ProvisioningError`, a
+`ProvisionAuthoritySerializer`, `ProvisionAuthorityView`, `UserSerializer.categoryScope`,
+`identity/0004_authority_two_factor`, admin scope editing, and 38 tests.
+
+⚠️ **BR-25's audit obligation is only partly met, on purpose.** The rule is "the grant is audited"
+(FR-32), but the immutable audit log is **T8.1 in P8**, where the append-only property is enforced
+*at the database level* by revoking `UPDATE`/`DELETE` from the application role — "application
+discipline alone will not satisfy NFR-10". Building the table now would either fix its schema seven
+phases before its design exists, or ship it without the revoke and manufacture the false assurance
+NFR-10 exists to prevent. So every privileged action routes through one funnel,
+`_audit_privileged_action()`, which currently writes a structured log line. **A log line is not an
+audit record** — it is mutable, expires with retention, and is not queryable via
+`GET /audit-events`. T8.1 replaces that function's body; it must not add a second call path beside
+it, or the swap will miss callers. M1's DoD does not mention audit and M8's does, so the plan agrees
+with the sequencing.
+
+Decisions that bind later work:
+
+- ⚠️ **The provisioned account has an unusable password, so it cannot log in until T1.7.** The
+  spec's body carries no password field. The alternatives are an Admin choosing another person's
+  credential, or a generated secret travelling back in the API response — both worse than an
+  account awaiting its own reset flow. Role and scope are fully real; only the credential path is
+  missing.
+- ⚠️ **`status` is `registered`, not `active`.** The work address is unproven until someone reading
+  that mailbox verifies it, and BR-30 bars notifications to an unverified channel. An Admin typo
+  would otherwise create a live Authority whose owner never learns the account exists.
+- ⚠️ **Retired categories are rejected (`422`), not silently dropped.** A Retired node can never
+  match an Issue, so scoping to one grants nothing while reading back as a successful grant — the
+  provisioning bug hardest to notice, because the account looks correctly configured.
+- ⚠️ **`409` here is specific where registration's is generic.** Registration is public and must
+  not confirm an address is taken; this endpoint is Admin-only, and an Admin who cannot be told
+  "that address already has an account" cannot do the job. A test asserts the two differ.
+- ⚠️ **The duplicate check normalizes with `.lower()`, not `BaseUserManager.normalize_email`**,
+  which lowercases only the domain. `Admin@x.com` would pass an unnormalized check, then store
+  lowercased, and surface the collision as a `500 IntegrityError` instead of the documented `409`.
+  The `IntegrityError` catch stays anyway — it closes the window between the check and the INSERT
+  when two Admins provision the same address concurrently.
+- ⚠️ **`set_category_scope()` replaces, never merges.** The spec sends the whole array, so a merge
+  would make revocation impossible through the documented body — an Admin narrowing a scope would
+  silently widen it. An empty array is a valid request that revokes everything: the way to park an
+  account without suspending it.
+- **The target of a scope change is checked against the `role` column, not `has_role()`.** Scope
+  must stay editable on a *suspended* Authority, or an Admin could not correct a scope before
+  reinstating them.
+- ⚠️ **No `IsAdminUser` on the view.** DRF's checks `is_staff` — Django-admin plumbing, not the
+  domain `role` column. `require_role(actor, Role.ADMIN)` inside the service is the enforcement
+  point (FR-3); a permission class here would read as one and drift from it.
+- **`role` and `status` in the request body are ignored, not honoured.** The serializer has no such
+  fields. `POST /users/authorities` says what it makes, and an Admin minting another Admin through
+  it would be an undocumented privilege path. Two tests assert the escalation attempts fail.
+- **`require_two_factor` is a stored column now, enforced in T1.7.** API §6.2 sends
+  `requireTwoFactor`; discarding a documented input would tell the Admin the account requires 2FA
+  while nothing recorded that it does.
+- ⚠️ **Admin's scope editor bypasses `set_category_scope()` and therefore the audit funnel.** It is
+  the break-glass path for FR-30/31; the API path is the audited one. T8.1 should reconsider whether
+  admin may write that M2M at all.
+- ⚠️ **`users/authorities` must stay routed before any `users/<id>` pattern.** A `<uuid:pk>` would
+  not shadow it, but T1.9's looser `<str:pk>` would — turning provisioning into a lookup for a user
+  whose id is the literal string `"authorities"`.
+- ❓ **`UserSerializer.categoryScope` reads `[]` for an Admin**, which is the stored truth but not
+  the effective permission — Admins bypass scope. API §6.2 only shows an `"role":"authority"` body
+  and says nothing about the other two roles. **Flagged for T1.9's `GET /users/me`; the spec needs
+  amending before that ships.** Not invented here, and T1.6 is unaffected: this endpoint only ever
+  returns an Authority.
+
+Verified in the container: `pytest urbenmend/identity/tests/test_provisioning.py` **38 passed**;
+full suite **309 passed / 1 xfailed**; `ruff check`, `ruff format --check` (120 files),
+`mypy --strict` (113 files) clean; `manage.py check` clean; `makemigrations --check --dry-run`
+exit 0; `check --deploy` clean on `prod`; `0004` reversibility confirmed by a real
+`migrate identity 0003` → `migrate identity` cycle, asserting the column dropped and returned.
+
 **M1 gate:** a citizen can register → verify → log in; an admin can provision a scope-limited
 authority; RBAC denies out-of-scope actions; sessions revoke immediately.
 
@@ -1002,7 +1076,7 @@ authority; RBAC denies out-of-scope actions; sessions revoke immediately.
 - [x] log in (T1.3 — sessions)
 - [x] CSRF on state-changing requests (T1.4)
 - [x] category taxonomy seeded (T0.10 — ❓Q1 resolved)
-- [ ] admin provisions a scope-limited authority (T1.6 — enforcement layer now in place)
+- [x] admin provisions a scope-limited authority (T1.6 — ⚠️ audited to a log line only until T8.1)
 - [x] RBAC denies out-of-scope actions (T1.5)
 - [x] sessions revoke immediately (T1.3)
 

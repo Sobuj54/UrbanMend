@@ -14,7 +14,7 @@ with the spec's `code`; the T0.6 handler renders them.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import status
@@ -34,7 +34,9 @@ from urbenmend.identity.models import Channel, User
 from urbenmend.identity.serializers import (
     LoginResponseSerializer,
     LoginSerializer,
+    ProvisionAuthoritySerializer,
     RegisterSerializer,
+    UserSerializer,
     VerifyRequestSerializer,
 )
 
@@ -181,6 +183,57 @@ class LoginView(APIView):
         return Response(
             LoginResponseSerializer(user).data,
             status=status.HTTP_200_OK,
+        )
+
+
+class ProvisionAuthorityView(APIView):
+    """`POST /users/authorities` — provision an Authority with category scope (API §6.2).
+
+    FR-2 (admin-provisioned, not self-serve), BR-25 (Admin-only, audited), BR-26 (the scope).
+
+    ⚠️ **No `permission_classes` role check, and that is the point.** `IsAuthenticated` is the
+    project default and stays; the Admin requirement is `require_role(actor, Role.ADMIN)` inside
+    `provision_authority`. An `IsAdminUser` here would read as the enforcement point and drift
+    from it — DRF's `IsAdminUser` checks `is_staff`, which is Django-admin plumbing, not the
+    domain `role` column (FR-3, R-12).
+
+    ⚠️ Nothing in this method catches `AuthorizationError`. It subclasses Django's
+    `PermissionDenied`, which `urbenmend_exception_handler` already renders as `403 FORBIDDEN` —
+    a local `except` would only be an opportunity to get the status code wrong.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request) -> Response:
+        serializer = ProvisionAuthoritySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            authority = services.provision_authority(
+                # ⚠️ `cast`, not a guard: `IsAuthenticated` has already run, so `request.user` is
+                # a `User` and never `AnonymousUser` here — `test_unauthenticated_gets_401` is what
+                # keeps that true. The cast narrows the type without weakening anything, because
+                # `require_role()` re-checks `is_authenticated` at runtime regardless of what it
+                # is handed; a service that trusted this annotation would be the actual defect.
+                actor=cast("User", request.user),
+                email=data.get("email"),
+                phone=data.get("phone"),
+                category_slugs=data["category_scope"],
+                require_two_factor=data["require_two_factor"],
+            )
+        except services.ProvisioningError as exc:
+            # API §6.2 lists `409` for this endpoint. Unlike registration, the message is
+            # specific: the caller is an Admin who needs to know the address is taken.
+            raise Conflict(str(exc)) from exc
+        except DjangoValidationError as exc:
+            # An unknown or retired category key — a business-rule rejection, so `422`, not the
+            # `400` a malformed body would get (api-conventions.md status table).
+            raise UnprocessableEntity(exc.messages[0]) from exc
+
+        return Response(
+            UserSerializer(authority).data,
+            status=status.HTTP_201_CREATED,
         )
 
 

@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import secrets
 from importlib import import_module
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import structlog
 from django.conf import settings
 from django.contrib.auth import SESSION_KEY
 from django.contrib.auth import login as django_login
@@ -34,10 +35,18 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from django.http import HttpRequest
 
     from urbenmend.classification.models import Category
     from urbenmend.identity.models import Channel, User, VerificationCode
+
+# ⚠️ The audit trail for T1.6 rides this logger until T8.1 replaces it with the real table — see
+# `_audit_privileged_action`. Not `logging.getLogger`: the project's processor chain is structlog's
+# (T0.9), so a stdlib logger would emit an unstructured line into a JSON stream and lose the
+# `trace_id` that `contextvars` binds per request.
+logger = structlog.get_logger(__name__)
 
 
 class RegistrationError(Exception):
@@ -446,6 +455,16 @@ def revoke_all_sessions(*, user: User) -> int:
 # `verify_code()` records for never returning `False`.
 
 
+class ProvisioningError(Exception):
+    """An Authority account could not be provisioned (T1.6).
+
+    Maps to `409 CONFLICT` — API §6.2 lists `409` for `POST /users/authorities`. Distinct from
+    `RegistrationError` because the two have opposite disclosure rules: registration is public and
+    must not reveal whether an address is taken, while this endpoint is Admin-only and an admin
+    who cannot be told "that address already has an account" cannot do the job.
+    """
+
+
 class AuthorizationError(PermissionDenied):
     """`403 FORBIDDEN` — the caller is authenticated but not permitted (API §4.2).
 
@@ -591,3 +610,223 @@ def scoped_category_ids(user: User) -> set[int] | None:
     if not has_role(user, Role.AUTHORITY):
         return set()
     return set(user.category_scope.values_list("pk", flat=True))
+
+
+# =======================================================================================
+# Authority provisioning (T1.6, FR-2, BR-25)
+# =======================================================================================
+
+
+def _audit_privileged_action(
+    *,
+    actor: User,
+    action: str,
+    target: User,
+    **detail: Any,
+) -> None:
+    """Record a privileged action (BR-25's "and the grant is audited", FR-32).
+
+    ⚠️ **This writes a structured log line, NOT the append-only audit table — and that is a
+    deliberate, documented shortfall, not an oversight.** The immutable audit log is **T8.1**, in
+    P8: a real table whose append-only property is enforced *at the database level* by revoking
+    `UPDATE`/`DELETE` from the application role, because "application discipline alone will not
+    satisfy NFR-10" [doc: Plan T8.1, database.md]. Building a table here would either duplicate
+    that schema before its design exists, or — worse — ship an audit table without the revoke and
+    create the false assurance NFR-10 exists to prevent. The plan agrees: M1's DoD does not
+    mention audit, M8's does ("every privileged action is audited immutably").
+
+    ⚠️ **A log line is not an audit record.** It is mutable, expires with log retention, and is
+    not queryable via `GET /audit-events`. Until T8.1, BR-25's audit obligation is only partly
+    met, and that gap is recorded in the build notes rather than papered over.
+
+    ⚠️ **T8.1 must replace this function's body, not add a second call path beside it.** Every
+    privileged action routes through here precisely so the swap is one edit — a caller that logs
+    directly is a caller T8.1 will miss. The `traceId` in the log line already correlates it with
+    the request that caused it [doc: ops §2.3].
+
+    ⚠️ Never widen `detail` to carry a password, a verification code, or a session key.
+    """
+    logger.info(
+        "privileged_action",
+        action=action,
+        actor_id=str(actor.pk),
+        actor_role=actor.role,
+        target_id=str(target.pk),
+        **detail,
+    )
+
+
+def _resolve_category_scope(category_slugs: Sequence[str]) -> list[Category]:
+    """Turn the spec's `["roads","water_drainage"]` into Category rows, or reject the request.
+
+    Raises:
+        ValidationError: `422` — a key is unknown, or names a Retired node.
+
+    ⚠️ **Retired categories are rejected, not silently dropped.** A Retired node can never match an
+    Issue, so scoping an authority to one grants them nothing while reading back as a successful
+    grant — the provisioning bug hardest to notice, because the account looks correctly configured.
+    `422` with the offending key is the honest answer.
+
+    ⚠️ **Unknown keys are named in the message**, unlike the deliberately opaque RBAC denials. Both
+    callers are Admin-only and the Admin supplied these keys, so there is no enumeration to
+    protect: the taxonomy is public reference data (`GET /categories`, API §6.10).
+
+    ⚠️ An empty sequence is valid and returns `[]` — an Authority scoped to nothing can act on
+    nothing (see `has_category_scope`), which is a legitimate parked state, not an error.
+    """
+    from urbenmend.classification.models import Category, CategoryStatus
+
+    # `dict.fromkeys` de-duplicates while keeping order, so `["roads","roads"]` is one grant
+    # rather than a length mismatch reported as an unknown key.
+    requested = list(dict.fromkeys(category_slugs))
+    if not requested:
+        return []
+
+    categories = list(Category.objects.filter(slug__in=requested, status=CategoryStatus.ACTIVE))
+    if len(categories) != len(requested):
+        unknown = sorted(set(requested) - {category.slug for category in categories})
+        raise ValidationError(f"Unknown or retired category: {', '.join(unknown)}.")
+    return categories
+
+
+@transaction.atomic
+def provision_authority(
+    *,
+    actor: User,
+    email: str | None = None,
+    phone: str | None = None,
+    category_slugs: Sequence[str],
+    require_two_factor: bool = False,
+) -> User:
+    """Create an Authority account with its category scope (FR-2, BR-25, API §6.2).
+
+    Args:
+        actor: The Admin performing the grant. **Authorized here, in the service** (FR-3).
+        email: Work address for the new account. At least one contact is required.
+        phone: Alternative contact.
+        category_slugs: The BR-26 scope. Machine keys from `Category.slug`, as the spec's
+            `"categoryScope": ["roads"]` sends them.
+        require_two_factor: Stored now, enforced by T1.7 (FR-4).
+
+    Returns:
+        The new Authority, scope already attached.
+
+    Raises:
+        AuthorizationError: `403` — `actor` is not an Admin. **BR-25 is this line.**
+        ProvisioningError: `409` — the contact is already in use.
+        ValidationError: `422` — no contact given, or a slug does not resolve to an active
+            Category.
+
+    ⚠️ **`require_role(actor, Role.ADMIN)` is the first statement, and BR-25 lives or dies on it.**
+    "An Authority role can be granted only by an Admin" is not enforceable in a view: a Celery
+    task or management command calling this function would bypass a permission class entirely.
+
+    ⚠️ **The account gets no password** — `create_user(password=None)` sets an unusable one. The
+    spec's body carries no password field, and inventing one would mean either an Admin choosing
+    another person's credential or a generated secret travelling back through the API response.
+    Neither is acceptable; the authority establishes their own via the reset flow (T1.7).
+    ⚠️ Until T1.7 ships that flow, a provisioned authority **cannot yet log in**. The account,
+    role and scope are all real; only the credential path is missing. Recorded, not hidden.
+
+    ⚠️ **`status` stays `REGISTERED`, not `ACTIVE`.** The work address is unproven until someone
+    reading that mailbox verifies it, and BR-30 bars notifications to an unverified channel. An
+    Admin typo would otherwise create a live Authority whose owner never learns the account
+    exists.
+
+    ⚠️ **Scope is resolved and validated before the user is created**, so an unknown slug fails
+    with nothing written. Inside `atomic` a later failure would roll back anyway, but ordering it
+    this way keeps the error about the request rather than about a half-built account.
+    """
+    from urbenmend.identity.models import Role, User, UserStatus
+
+    require_role(actor, Role.ADMIN)
+
+    if not email and not phone:
+        raise ValidationError("An authority account requires an email address or a phone number.")
+
+    categories = _resolve_category_scope(category_slugs)
+
+    # ⚠️ Normalized exactly as `User._normalize_contact()` does it, because the point of the check
+    # is to predict what the UNIQUE index will see. `BaseUserManager.normalize_email` lowercases
+    # only the domain, so `Admin@x.com` would pass this check and then be stored as `admin@x.com`
+    # — the collision would surface as an IntegrityError instead of the 409 the spec asks for.
+    normalized_email = email.strip().lower() if email else None
+    normalized_phone = phone.strip() if phone else None
+
+    if normalized_email and User.objects.filter(email=normalized_email).exists():
+        raise ProvisioningError("An account with that email address already exists.")
+    if normalized_phone and User.objects.filter(phone=normalized_phone).exists():
+        raise ProvisioningError("An account with that phone number already exists.")
+
+    try:
+        authority = User.objects.create_user(
+            email=normalized_email,
+            phone=normalized_phone,
+            password=None,
+            role=Role.AUTHORITY,
+            status=UserStatus.REGISTERED,
+            require_two_factor=require_two_factor,
+        )
+    except IntegrityError as exc:
+        # ⚠️ Not redundant with the `exists()` checks above — it closes the window between them
+        # and this INSERT. Two Admins provisioning the same address concurrently both pass the
+        # check; without this the loser gets a `500` instead of the documented `409`. The checks
+        # remain because they distinguish *which* field collided, which the constraint error only
+        # reports in a message no caller should be parsing.
+        raise ProvisioningError(
+            "An account with that email or phone number already exists."
+        ) from exc
+
+    if categories:
+        authority.category_scope.set(categories)
+
+    _audit_privileged_action(
+        actor=actor,
+        action="authority.provisioned",
+        target=authority,
+        category_scope=sorted(category.slug for category in categories),
+        require_two_factor=require_two_factor,
+    )
+    return authority
+
+
+@transaction.atomic
+def set_category_scope(
+    *,
+    actor: User,
+    authority: User,
+    category_slugs: Sequence[str],
+) -> User:
+    """Replace an Authority's category scope (BR-25/BR-26, API §6.2 `PATCH /users/{id}`).
+
+    Raises:
+        AuthorizationError: `403` — `actor` is not an Admin.
+        ValidationError: `422` — the target is not an Authority, or a slug is unknown/retired.
+
+    ⚠️ **Replaces, does not merge.** The spec sends the whole array
+    (`{"categoryScope":["roads","electrical"]}`), so a merge would make revocation impossible
+    through the documented body — an Admin narrowing a scope would silently widen it instead.
+
+    ⚠️ **An empty array is a valid, meaningful request**: it revokes all scope, leaving an
+    Authority who can act on nothing. That is the intended way to park an account without
+    suspending it, and it works because an empty scope grants nothing (see `has_category_scope`).
+    """
+    from urbenmend.identity.models import Role
+
+    require_role(actor, Role.ADMIN)
+
+    if authority.role != Role.AUTHORITY:
+        # ⚠️ Checked against the column, not `has_role()`: scope must remain editable on a
+        # suspended Authority, or an Admin could not correct a scope before reinstating them.
+        raise ValidationError("Category scope applies only to Authority accounts (BR-26).")
+
+    categories = _resolve_category_scope(category_slugs)
+    authority.category_scope.set(categories)
+
+    _audit_privileged_action(
+        actor=actor,
+        action="authority.scope_changed",
+        target=authority,
+        category_scope=sorted(category.slug for category in categories),
+    )
+    return authority

@@ -123,10 +123,68 @@ class LoginResponseSerializer(CamelCaseSerializer):
         return False
 
 
+class ProvisionAuthoritySerializer(CamelCaseSerializer):
+    """POST /users/authorities request body (API §6.2, FR-2, BR-25).
+
+    Spec body: `{ "email":"...", "categoryScope":["roads"], "requireTwoFactor": true }`.
+
+    ⚠️ **No `role` field, and no `password`.** The role is not a caller choice — the endpoint's
+    entire purpose is to create an *Authority*, so accepting `role` would let an Admin provision
+    another Admin through a URL that is not documented to do that. The password is absent because
+    the spec's body has none; see `provision_authority` for why generating one is worse.
+
+    ⚠️ **`status` is not accepted either.** The service pins `registered` so the work address must
+    be verified before the account is live — a caller-supplied `active` would skip that.
+
+    ⚠️ **Shape validation only; every rule is re-checked in the service.** The `categoryScope`
+    values are validated against the taxonomy in `_resolve_category_scope`, not here — a
+    `ChoiceField` built from a queryset at import time would freeze the seven current nodes into
+    the process and start rejecting any category a later migration adds until the pod restarts.
+    """
+
+    email = serializers.EmailField(required=False, allow_blank=False)
+    phone = serializers.CharField(required=False, allow_blank=False, max_length=16)
+    # `allow_empty=True`: an Authority provisioned with no scope can act on nothing, which is a
+    # valid parked state (see `has_category_scope`). `required=False` because the spec marks
+    # nothing in this body mandatory; absent means the same as `[]`.
+    category_scope = serializers.ListField(
+        child=serializers.SlugField(max_length=50),
+        required=False,
+        allow_empty=True,
+        default=list,
+    )
+    require_two_factor = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        """At least one contact method (data-model §1) — the same rule as registration.
+
+        Duplicated in `provision_authority` on purpose: this copy produces the field-level
+        `VALIDATION_FAILED` detail the spec asks for, while the service copy holds when the
+        function is called from a management command with no serializer in sight (FR-3).
+        """
+        if not attrs.get("email") and not attrs.get("phone"):
+            raise serializers.ValidationError(
+                "At least one of email or phone is required.",
+                code="REQUIRED",
+            )
+        return attrs
+
+
 class UserSerializer(CamelCaseModelSerializer):
-    """User resource shape for API responses (API §6.2)."""
+    """User resource shape for API responses (API §6.2).
+
+    ⚠️ **`categoryScope` is emitted from the BR-26 rows, and for an Admin it reads `[]` — which
+    is the stored truth but NOT the effective permission.** Admins bypass scope entirely
+    (`scoped_category_ids()` returns `None`, "apply no filter"), so a client that renders this
+    field literally would show an Admin as able to act on nothing. API §6.2's example is a
+    `"role":"authority"` body and the spec says nothing about the other two roles. ❓Flagged for
+    T1.9 (`GET /users/me`), which is where a non-Authority reads its own profile; **the spec needs
+    amending before that ships**, and the answer is not being invented here. T1.6 is unaffected:
+    `POST /users/authorities` only ever returns an Authority.
+    """
 
     verified = serializers.SerializerMethodField()
+    category_scope = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -138,6 +196,7 @@ class UserSerializer(CamelCaseModelSerializer):
             "status",
             "preferred_language",
             "verified",
+            "category_scope",
             "date_joined",
         ]
         read_only_fields = ["id", "role", "status", "date_joined"]
@@ -148,3 +207,14 @@ class UserSerializer(CamelCaseModelSerializer):
             "email": obj.email_verified_at is not None,
             "phone": obj.phone_verified_at is not None,
         }
+
+    def get_category_scope(self, obj: User) -> list[str]:
+        """API §6.2 `categoryScope: ["roads","water_drainage"]` — slugs, not labels or ids.
+
+        Goes through the T1.5 selector rather than `obj.category_scope.all()` so the ordering is
+        the one `category_scope_for` documents; two responses differing in array order for no
+        reason a client could explain is a contract defect, not a cosmetic one.
+        """
+        from urbenmend.identity.selectors import category_scope_for
+
+        return [category.slug for category in category_scope_for(obj)]

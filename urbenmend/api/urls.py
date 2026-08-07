@@ -28,12 +28,23 @@ urlpatterns = [
     path("auth/verify", identity_views.VerifyView.as_view(), name="auth-verify"),
     path("auth/login", identity_views.LoginView.as_view(), name="auth-login"),
     path("auth/logout", identity_views.LogoutView.as_view(), name="auth-logout"),
+    # API §6.2 — users. T1.6 adds Authority provisioning (FR-2, BR-25).
+    #
+    # ⚠️ Registered before any `users/<id>` route, and it must stay that way. Django matches in
+    # order, so a `users/<uuid:pk>` pattern added above this line would still not shadow it
+    # (`authorities` is not a UUID) — but a looser `users/<str:pk>` from T1.9 would swallow it and
+    # turn provisioning into a lookup for a user whose id is the literal string "authorities".
+    path(
+        "users/authorities",
+        identity_views.ProvisionAuthorityView.as_view(),
+        name="users-authorities",
+    ),
 ]
 
 # Remaining §6 resources land with their phases, not here:
-#   /auth/2fa, /auth/password → T1.7
-#   /users                   → P1 (T1.6, T1.9)
-#   /reports, /media         → P1/P3
-#   /issues, /map, /comments → P2/P4
-#   /meta/enums              → needs the Category taxonomy (Q1 open — do not invent it)
+#   /auth/2fa, /auth/password        → T1.7
+#   /users/me, /users, /users/{id}   → T1.9
+#   /reports, /media                 → P1/P3
+#   /issues, /map, /comments         → P2/P4
+#   /meta/enums                      → P1 (taxonomy confirmed — Q1 resolved 2026-08-07)
 # ⚠️ No `POST /issues` ever: Issues form only via async clustering [doc: API §3, CLAUDE.md].

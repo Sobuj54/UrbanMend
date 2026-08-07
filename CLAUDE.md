@@ -262,6 +262,48 @@ in `identity/selectors.py`, 26 tests in `identity/tests/test_rbac.py`. `pytest` 
 - ⚠️ **`classification/0002`'s RunPython reverse is `noop`.** Clearing the column first
   (`update(slug="")`) fails the down migration — seven rows sharing `""` break the UNIQUE index.
 
+✅ Built in T1.6 (2026-08-07): Authority provisioning. `provision_authority` /
+`set_category_scope` / `_resolve_category_scope` / `_audit_privileged_action` and
+`ProvisioningError` in `identity/services.py`, `ProvisionAuthoritySerializer` +
+`UserSerializer.categoryScope`, `ProvisionAuthorityView`, `POST /users/authorities`, migration
+`0004_authority_two_factor`, admin scope editing, 38 tests. `pytest` **309 passed / 1 xfailed**,
+mypy (113 files) / ruff clean, no drift, `0004` verified reversible.
+
+- ⚠️ **BR-25's audit is a structured log line, not an audit record — knowingly.** The immutable
+  table is **T8.1 (P8)**, where append-only is enforced by revoking `UPDATE`/`DELETE` from the
+  application role; shipping the table now without that revoke would manufacture exactly the false
+  assurance NFR-10 exists to prevent. Every privileged action goes through the single funnel
+  `_audit_privileged_action()`. **T8.1 replaces its body — never add a second call path beside it.**
+- ⚠️ **A provisioned Authority cannot log in until T1.7.** No password is set (`create_user(
+  password=None)` → unusable). The spec's body has no password field, and the alternatives are an
+  Admin picking someone else's credential or a generated secret in the response body.
+- ⚠️ **New authorities start `registered`, not `active`** — the work address is unproven, and BR-30
+  bars notification to an unverified channel. An Admin typo must not create a live account its owner
+  never hears about.
+- ⚠️ **Retired categories are rejected `422`, never silently dropped.** A Retired node matches no
+  Issue, so the grant would read as success and confer nothing.
+- ⚠️ **This endpoint's `409` is specific; registration's is generic.** Opposite disclosure rules —
+  registration is public, provisioning is Admin-only and the Admin needs to be told. Don't unify them.
+- ⚠️ **Duplicate-contact check normalizes with `.lower()`, not `normalize_email`** (which lowercases
+  only the domain), or the collision arrives as a `500` instead of the documented `409`. The
+  `IntegrityError` catch still stays — it covers two Admins racing on one address.
+- ⚠️ **`set_category_scope()` replaces, never merges** — the spec sends the whole array, so merging
+  makes revocation impossible and turns narrowing into widening. `[]` legitimately revokes all.
+- **Scope changes check the target's `role` column, not `has_role()`** — a suspended Authority's
+  scope must stay editable, or it can only be reinstated with the wrong scope.
+- ⚠️ **No `IsAdminUser` on the view** — DRF's checks `is_staff` (admin plumbing), not the domain
+  `role`. `require_role(actor, Role.ADMIN)` in the service is the enforcement point (FR-3).
+- **`role`/`status` in the request body are ignored** — the serializer has no such fields, so
+  `POST /users/authorities` cannot be used to mint an Admin or skip verification.
+- **`require_two_factor` is stored now, enforced in T1.7** — API §6.2 sends it, so discarding it
+  would tell an Admin the account requires 2FA while nothing recorded it.
+- ⚠️ **Admin's scope editor bypasses the service and the audit funnel** — break-glass for FR-30/31.
+- ⚠️ **`users/authorities` must stay routed before any `users/<id>` pattern** — T1.9's `<str:pk>`
+  would swallow it.
+- ❓ **`categoryScope` reads `[]` for an Admin**, which is stored truth but not effective permission.
+  API §6.2 documents only an Authority body. **Amend the spec before T1.9's `GET /users/me`** —
+  not invented here.
+
 ## Commands
 
 Sourced from `docs/06-devops-guide.md` §4.1 and its Dockerfile example. **No manifest or task
