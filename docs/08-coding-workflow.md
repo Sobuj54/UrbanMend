@@ -853,6 +853,54 @@ session they presented, so "self" is structural rather than a rule to enforce.
 Verified in the container: `ruff check` and `ruff format --check` clean, `mypy --strict` clean
 (109 files), `pytest` **233 passed / 1 xfailed**, `makemigrations --check --dry-run` exit 0.
 
+### T1.4 — CSRF protection for state-changing requests
+
+✅ **Verified, no new code (2026-08-07).** The plan's own note — *"carried by DRF
+`SessionAuthentication`"* — is accurate, and the configuration was already in place from A4/T0.3:
+`CsrfViewMiddleware` in `MIDDLEWARE`, `SessionAuthentication` as the sole
+`DEFAULT_AUTHENTICATION_CLASSES` entry, `CSRF_USE_SESSIONS = False` +
+`CSRF_COOKIE_HTTPONLY = False` for the double-submit pattern API §2 specifies,
+`CSRF_COOKIE_SAMESITE = "Lax"`, and `CSRF_COOKIE_SECURE` set per environment. **This task was
+therefore proving the mechanism, not building it** — the 5 tests in
+`identity/tests/test_csrf.py` are the deliverable.
+
+⚠️ **Writing the test is not optional just because the framework supplies the behaviour.** "DRF
+handles it" is an assumption until a test fails when it stops being true. The specific way it could
+silently break: `SessionAuthentication` enforces CSRF *only* when it is the authenticator that
+resolved the user, so any future view that sets `authentication_classes = []` — as `LoginView` and
+`RegisterView` legitimately do — drops CSRF enforcement with no error and no warning. A test that
+asserts the `403` is what catches that on the day someone copies the pattern onto a view that
+carries a session.
+
+Two things this task settled:
+
+1. **CSRF enforcement is scoped to authenticated requests, and that is deliberate.** A first-time
+   visitor has never been issued a token, so demanding one on `POST /auth/register` or
+   `POST /auth/login` would make sign-up and sign-in impossible. Those endpoints set
+   `authentication_classes = []`, which is what makes them exempt. The high-severity threat — an
+   attacker submitting state-changing requests *as the victim* — requires the victim's session
+   cookie, and every endpoint that carries one is protected. ⚠️ Login CSRF (tricking a victim into
+   authenticating as the *attacker's* account) is a real but lower-severity residual risk that this
+   scoping accepts; recorded here so it is a known decision rather than an oversight.
+2. **The CSRF token rotates on login, separately from the session key.** `django.contrib.auth
+   .login()` calls `rotate_token()` as well as `cycle_key()`. Because `CSRF_USE_SESSIONS = False`
+   the token rides in its own cookie, so T1.3's session-key rotation does not cover it — a token
+   planted before login would otherwise stay valid against the newly authenticated session. Tested
+   as its own case for that reason.
+
+Also worth noting for whoever writes the tests next: `test_logout_without_csrf_token_returns_403`
+sets `client.handler.enforce_csrf_checks = True` **and** pops the CSRF cookie. Dropping the cookie
+alone is not enough — Django's test client fakes a token by default, so the test would pass while
+proving nothing. That combination is the pattern to copy for every future CSRF test.
+
+`security.W016` (`CSRF_COOKIE_SECURE` not set) appears under `dev` settings only, by design —
+`Secure` cookies cannot be sent over plain HTTP, which would break local development. `prod`
+settings check clean.
+
+Verified in the container: `pytest urbenmend/identity/tests/test_csrf.py` **5 passed**; full suite
+**238 passed / 1 xfailed**; `ruff check`, `ruff format --check`, `mypy --strict` (109 files) clean;
+`makemigrations --check --dry-run` exit 0; `check --deploy` clean on `prod`.
+
 **M1 gate:** a citizen can register → verify → log in; an admin can provision a scope-limited
 authority; RBAC denies out-of-scope actions; sessions revoke immediately.
 

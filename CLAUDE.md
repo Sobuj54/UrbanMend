@@ -187,6 +187,23 @@ read-only `VerificationCodeAdmin`, 22 tests. `pytest` **205 passed / 1 xfailed**
   simultaneously stop issuing a full session — the spec puts `/auth/2fa/verify` on a *partial*
   post-password session.
 
+✅ Verified in T1.4 (2026-08-07): CSRF protection for state-changing requests. **No new code** —
+`CsrfViewMiddleware` + `SessionAuthentication` were already configured from A4/T0.3. The task was
+proving the mechanism works, not building it. 5 tests in `identity/tests/test_csrf.py`; full suite
+**238 passed / 1 xfailed**, mypy (110 files) / ruff clean.
+
+- **CSRF enforcement is scoped to authenticated requests.** `SessionAuthentication` enforces it only
+  when it resolved the user. Pre-session endpoints (`/auth/register`, `/auth/login`) set
+  `authentication_classes = []` and are exempt by design — a first-time visitor has no token to
+  present. Login CSRF (tricking a victim into authenticating as the *attacker's* account) is a
+  residual risk this scoping accepts; it is lower severity than the authenticated-request threat.
+- **The CSRF token rotates on login**, separately from the session key. `CSRF_USE_SESSIONS = False`
+  means the token rides in its own cookie, so T1.3's session-key rotation does not cover it.
+  `django.contrib.auth.login()` calls `rotate_token()` — a planted token does not stay valid.
+- ⚠️ **Any future view that sets `authentication_classes = []` drops CSRF enforcement with no
+  warning.** The test suite catching that is the whole point of T1.4 — "DRF handles it" is an
+  assumption until a test fails when it stops being true.
+
 ## Commands
 
 Sourced from `docs/06-devops-guide.md` §4.1 and its Dockerfile example. **No manifest or task
