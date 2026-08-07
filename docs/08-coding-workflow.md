@@ -901,12 +901,44 @@ Verified in the container: `pytest urbenmend/identity/tests/test_csrf.py` **5 pa
 **238 passed / 1 xfailed**; `ruff check`, `ruff format --check`, `mypy --strict` (109 files) clean;
 `makemigrations --check --dry-run` exit 0; `check --deploy` clean on `prod`.
 
+### T0.10 — category taxonomy (❓Q1 resolved)
+
+**❓Q1 is closed (2026-08-07): the PRD §6.2 seven-node draft is confirmed as-is.** Recorded in
+PRD §6.2/§15 and ops §4; this unblocks T1.5's BR-26 scoping and T1.6's authority provisioning.
+
+Built `urbenmend/classification/models.py` (`Category`, `CategoryStatus`), migration `0001_initial`
+seeding the seven nodes, `CategoryAdmin`, and 7 tests.
+
+Decisions that bind later work:
+
+- **Flat, not hierarchical** — §6.2 lists seven peers and data-model §5 gives Category no parent.
+  Nesting later is an additive migration; un-nesting after reports accumulate is not.
+- ⚠️ **`Other / Uncategorized` is a required fallback sink, not filler.** PRD §331: LLM triage
+  returning an out-of-set category coerces to `Other`. Retiring or deleting it breaks FR-13a. A test
+  asserts it exists and is `active`.
+- **`slug` is the machine key, labels are display-only** — classification, the LLM adapter, and
+  authority-scope rows all reference `slug`, so renaming an English label cannot break them.
+- **`name_bn` is non-null and asserted not to equal `name_en`** (NFR-8). A placeholder-Bangla seed
+  passes a not-null check and still ships an untranslated UI to every Bangla-speaking user.
+- **Taxonomy is data, not code** (NFR-11/FR-30): a seeded table, not a Python enum. `CategoryAdmin`
+  disables add and delete — additions come from reviewed migrations, and `Active → Retired`
+  (data-model §5) preserves historical Report references.
+- ⚠️ **The seed's `RunPython` reverse deletes only the seven seeded slugs**, never
+  `Category.objects.all()` — a reverse that truncates the table would destroy operator-added rows.
+  Verified by a real `migrate classification zero` → `migrate` cycle, per `database.md`.
+
+Verified in the container: `pytest urbenmend/classification/` **7 passed**; full suite **245 passed /
+1 xfailed**; `ruff check`, `ruff format --check`, `mypy --strict` (111 files) clean;
+`makemigrations --check --dry-run` exit 0; migration reversibility confirmed both directions.
+
 **M1 gate:** a citizen can register → verify → log in; an admin can provision a scope-limited
 authority; RBAC denies out-of-scope actions; sessions revoke immediately.
 
 - [x] register → verify (T1.2)
 - [x] log in (T1.3 — sessions)
-- [ ] admin provisions a scope-limited authority (T1.4/T1.6 — needs Category, ❓Q1)
+- [x] CSRF on state-changing requests (T1.4)
+- [x] category taxonomy seeded (T0.10 — ❓Q1 resolved)
+- [ ] admin provisions a scope-limited authority (T1.6 — unblocked now Category exists)
 - [ ] RBAC denies out-of-scope actions (T1.5)
 - [x] sessions revoke immediately (T1.3)
 

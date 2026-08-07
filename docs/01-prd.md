@@ -193,7 +193,9 @@ IDs (`FR-x`) are stable. Priorities use MoSCoW (**MUST / SHOULD / COULD**). Requ
 - **StatusEvent / AuditEvent** — lifecycle and integrity records.
 - **Notification** — a delivered/queued message.
 
-### 6.2 Proposed Category Taxonomy (draft — ❓ needs confirmation)
+### 6.2 Category Taxonomy
+
+**RESOLVED 2026-08-07 (T0.10).** The seven-node flat taxonomy is confirmed and seeded in `classification/migrations/0001_initial.py`:
 
 `Roads & Transport` · `Street Lighting` · `Water & Drainage` · `Sanitation & Waste` · `Electrical Hazards` · `Public Structures` · `Other / Uncategorized`.
 
@@ -353,7 +355,9 @@ Removing the numeric score **lowers** — but does not eliminate — gaming stak
 
 ## 15. Open Questions (❓ Require Stakeholder Input Before Freeze)
 
-- **❓Q1 — Category taxonomy.** Is the §6.2 draft correct/complete for the target city?
+- **Q1 — Category taxonomy. RESOLVED (2026-08-07):** the §6.2 draft is confirmed as-is. Seven
+  flat nodes, seeded as data (NFR-11/FR-30) in `classification/migrations/0001_initial.py`.
+  Recorded as the approved taxonomy rather than the previous draft-and-open.
 - **Q2 — Severity levels. RESOLVED:** Four levels — **Critical / High / Medium / Low**. Critical is reserved for life-safety emergencies (collapse, live wire, gas leak, severe flooding). High = significant risk/disruption; Medium = moderate; Low = minor inconvenience.
 - **❓Q3 — POI data source & licensing.** OSM, a government dataset, or admin-entered? Which POI types show as proximity context? (A5)
 - **Q4 — Anonymous reporting. RESOLVED:** Login required for all submissions. Anonymous reporting is not supported.
@@ -409,4 +413,4 @@ Two deliberate deviations from `PROJECT PROPOSAL.pdf`, recorded for your supervi
 
 ---
 
-*End of `docs/01-prd.md` (v1.3). Open questions Q2/Q4/Q7/Q8/Q9 and domain questions DM-Q5/Q7/Q8 are resolved — see §15 and §16 — and the §16.5 stack deferral is closed by ADR-001 (`docs/07-adr-001-app-framework.md`). Remaining open: ❓Q1 (taxonomy), ❓Q3 (POI source), ❓Q5 (notification channels), ❓Q6 (EXIF default), ❓Q10 (accuracy bar).*
+*End of `docs/01-prd.md` (v1.3). Open questions Q2/Q4/Q7/Q8/Q9, domain questions DM-Q5/Q7/Q8, and **Q1 (taxonomy — confirmed 2026-08-07, T0.10)** are resolved — see §15 and §16 — and the §16.5 stack deferral is closed by ADR-001 (`docs/07-adr-001-app-framework.md`). Remaining open: ❓Q3 (POI source), ❓Q5 (notification channels), ❓Q6 (EXIF default), ❓Q10 (accuracy bar).*

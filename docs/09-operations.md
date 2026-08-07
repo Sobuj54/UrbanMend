@@ -360,11 +360,11 @@ is **`NULL`, never `""`**: Postgres allows many NULLs under UNIQUE but only one 
 | ID | Question | Operational impact |
 |---|---|---|
 | — | **Cloud host** | Unpinned. Blocks §2.5–2.8 concretely. |
-| Q1 | Category taxonomy | Clustering matches on category; also blocks T0.10 seeding |
 | Q3 | POI data source | Display-only, but an ingest job to operate |
 | Q5 | Notification channels | Determines SMS provider and its cost/rate ceilings |
 | Q6 | EXIF default | ⚠️ Privacy-affecting (BR-4: EXIF stripped by default) |
 | Q10 | Accuracy bar | Sets the LLM-quality alert threshold |
 
-**Resolved:** Q2 (severity is Critical/High/Medium/Low), Q9 (LLM provider **deferred** — the
-adapter stays provider-agnostic and the product never hard-depends on the external API, NFR-4).
+**Resolved:** Q1 (taxonomy — confirmed 2026-08-07 as the seven-node PRD §6.2 draft; seeded in
+`classification/0001`), Q2 (severity is Critical/High/Medium/Low), Q9 (LLM provider **deferred** —
+the adapter stays provider-agnostic and the product never hard-depends on the external API, NFR-4).

@@ -204,6 +204,34 @@ proving the mechanism works, not building it. 5 tests in `identity/tests/test_cs
   warning.** The test suite catching that is the whole point of T1.4 — "DRF handles it" is an
   assumption until a test fails when it stops being true.
 
+✅ **❓Q1 RESOLVED (2026-08-07) — the category taxonomy is confirmed**, and T0.10's `Category` is
+built: `urbenmend/classification/models.py` (`Category`, `CategoryStatus`), migration `0001_initial`
+seeding seven nodes, read-only-ish `CategoryAdmin`, 7 tests. `pytest` **245 passed / 1 xfailed**,
+mypy/ruff clean, no drift, migration verified reversible. PRD §6.2/§15 and ops §4 amended to record
+the resolution.
+
+- **The taxonomy is the PRD §6.2 draft, confirmed as-is** — seven flat nodes: `Roads & Transport`,
+  `Street Lighting`, `Water & Drainage`, `Sanitation & Waste`, `Electrical Hazards`,
+  `Public Structures`, `Other / Uncategorized`. Flat, not hierarchical (§6.2 lists peers;
+  data-model §5 gives Category no parent).
+- ⚠️ **`Other / Uncategorized` is a required sink, not filler** (PRD §331): when LLM triage returns
+  a category outside the allowed set, it coerces to `Other`. Deleting or retiring it breaks the
+  fallback. A test asserts it exists and is active.
+- **`slug` is the stable machine key; labels are display-only.** Code, the LLM adapter, and future
+  authority-scope rows reference `slug` — renaming an English label must not break classification.
+- **Bilingual labels are non-null** (`name_en`, `name_bn`, NFR-8). A test asserts `name_bn` is not a
+  copy of `name_en` — a placeholder-Bangla seed would satisfy a not-null check and still ship an
+  untranslated UI.
+- **Lifecycle is `Active → Retired`, never deleted** (data-model §5). `CategoryAdmin` disables add
+  and delete: additions come from migrations (taxonomy is reviewed data, NFR-11), and retiring
+  preserves historical Report references.
+- ⚠️ **The seed `RunPython` has a real reverse callable** — it deletes only the seven seeded slugs,
+  never `Category.objects.all()`. Verified with a full `migrate classification zero` → `migrate`
+  cycle, not by inspection; `database.md` gates reversibility and an unreversible data migration
+  passes review and fails CI.
+- **Still deliberately absent: the Authority↔Category M2M for BR-26 scoping.** Category now exists,
+  so it is unblocked — it lands with T1.5/T1.6 as an additive migration.
+
 ## Commands
 
 Sourced from `docs/06-devops-guide.md` §4.1 and its Dockerfile example. **No manifest or task
@@ -250,8 +278,8 @@ docker build .                             # image
 - **Do not commit secrets.** `.env.local` is ignored; `.env.example` holds placeholders only.
 - **Do not add frontend code.** Plan and DevOps guide both scope this repo to backend only.
 - **Do not let the code diverge from `docs/04-api-specification.md`** — amend the spec first.
-- **Do not invent answers to open questions** Q1 (taxonomy), Q3 (POI source), Q5 (notification
-  channels), Q6 (EXIF default), Q10 (accuracy bar). Flag them.
+- **Do not invent answers to open questions** Q3 (POI source), Q5 (notification channels), Q6 (EXIF
+  default), Q10 (accuracy bar). Flag them.
 
 ## Path-scoped rules
 
