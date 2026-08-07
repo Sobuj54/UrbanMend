@@ -22,11 +22,25 @@ urlpatterns = [
     # API §6.16 — liveness/readiness with dependency degradation flags. The K8s readiness
     # probe targets this path [doc: DevOps §8.4].
     path("health", platform_views.health, name="health"),
-    # API §6.1 — authentication. T1.2 covers register + verify; T1.3 adds login + logout.
-    # 2fa/password are T1.7 and are deliberately absent until then rather than stubbed.
+    # API §6.1 — authentication. T1.2 covers register + verify; T1.3 adds login + logout;
+    # T1.7 adds the two 2FA routes. `/auth/password` remains deliberately absent rather than
+    # stubbed — it is unbuilt and blocked on ❓Q5 for delivery of the reset token.
     path("auth/register", identity_views.RegisterView.as_view(), name="auth-register"),
     path("auth/verify", identity_views.VerifyView.as_view(), name="auth-verify"),
     path("auth/login", identity_views.LoginView.as_view(), name="auth-login"),
+    # ⚠️ Both accept a *partial* post-password session, which is not an authenticated request —
+    # see the T1.7 header in `identity/services.py`. They are the only two routes in the project
+    # that do; anything else added under `auth/2fa/` needs that decision made deliberately.
+    path(
+        "auth/2fa/enroll",
+        identity_views.TwoFactorEnrollView.as_view(),
+        name="auth-2fa-enroll",
+    ),
+    path(
+        "auth/2fa/verify",
+        identity_views.TwoFactorVerifyView.as_view(),
+        name="auth-2fa-verify",
+    ),
     path("auth/logout", identity_views.LogoutView.as_view(), name="auth-logout"),
     # API §6.2 — users. T1.6 adds Authority provisioning (FR-2, BR-25).
     #
@@ -42,7 +56,7 @@ urlpatterns = [
 ]
 
 # Remaining §6 resources land with their phases, not here:
-#   /auth/2fa, /auth/password        → T1.7
+#   /auth/password                   → unowned; ❓Q5 blocks delivery of the reset token
 #   /users/me, /users, /users/{id}   → T1.9
 #   /reports, /media                 → P1/P3
 #   /issues, /map, /comments         → P2/P4

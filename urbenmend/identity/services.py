@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from django.http import HttpRequest
+    from django_otp.plugins.otp_totp.models import TOTPDevice
 
     from urbenmend.classification.models import Category
     from urbenmend.identity.models import Channel, User, VerificationCode
@@ -88,6 +89,12 @@ class AccountLockedError(AuthenticationError):
 # into two strings is the whole vulnerability, so it is a module constant rather than two
 # literals that could drift apart.
 _GENERIC_LOGIN_FAILURE = "Invalid credentials."
+
+# ⚠️ Likewise one message for every second-factor failure (T1.7) — wrong code, expired code,
+# replayed code, and no-device-enrolled all read identically. A caller on a partial session has
+# proved a password but not an identity, so "no authenticator enrolled" would disclose another
+# account's security posture. API §6.1 gives all of them `422`.
+_GENERIC_TWO_FACTOR_FAILURE = "The verification code is invalid or has expired."
 
 
 @transaction.atomic
@@ -830,3 +837,241 @@ def set_category_scope(
         category_scope=sorted(category.slug for category in categories),
     )
     return authority
+
+
+# =======================================================================================
+# Two-factor authentication — TOTP (T1.7, FR-4)
+# =======================================================================================
+#
+# ⚠️ **The partial session deliberately does NOT call `django_login()`.** It writes one key into
+# an anonymous session and nothing else, so `SESSION_KEY` (`_auth_user_id`) stays unset,
+# `AuthenticationMiddleware` resolves `request.user` to `AnonymousUser`, and every endpoint in
+# the project that requires authentication rejects the cookie with `401` — automatically, with
+# no per-view opt-in. That is the whole design: a caller who has proved only the password holds
+# a credential that unlocks `/auth/2fa/*` and nothing else.
+#
+# ⚠️ **django-otp's `otp_required` decorator model was considered and rejected for this.** It
+# logs the user fully in first and then gates individual views, so a view added later without
+# the decorator is reachable with one factor. It fails open; the missing-`_auth_user_id`
+# approach fails closed. `OTPMiddleware` stays in the stack (it attaches `request.user.otp_device`
+# and costs nothing), but it is not the enforcement point here.
+#
+# [doc: API §6.1 POST /auth/2fa/enroll + /auth/2fa/verify, auth.md, FR-4]
+
+# The session key holding the id of a user who passed the password check but not yet the second
+# factor. ⚠️ Must never be named `_auth_user_id` — that is `SESSION_KEY`, and setting it is
+# exactly what makes a session fully authenticated.
+PARTIAL_SESSION_USER_KEY = "urbenmend_partial_auth_user_id"
+
+# ⚠️ Deliberately far shorter than `SESSION_COOKIE_AGE`. A half-finished login is a
+# password-only credential sitting in a cookie; it should expire in the time it takes to read a
+# code off a phone, not persist for the full session lifetime. Our policy, not spec-derived —
+# API §6.1 fixes neither a TTL nor a code length.
+PARTIAL_SESSION_TTL_SECONDS = 5 * 60
+
+
+class TwoFactorError(Exception):
+    """2FA-specific failures — no device enrolled, or the code was wrong/expired/replayed.
+
+    ⚠️ One class for every failure mode, mapped to `422` by the view (API §6.1). The reason is
+    the same one `VerifyView` records: distinguishing "no device enrolled" from "wrong code"
+    tells a caller holding only a password whether the account has 2FA at all, which is a fact
+    about someone else's account security.
+    """
+
+    pass
+
+
+class TwoFactorEnrollmentError(Exception):
+    """A confirmed device already exists (API §6.1 `409 CONFLICT`).
+
+    Distinct from `TwoFactorError` because it maps to a different status code, and because it is
+    the one 2FA failure that is safe to report specifically: only the account owner can reach it.
+    """
+
+    pass
+
+
+def requires_two_factor(*, user: User) -> bool:
+    """Whether `user` must clear a second factor before a full session is issued (FR-4).
+
+    True when the account is under an Admin-set policy (`require_two_factor`, T1.6) **or** the
+    user has voluntarily confirmed a TOTP device. FR-4 is a SHOULD — "optional 2FA for
+    authorities/admins" — so enrolment alone opts an account in; the flag makes it mandatory.
+
+    ⚠️ **The policy flag counts even with no device enrolled.** That combination is a login the
+    user cannot complete, and it must stay that way: treating "flag set but no device" as "2FA
+    not required" would let an Admin believe an account is protected while a password alone
+    opens it. The escape is `POST /auth/2fa/enroll`, which accepts a partial session precisely
+    so such an account can enrol its way out (API §6.1).
+
+    [doc: API §6.1, FR-4, PRD §127]
+    """
+    return bool(user.require_two_factor) or _confirmed_device_for(user) is not None
+
+
+def _confirmed_device_for(user: User) -> TOTPDevice | None:
+    """The user's confirmed TOTP device, or `None`.
+
+    ⚠️ Filters on `confirmed=True` explicitly. `TOTPDevice.objects.devices_for_user()` includes
+    unconfirmed devices by default, so an abandoned half-finished enrolment would count as 2FA
+    being active and lock the account out of its own login.
+    """
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    device: TOTPDevice | None = TOTPDevice.objects.filter(user=user, confirmed=True).first()
+    return device
+
+
+def start_partial_session(*, request: HttpRequest, user: User) -> None:
+    """Record a passed password check without authenticating the session (T1.7).
+
+    Called by `LoginView` in place of `start_session()` when `requires_two_factor()` is true.
+    The caller receives a normal session cookie, but the session behind it authenticates
+    nothing — see the section header above.
+
+    ⚠️ **`cycle_key()` is called explicitly here.** `start_session()` gets key rotation for free
+    from `django_login()`; this path does not call it, so without this line a session token
+    planted in the victim's browser before login would still be the token carrying the partial
+    credential — session fixation, one factor earlier than usual. The full session issued after
+    2FA rotates the key a second time (`django_login()` again), which is correct: the partial
+    key has by then been transmitted and should not survive the upgrade.
+
+    ⚠️ **`set_expiry` is per-session, not the global `SESSION_COOKIE_AGE`.** It is reset by
+    `django_login()` on the way to a full session — Django's `login()` calls `cycle_key()`,
+    which preserves the session data but the subsequent full-session write uses the global
+    default. A partial session that is never completed simply expires.
+    """
+    request.session.cycle_key()
+    request.session[PARTIAL_SESSION_USER_KEY] = str(user.pk)
+    request.session.set_expiry(PARTIAL_SESSION_TTL_SECONDS)
+
+
+def resolve_partial_session_user(*, request: HttpRequest) -> User:
+    """Return the user behind a partial session, re-checking that they may still sign in.
+
+    Raises:
+        AuthenticationError: No partial session, or it names a user who no longer exists.
+        AccountLockedError: The account was suspended/deprovisioned between the password check
+            and this call.
+
+    ⚠️ **The user is re-fetched and `is_active` re-checked, not trusted from the session.** The
+    password step happened on an earlier request; an Admin may have suspended the account in
+    between, and BR-25's suspension is meaningless if a login already in flight completes
+    anyway. This is the same reason `revoke_all_sessions()` exists.
+
+    ⚠️ **An authenticated caller is not accepted here.** A full session means the second factor
+    is already done; letting one through would make `/auth/2fa/verify` a way to re-issue a
+    session from a session, which is a refresh token by another name (auth.md: "No refresh
+    tokens. The concept does not exist here.").
+    """
+    from urbenmend.identity.models import User
+
+    user_id = request.session.get(PARTIAL_SESSION_USER_KEY)
+    if not user_id:
+        raise AuthenticationError(_GENERIC_LOGIN_FAILURE)
+
+    try:
+        user = User.objects.get(pk=user_id)
+    except (User.DoesNotExist, ValidationError, ValueError) as exc:
+        # ValidationError/ValueError guard a malformed UUID in a tampered session payload —
+        # `get(pk=...)` raises on the cast before it ever queries.
+        raise AuthenticationError(_GENERIC_LOGIN_FAILURE) from exc
+
+    if not user.is_active:
+        raise AccountLockedError("This account is not permitted to sign in.")
+
+    return user
+
+
+def enroll_totp_device(*, user: User) -> tuple[TOTPDevice, str, str]:
+    """Create an unconfirmed TOTP device for `user` and return it with its shared secret.
+
+    Returns:
+        `(device, secret, otpauth_uri)`. `secret` is base32 — the form an authenticator app
+        accepts when the user types it in by hand. `otpauth_uri` embeds the same secret and is
+        what a client renders as a QR code.
+
+    Raises:
+        TwoFactorEnrollmentError: A confirmed device already exists (API §6.1 `409`).
+
+    ⚠️ **The secret is returned as a tuple element, never read back off the model.** Same
+    reasoning as T1.2's verification code: a value that only ever travels as a return value
+    cannot be leaked by passing the row to a serializer or a log formatter.
+
+    ⚠️ **`device.key` is NOT the secret to publish — it is hex, and `config_url` is base32.**
+    Handing out `device.key` produces a response whose `secret` and `otpauthUri` disagree: the
+    QR code works, manual entry silently yields wrong codes forever. Both fields are derived
+    from `bin_key` here so they cannot drift apart.
+
+    ⚠️ **Unconfirmed devices are replaced, not accumulated.** Re-enrolling after abandoning a
+    setup is normal (wrong app, lost the QR code); leaving the old rows behind would mean an
+    old, possibly screenshotted secret still confirms. A *confirmed* device is never silently
+    replaced — that is the `409`, because overwriting one would let anyone with a live session
+    swap the second factor for their own.
+
+    ⚠️ **No `require_role` check.** FR-4 makes 2FA available to authorities and admins by policy,
+    but a citizen choosing to protect their account is not a privilege escalation and refusing
+    it would be a downgrade for no benefit. Authorization is "self", enforced structurally: the
+    caller can only ever pass their own user (API §6.1).
+    """
+    from base64 import b32encode
+
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    if _confirmed_device_for(user) is not None:
+        raise TwoFactorEnrollmentError(
+            "This account already has a confirmed authenticator. Remove it before enrolling "
+            "another."
+        )
+
+    with transaction.atomic():
+        TOTPDevice.objects.filter(user=user, confirmed=False).delete()
+        device = TOTPDevice.objects.create(user=user, name="default", confirmed=False)
+
+    # Exactly what `config_url` encodes, so the two forms of the secret cannot disagree.
+    secret = b32encode(device.bin_key).decode("ascii")
+    return device, secret, str(device.config_url)
+
+
+def verify_totp(*, user: User, code: str) -> TOTPDevice:
+    """Check a TOTP code against the user's device, confirming it if this is enrolment (T1.7).
+
+    Returns:
+        The device that accepted the code, now confirmed.
+
+    Raises:
+        TwoFactorError: No device enrolled, or the code is wrong, expired, or replayed.
+
+    ⚠️ **A confirmed device is preferred over an unconfirmed one.** Checking the unconfirmed
+    device first would let someone who reached a live session enrol a device of their own and
+    then authenticate against it, sidestepping the `409` in `enroll_totp_device()`.
+
+    ⚠️ **`device.verify_token()` does the work, and it must not be reimplemented.** It applies
+    the drift tolerance, and — the part that matters — it stores `last_t` so a code cannot be
+    replayed within its own validity window. A hand-rolled `pyotp`-style comparison looks
+    equivalent and silently accepts the same code repeatedly for 30+ seconds, which is exactly
+    the window an attacker who shoulder-surfed or intercepted one code needs. django-otp also
+    applies its own per-device throttle on repeated failures; endpoint-level rate limiting is
+    T1.8 and is a separate control.
+
+    ⚠️ **Confirmation is a save of `confirmed=True`, not a second endpoint.** The first valid
+    code proves the enrolling client holds the secret — that is the entire content of a
+    confirmation step (API §6.1, amended 2026-08-07).
+    """
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    device = _confirmed_device_for(user)
+    if device is None:
+        device = TOTPDevice.objects.filter(user=user, confirmed=False).first()
+    if device is None:
+        raise TwoFactorError(_GENERIC_TWO_FACTOR_FAILURE)
+
+    if not device.verify_token(code):
+        raise TwoFactorError(_GENERIC_TWO_FACTOR_FAILURE)
+
+    if not device.confirmed:
+        device.confirmed = True
+        device.save(update_fields=["confirmed"])
+
+    return device

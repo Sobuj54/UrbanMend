@@ -36,6 +36,9 @@ from urbenmend.identity.serializers import (
     LoginSerializer,
     ProvisionAuthoritySerializer,
     RegisterSerializer,
+    TwoFactorEnrollResponseSerializer,
+    TwoFactorVerifyResponseSerializer,
+    TwoFactorVerifySerializer,
     UserSerializer,
     VerifyRequestSerializer,
 )
@@ -178,7 +181,16 @@ class LoginView(APIView):
         # ⚠️ Session established only after `authenticate_user` returned. The service raises
         # on every failure path, so there is no arrangement of its results that reaches this
         # line without a verified password.
-        services.start_session(request=request._request, user=user)
+        #
+        # ⚠️ **Which session depends on `requires_two_factor()`, and the serializer calls the
+        # same function** (T1.7, FR-4). A full session here for an account that needs a second
+        # factor would be the T1.3 trap: the body says `requires2fa: true` while access has
+        # already been granted. One service function feeding both sides is what makes the
+        # cookie and the body unable to disagree.
+        if services.requires_two_factor(user=user):
+            services.start_partial_session(request=request._request, user=user)
+        else:
+            services.start_session(request=request._request, user=user)
 
         return Response(
             LoginResponseSerializer(user).data,
@@ -235,6 +247,103 @@ class ProvisionAuthorityView(APIView):
             UserSerializer(authority).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+class TwoFactorEnrollView(APIView):
+    """`POST /auth/2fa/enroll` — begin TOTP enrolment (FR-4, API §6.1 amended 2026-08-07).
+
+    ⚠️ **`AllowAny`, and the reason matters.** A partial session is *not* an authenticated
+    request — `request.user` is `AnonymousUser` by design (services.py T1.7 header) — so
+    `IsAuthenticated` would reject exactly the caller who needs this endpoint most: an account an
+    Admin flagged `require_two_factor` that has no device and therefore cannot complete login.
+    Authorization is not skipped, it moves into `_resolve_caller()`: one of the two session kinds
+    must be present, and both name the user rather than accepting one from the body.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request: Request) -> Response:
+        user = _resolve_caller(request)
+
+        try:
+            _device, secret, otpauth_uri = services.enroll_totp_device(user=user)
+        except services.TwoFactorEnrollmentError as exc:
+            raise Conflict(str(exc)) from exc
+
+        # ⚠️ Both values come from the service's return tuple, never off the device row — the
+        # model is not handed to the serializer, so no django-otp field addition can widen this
+        # response, and `secret` cannot accidentally become the hex `device.key`.
+        return Response(
+            TwoFactorEnrollResponseSerializer(
+                {
+                    "secret": secret,
+                    "otpauth_uri": otpauth_uri,
+                    "confirmed": False,
+                }
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class TwoFactorVerifyView(APIView):
+    """`POST /auth/2fa/verify` — complete 2FA, or confirm a new device (FR-4, API §6.1).
+
+    Two callers reach this endpoint and both are correct: a partial session completing a login,
+    and a full session confirming an enrolment it just started. `_resolve_caller()` accepts
+    either; the service does not care which, because the check is the same either way.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request: Request) -> Response:
+        serializer = TwoFactorVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        was_partial = not request.user.is_authenticated
+        user = _resolve_caller(request)
+
+        try:
+            services.verify_totp(user=user, code=serializer.validated_data["code"])
+        except services.TwoFactorError as exc:
+            raise UnprocessableEntity(str(exc)) from exc
+
+        # ⚠️ Upgrade to a full session only on the partial path, and only after `verify_totp()`
+        # returned. `start_session()` wraps `django_login()`, whose `cycle_key()` rotates the
+        # partial session key away — the token that carried a password-only credential does not
+        # survive into the authenticated session. Re-running it for an already-authenticated
+        # caller would be a session refresh, which auth.md rules out.
+        if was_partial:
+            services.start_session(request=request._request, user=user)
+
+        return Response(
+            TwoFactorVerifyResponseSerializer(user).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+def _resolve_caller(request: Request) -> User:
+    """The user behind either a full session or a partial post-password one (T1.7).
+
+    ⚠️ **A full session wins over a partial one.** Both keys can coexist — a partial session
+    that completes keeps its data across `cycle_key()` — so preferring `request.user` avoids
+    resolving a stale `PARTIAL_SESSION_USER_KEY` left over from the login that created it.
+
+    ⚠️ Raises `InvalidCredentials` (`401`) rather than DRF's `NotAuthenticated`, matching the
+    T1.3 note in CLAUDE.md: `handle_exception` special-cases the latter, and API §4.2 wants a
+    plain `401 UNAUTHENTICATED` here.
+    """
+    if request.user.is_authenticated:
+        # No `cast` needed — `is_authenticated` narrows `User | AnonymousUser` to `User`, and
+        # mypy rejects a redundant one. `ProvisionAuthorityView` still needs its cast because
+        # `IsAuthenticated` guarantees the same thing without narrowing the type.
+        return request.user
+
+    try:
+        return services.resolve_partial_session_user(request=request._request)
+    except services.AccountLockedError as exc:
+        raise AccountLocked(str(exc)) from exc
+    except services.AuthenticationError as exc:
+        raise InvalidCredentials(str(exc)) from exc
 
 
 class LogoutView(APIView):

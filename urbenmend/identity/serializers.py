@@ -15,6 +15,7 @@ from typing import Any
 from rest_framework import serializers
 
 from urbenmend.api.serializers import CamelCaseModelSerializer, CamelCaseSerializer
+from urbenmend.identity import services
 from urbenmend.identity.models import Channel, User
 
 
@@ -87,11 +88,18 @@ class LoginSerializer(CamelCaseSerializer):
 class LoginResponseSerializer(CamelCaseSerializer):
     """POST /auth/login 200 response (API §6.1).
 
-    Spec body: `{ "user": { "id", "role", "preferredLanguage" }, "requires2fa": false }`.
+    Spec body: `{ "user": { "id", "role", "preferredLanguage" }, "requires2fa": false }`, or
+    `{ "requires2fa": true }` alone when a second factor is still outstanding.
 
     ⚠️ Exactly those three user fields. Not `email`/`phone`/`status` — a login response is
     the easiest place to over-serialize, and contact details are precisely what API §2.1
     says the API never hands out.
+
+    ⚠️ **`user` is omitted entirely while `requires2fa` is true** (API §6.1, amended
+    2026-08-07). The caller has proved the password but not the second factor, and the role is
+    the fact worth withholding: it tells a password-only holder whether the account they are
+    part-way into is an Authority or an Admin, which is exactly the account worth continuing to
+    attack. Emitting `null` instead of omitting would leak the same shape distinction.
     """
 
     user = serializers.SerializerMethodField()
@@ -101,7 +109,9 @@ class LoginResponseSerializer(CamelCaseSerializer):
     # removes the coincidence from the contract.
     requires2fa = serializers.SerializerMethodField()
 
-    def get_user(self, obj: User) -> dict[str, str]:
+    def get_user(self, obj: User) -> dict[str, str] | None:
+        if self.get_requires2fa(obj):
+            return None
         return {
             "id": str(obj.id),
             "role": obj.role,
@@ -109,18 +119,20 @@ class LoginResponseSerializer(CamelCaseSerializer):
         }
 
     def get_requires2fa(self, obj: User) -> bool:
-        """Always `False` until T1.7 wires `django-otp` (FR-4).
+        """Whether a second factor is outstanding for this account (FR-4, T1.7).
 
-        ⚠️ The field is in the contract now, so it ships now — a client written against
-        the spec must not have to handle its absence. `False` is the truthful value while
-        no user can have a confirmed OTP device: there is nothing to require.
-
-        ⚠️ When T1.7 lands, this becomes a real check AND `LoginView` must stop issuing a
-        full session in the same breath — the spec puts `/auth/2fa/verify` on a *partial*
-        post-password session. Returning `True` here without that change would tell the
-        client 2FA is pending while already having granted full access.
+        True when an Admin set `require_two_factor` (T1.6) or the user confirmed a TOTP
+        device. `LoginView` reads the *same* service function to decide whether to issue a
+        partial session, so the body and the cookie can never disagree.
         """
-        return False
+        return services.requires_two_factor(user=obj)
+
+    def to_representation(self, instance: User) -> dict[str, Any]:
+        """Drop `user` from the payload when it is `None`, rather than emitting `null`."""
+        data = super().to_representation(instance)
+        if data.get("user") is None:
+            data.pop("user", None)
+        return data
 
 
 class ProvisionAuthoritySerializer(CamelCaseSerializer):
@@ -218,3 +230,63 @@ class UserSerializer(CamelCaseModelSerializer):
         from urbenmend.identity.selectors import category_scope_for
 
         return [category.slug for category in category_scope_for(obj)]
+
+
+class TwoFactorEnrollResponseSerializer(CamelCaseSerializer):
+    """POST /auth/2fa/enroll 201 response (API §6.1, amended 2026-08-07).
+
+    Spec body: `{ "secret": "BASE32…", "otpauthUri": "otpauth://totp/…", "confirmed": false }`.
+
+    ⚠️ **This is the one and only place the TOTP secret is ever serialized.** It is a
+    credential — never log it, never add it to `UserSerializer`, never expose it through a read
+    endpoint or an admin field. There is no recovery path by design: a lost unconfirmed secret
+    is replaced by enrolling again.
+
+    ⚠️ Not a `ModelSerializer` over `TOTPDevice`. A model serializer would emit whatever fields
+    the third-party model happens to carry — `key`, `last_t`, `drift` — and a django-otp upgrade
+    adding a field would silently widen this response. The three fields the spec names are
+    declared explicitly.
+    """
+
+    secret = serializers.CharField(read_only=True)
+    otpauth_uri = serializers.CharField(read_only=True)
+    confirmed = serializers.BooleanField(read_only=True)
+
+
+class TwoFactorVerifySerializer(CamelCaseSerializer):
+    """POST /auth/2fa/verify request body (API §6.1).
+
+    Spec body: `{ "code": "…" }`.
+
+    ⚠️ Shape only — no `min_length`, no digits-only regex, no `IntegerField`. Same reasoning as
+    `LoginSerializer`: a validation error that fires before the code is checked tells an
+    unauthenticated caller what a valid code looks like, and `verify_totp()` rejects everything
+    wrong with one indistinguishable message anyway. `IntegerField` would additionally break
+    the leading zeros TOTP codes routinely carry.
+    """
+
+    code = serializers.CharField(trim_whitespace=True)
+
+
+class TwoFactorVerifyResponseSerializer(CamelCaseSerializer):
+    """POST /auth/2fa/verify 200 response (API §6.1, amended 2026-08-07).
+
+    Spec body: `{ "user": { "id", "role", "preferredLanguage" }, "confirmed": true }`.
+
+    The `user` object matches `LoginResponseSerializer`'s exactly — this is the response that
+    completes a login, so a client should not have to parse two shapes for one outcome.
+    """
+
+    user = serializers.SerializerMethodField()
+    confirmed = serializers.SerializerMethodField()
+
+    def get_user(self, obj: User) -> dict[str, str]:
+        return {
+            "id": str(obj.id),
+            "role": obj.role,
+            "preferredLanguage": obj.preferred_language,
+        }
+
+    def get_confirmed(self, obj: User) -> bool:
+        """Always `True` on a `200` — reaching this line means a device accepted the code."""
+        return True

@@ -183,9 +183,8 @@ read-only `VerificationCodeAdmin`, 22 tests. `pytest` **205 passed / 1 xfailed**
 - **`LoginSerializer` validates shape only** — no `EmailField`, no password `min_length`. Both would
   answer a question the caller has not earned: that their guess was not even a valid address, or
   what the password policy is. `trim_whitespace=False` — a leading space is part of the secret.
-- ⚠️ **`requires2fa` ships hardcoded `False`.** When T1.7 makes it a real check, `LoginView` must
-  simultaneously stop issuing a full session — the spec puts `/auth/2fa/verify` on a *partial*
-  post-password session.
+- ✅ **`requires2fa` shipped hardcoded `False`; T1.7 made it a real check** and stopped `LoginView`
+  issuing a full session in the same change, as this note required. See the T1.7 record below.
 
 ✅ Verified in T1.4 (2026-08-07): CSRF protection for state-changing requests. **No new code** —
 `CsrfViewMiddleware` + `SessionAuthentication` were already configured from A4/T0.3. The task was
@@ -303,6 +302,55 @@ mypy (113 files) / ruff clean, no drift, `0004` verified reversible.
 - ❓ **`categoryScope` reads `[]` for an Admin**, which is stored truth but not effective permission.
   API §6.2 documents only an Authority body. **Amend the spec before T1.9's `GET /users/me`** —
   not invented here.
+
+✅ Built in T1.7 (2026-08-07): two-factor authentication (FR-4). `requires_two_factor` /
+`start_partial_session` / `resolve_partial_session_user` / `enroll_totp_device` / `verify_totp` and
+`TwoFactorError` + `TwoFactorEnrollmentError` in `identity/services.py`; three serializers;
+`TwoFactorEnrollView` / `TwoFactorVerifyView` + `_resolve_caller`; `POST /auth/2fa/enroll` +
+`POST /auth/2fa/verify`; 29 tests. **No migration** — `TOTPDevice` is django-otp's model.
+`pytest` **338 passed / 1 xfailed**, mypy (114 files) / ruff clean, no drift.
+
+- ⚠️ **API §6.1 was amended first** (the rule, followed): it specified `/auth/2fa/verify` with no way
+  to obtain a device, and did not list that under its own "Missing endpoints — considered and
+  resolved". `requireTwoFactor: true` was therefore a permanent lockout. `POST /auth/2fa/enroll` was
+  added and `/auth/2fa/verify` documented as also confirming an enrolment — **one endpoint, because
+  the first valid code *is* the proof of enrolment**; a separate `/confirm` would take the same input
+  and reach the same conclusion.
+- ⚠️ **The partial session works by NOT calling `django_login()`.** `SESSION_KEY` (`_auth_user_id`)
+  stays unset, so `request.user` is `AnonymousUser` and every authenticated endpoint returns `401`
+  automatically. **django-otp's `otp_required` decorator was rejected**: it logs the user in fully
+  then gates views one at a time, so a view added later without it is reachable with one factor —
+  fails open. This fails closed with no per-view gate to forget. `OTPMiddleware` stays in the stack
+  but is not the enforcement point.
+- ⚠️ **`start_partial_session()` calls `cycle_key()` explicitly** — `start_session()` gets rotation
+  free from `django_login()`, this path does not, and without it a planted pre-login token carries
+  the partial credential.
+- ⚠️ **`resolve_partial_session_user()` re-fetches the user and re-checks `is_active`** — the password
+  step was an earlier request, and BR-25 suspension must stop a login already in flight.
+- ⚠️ **`device.key` is hex, `config_url` is base32.** Returning `device.key` as the `secret` gives a
+  response whose `secret` and `otpauthUri` disagree — QR works, manual entry silently yields wrong
+  codes forever. The service returns `(device, secret, otpauth_uri)`, both derived from `bin_key`.
+- ⚠️ **`verify_token()` must not be reimplemented** — it stores `last_t`, the only thing stopping a
+  code being replayed inside its own 30-second window. A hand-rolled comparison looks equivalent and
+  has no replay protection.
+- ⚠️ **A confirmed device is checked before an unconfirmed one**, or someone with a live session could
+  enrol their own device and authenticate against it, sidestepping the `409`.
+- ⚠️ **A flagged account with no device reads `requires_two_factor() == True`** — reading it as "not
+  required" would let an Admin believe an account is protected while a password alone opens it. The
+  escape is that `/auth/2fa/enroll` **accepts a partial session**. An *unconfirmed* device does not
+  opt an account in — an abandoned setup must not lock anyone out.
+- **`LoginView` stopped issuing a full session in the same change that made `requires2fa` real** (the
+  trap T1.3 recorded). Both it and the serializer call the same service function, so the cookie and
+  the body cannot disagree. **The `user` object is omitted while `requires2fa` is true** — the role is
+  what a password-only holder should not learn; `null` leaks the same distinction by shape.
+- **`enroll_totp_device()` has no role check** — a citizen protecting their own account is not
+  escalation; authorization is "self" and structural.
+- ⚠️ **The two 2FA routes are the only ones accepting a non-authenticated session.** Anything else
+  added under `auth/2fa/` needs that decision made deliberately.
+- ❓ **`/auth/password/forgot`·`/reset` is unbuilt and now explicitly unowned.** `api/urls.py` used to
+  route it to T1.7; the plan's T1.7 row is 2FA-only and reset traces to FR-1 (T1.2), where it was
+  never built. Delivery is blocked on ❓Q5. **A provisioned Authority still has no way to set a first
+  password** — T1.6 creates them with an unusable one.
 
 ## Commands
 

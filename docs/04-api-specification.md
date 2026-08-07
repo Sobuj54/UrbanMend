@@ -214,12 +214,38 @@ Uniform envelope for all errors:
 - **Response `200`:** sets session cookie; body `{ "user": { "id", "role", "preferredLanguage" }, "requires2fa": false }`
 - **Errors:** `401` (bad credentials — generic message, no user enumeration), `423`-equivalent surfaced as `403 ACCOUNT_LOCKED` (FR-4), `429`, standard.
 
+⚠️ When `requires2fa` is `true` the cookie carries a **partial (post-password) session only**, and the
+`user` object is omitted — the caller has proved the password but not the second factor, so no
+identity is disclosed and no other endpoint accepts the cookie. Body in that case:
+`{ "requires2fa": true }`. Complete with `POST /auth/2fa/verify`.
+
+#### `POST /auth/2fa/enroll`
+- **Purpose:** Begin TOTP enrolment for the calling account (FR-4).
+- **Auth:** Session, **or** partial session (post-password) when the account is under a 2FA
+  requirement it cannot yet satisfy. **Authorization:** Self — a caller may only enrol their own
+  device; an Admin cannot enrol on another user's behalf.
+- **Body:** none.
+- **Response `201`:** `{ "secret": "BASE32…", "otpauthUri": "otpauth://totp/…", "confirmed": false }`
+- **Errors:** `409 CONFLICT` (a confirmed device already exists — remove it before re-enrolling),
+  `429`, standard.
+
+⚠️ **The `secret` is returned exactly once, on this response, and is never readable again.** It is a
+credential: never logged, never echoed, never exposed through any read endpoint or admin view. A
+lost unconfirmed secret is replaced by re-enrolling, not recovered.
+
+⚠️ The device is created **unconfirmed** and grants nothing until the first valid code is presented to
+`POST /auth/2fa/verify`. Enrolling does not by itself turn 2FA on for the account.
+
 #### `POST /auth/2fa/verify`
-- **Purpose:** Complete 2FA for authority/admin (FR-4).
-- **Auth:** Partial session (post-password).
+- **Purpose:** Complete 2FA for authority/admin (FR-4); also confirms a newly enrolled device.
+- **Auth:** Partial session (post-password), or session when confirming an enrolment.
 - **Body:** `{ "code": "…" }`
-- **Response `200`:** full session established.
-- **Errors:** `422`, `429`, standard.
+- **Response `200`:** full session established; `{ "user": { "id", "role", "preferredLanguage" }, "confirmed": true }`
+- **Errors:** `422` (code invalid/expired, or no device enrolled), `429`, standard.
+
+⚠️ **One endpoint, because the first valid code *is* the proof of enrolment.** A separate confirm
+endpoint would accept the same input, check the same device, and reach the same conclusion. A code
+verified against an unconfirmed device confirms it; against a confirmed device it completes login.
 
 #### `POST /auth/logout`
 - **Purpose:** Revoke current session (Architecture §8).
@@ -695,6 +721,13 @@ Moderation (FR-31) is expressed as **actions on existing resources**, not a sepa
 - **Report → Issue linkage** is exposed via `GET /reports/{id}` (`issueId`) and `GET /issues/{id}/reports` — no separate join endpoint needed.
 - **Bulk status update** (FR-25 "bulk") — *gap:* the queue supports bulk operations in the PRD. Recommend a future `POST /issues/bulk-status` (additive, `v1`-safe) rather than inventing now; flagged so it isn't forgotten.
 - **`GET /meta/enums`** added so clients absorb enum evolution (Critical severity now included — Q2 RESOLVED) without a breaking release.
+- **`POST /auth/2fa/enroll` — AMENDED IN (2026-08-07, T1.7).** This spec shipped `POST /auth/2fa/verify`
+  with no way to obtain a TOTP device, and did not list the absence here as deliberate. That made it a
+  genuine gap, not a documented omission: `requireTwoFactor: true` (§6.2, stored by T1.6) was a
+  permanent lockout, and `/auth/2fa/verify` was unreachable code. Enrolment is now §6.1. **Confirmation
+  deliberately reuses `/auth/2fa/verify` rather than adding a third endpoint** — the first valid code is
+  itself the proof the secret was received, so a separate `/confirm` would take the same input and reach
+  the same conclusion.
 
 ### Redundant endpoints — checked
 - Considered separate top-level `/confirmations` and `/comments` collections; **rejected** as redundant with the nested forms. Kept nested-only for a single clear ownership path.

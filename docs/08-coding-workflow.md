@@ -1069,11 +1069,83 @@ full suite **309 passed / 1 xfailed**; `ruff check`, `ruff format --check` (120 
 exit 0; `check --deploy` clean on `prod`; `0004` reversibility confirmed by a real
 `migrate identity 0003` → `migrate identity` cycle, asserting the column dropped and returned.
 
+### T1.7 — Two-factor authentication for authority/admin (FR-4)
+
+`POST /auth/2fa/enroll` + `POST /auth/2fa/verify`, on TOTP via `django-otp`. Adds
+`requires_two_factor()` / `start_partial_session()` / `resolve_partial_session_user()` /
+`enroll_totp_device()` / `verify_totp()` and the `TwoFactorError` / `TwoFactorEnrollmentError`
+exceptions to `identity/services.py`; three serializers; `TwoFactorEnrollView` /
+`TwoFactorVerifyView` and the shared `_resolve_caller()`; 29 tests. **No migration** — `TOTPDevice`
+is django-otp's model and its three migrations were already applied.
+
+**⚠️ The API spec was amended first, as the rules require.** §6.1 specified `/auth/2fa/verify` with
+no way to obtain a device, and did not list the absence under its own "Missing endpoints —
+considered and resolved". That made `requireTwoFactor: true` (stored by T1.6) a permanent lockout
+and `/auth/2fa/verify` unreachable code. `POST /auth/2fa/enroll` was added, `/auth/2fa/verify` was
+documented as also confirming an enrolment, and the amendment is recorded in §9 with its reasoning.
+
+- ⚠️ **The partial session works by NOT calling `django_login()`.** It writes one non-standard key
+  into an anonymous session, so `SESSION_KEY` (`_auth_user_id`) stays unset, `request.user` resolves
+  to `AnonymousUser`, and every authenticated endpoint rejects the cookie with `401` automatically.
+  **django-otp's `otp_required` decorator model was considered and rejected**: it logs the user in
+  fully and then gates views individually, so a view added later without the decorator is reachable
+  with one factor. That fails open; this fails closed with no per-view gate to forget.
+- ⚠️ **`LoginView` stopped issuing a full session in the same change that made `requires2fa` real** —
+  the trap T1.3 recorded. `LoginView` and `LoginResponseSerializer` both call
+  `services.requires_two_factor()`, so the cookie and the body cannot disagree.
+- ⚠️ **The `user` object is omitted from the login body while `requires2fa` is true.** The role is
+  the fact worth withholding from a password-only holder: it tells them whether the account they are
+  part-way into is an Authority or an Admin. `null` would leak the same distinction by shape.
+- ⚠️ **`start_partial_session()` calls `cycle_key()` explicitly.** `start_session()` gets rotation
+  free from `django_login()`; this path does not, and without it a planted pre-login token would be
+  the one carrying the partial credential — session fixation, one factor earlier than usual.
+- ⚠️ **`resolve_partial_session_user()` re-fetches the user and re-checks `is_active`.** The password
+  step happened on an earlier request; BR-25 suspension is meaningless if a login already in flight
+  completes anyway. A test suspends an account between the two calls and expects `403`.
+- ⚠️ **`device.key` is hex; `config_url` is base32 — publishing the wrong one is invisible.** The
+  first draft returned `device.key` as `secret`, giving a response whose `secret` and `otpauthUri`
+  disagree: the QR code works and manual entry silently produces wrong codes forever. The service now
+  returns `(device, secret, otpauth_uri)` with both derived from `bin_key`, and a test asserts
+  `secret=` appears inside the URI. Caught by the tests, not by review.
+- ⚠️ **`verify_token()` does the checking and must not be reimplemented.** It stores `last_t`, which
+  is what stops a code being replayed inside its own 30-second window — precisely the window an
+  attacker who intercepted one code needs. A hand-rolled comparison looks equivalent and has no
+  replay protection at all.
+- ⚠️ **A confirmed device is preferred over an unconfirmed one in `verify_totp()`.** Checking the
+  unconfirmed one first would let someone holding a live session enrol their own device and
+  authenticate against it, sidestepping the `409`.
+- ⚠️ **`requires_two_factor()` is true for a flagged account with no device — deliberately.** That
+  combination is a login the user cannot complete, and it must stay that way; reading it as "2FA not
+  required" would let an Admin believe an account is protected while a password alone opens it.
+  `POST /auth/2fa/enroll` accepts a **partial** session precisely so such an account can enrol out of
+  the lockout. An *unconfirmed* device does not opt an account in — an abandoned setup must not lock
+  anyone out.
+- **`enroll_totp_device()` has no `require_role()` check.** FR-4 targets authorities and admins by
+  policy, but a citizen protecting their own account is not privilege escalation. Authorization is
+  "self", enforced structurally — the caller can only pass their own user.
+- **Unconfirmed devices are replaced on re-enrolment; a confirmed one is never silently replaced.**
+  Overwriting a confirmed device would let anyone with a live session swap the second factor.
+- **One generic message for every verify failure** (`_GENERIC_TWO_FACTOR_FAILURE`) — "no device
+  enrolled" would tell a password-only caller whether the account has 2FA at all.
+- ⚠️ **Both 2FA routes are the only ones in the project accepting a non-authenticated session.**
+  Anything else added under `auth/2fa/` needs that decision made deliberately, not inherited.
+- **`/auth/password/forgot`·`/reset` is still unbuilt and now explicitly unowned.** `api/urls.py`'s
+  comment previously routed it to T1.7; the plan's T1.7 row is 2FA-only and reset traces to FR-1
+  (T1.2's row), where it was never built. Delivery is blocked on ❓Q5 the same way T1.2's verification
+  codes are. The comment was corrected rather than the scope silently widened.
+
+Verified in the container: `pytest urbenmend/identity/tests/test_two_factor.py` **29 passed**; full
+suite **338 passed / 1 xfailed**; `ruff check`, `ruff format --check` (121 files), `mypy --strict`
+(114 files) clean; `manage.py check` clean; `makemigrations --check --dry-run` exit 0;
+`check --deploy` clean on `prod`. No migration to reverse — `showmigrations otp_totp` confirms all
+three third-party migrations already applied.
+
 **M1 gate:** a citizen can register → verify → log in; an admin can provision a scope-limited
 authority; RBAC denies out-of-scope actions; sessions revoke immediately.
 
 - [x] register → verify (T1.2)
 - [x] log in (T1.3 — sessions)
+- [x] 2FA for authority/admin (T1.7 — TOTP; partial post-password session)
 - [x] CSRF on state-changing requests (T1.4)
 - [x] category taxonomy seeded (T0.10 — ❓Q1 resolved)
 - [x] admin provisions a scope-limited authority (T1.6 — ⚠️ audited to a log line only until T8.1)
