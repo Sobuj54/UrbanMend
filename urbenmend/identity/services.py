@@ -21,14 +21,21 @@ Rules for this file [doc: Arch §3.1, FR-3]:
 from __future__ import annotations
 
 import secrets
+from importlib import import_module
 from typing import TYPE_CHECKING
 
+from django.conf import settings
+from django.contrib.auth import SESSION_KEY
+from django.contrib.auth import login as django_login
+from django.contrib.auth import logout as django_logout
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 if TYPE_CHECKING:
+    from django.http import HttpRequest
+
     from urbenmend.identity.models import Channel, User, VerificationCode
 
 
@@ -42,6 +49,35 @@ class VerificationError(Exception):
     """Verification-specific errors (invalid code, expired, too many attempts)."""
 
     pass
+
+
+class AuthenticationError(Exception):
+    """Bad credentials — the generic login failure (API §6.1 `401`)."""
+
+    pass
+
+
+class AccountLockedError(AuthenticationError):
+    """The credentials were correct but the account may not authenticate.
+
+    ⚠️ A distinct class, not a message variant, because the two map to different status
+    codes: bad credentials are `401 UNAUTHENTICATED`, a locked account is `403
+    ACCOUNT_LOCKED` (API §6.1). A view that had to string-match the message to tell them
+    apart would break the moment the wording changed.
+
+    Subclasses `AuthenticationError` so `except AuthenticationError` still catches both —
+    the fail-closed direction. An `except` clause that misses this would let a suspended
+    account through, so the inheritance makes the safe reading the default one.
+    """
+
+    pass
+
+
+# ⚠️ One message for every login failure — unknown identifier and wrong password alike.
+# API §6.1: "401 (bad credentials — generic message, no user enumeration)". Splitting this
+# into two strings is the whole vulnerability, so it is a module constant rather than two
+# literals that could drift apart.
+_GENERIC_LOGIN_FAILURE = "Invalid credentials."
 
 
 @transaction.atomic
@@ -230,3 +266,157 @@ def verify_code(*, user: User, channel: Channel, code: str) -> bool:
             user.save(update_fields=["phone_verified_at"])
 
     return True
+
+
+def authenticate_user(*, identifier: str, password: str) -> User:
+    """Authenticate an email/phone + password pair (FR-1, T1.3).
+
+    Args:
+        identifier: Email address or E.164 phone number, as the user typed it.
+        password: The plaintext password to check.
+
+    Returns:
+        The authenticated user.
+
+    Raises:
+        AuthenticationError: The identifier is unknown or the password is wrong. One
+            message for both — API §6.1 requires a generic reply so login cannot be used
+            to enumerate accounts.
+        AccountLockedError: The password was correct but `status` forbids authenticating
+            (suspended, deprovisioned, deleted).
+
+    ⚠️ **The password is checked even when the identifier is unknown.** Returning early on
+    a missing user makes the unknown-account path measurably faster than the wrong-password
+    path, and that timing difference is an enumeration oracle just as surely as a different
+    message would be. Hashing a throwaway value keeps the two paths comparable.
+
+    [doc: API §6.1 POST /auth/login, auth.md, api-conventions.md "no user enumeration"]
+    """
+    from urbenmend.identity.models import User
+
+    # Normalized exactly as `User.save()` normalizes on the way in, or someone who
+    # registered as `Citizen@Example.test` (stored lowercased) could never log in by typing
+    # it back the way they wrote it.
+    identifier = identifier.strip()
+    user: User | None
+    try:
+        if "@" in identifier:
+            user = User.objects.get(email=identifier.lower())
+        else:
+            user = User.objects.get(phone=identifier)
+    except User.DoesNotExist:
+        user = None
+
+    if user is None:
+        # ⚠️ Not a bare `raise`. Argon2 is deliberately slow, so skipping the hash here would
+        # make "no such account" the fast path and leak existence through response time.
+        # `set_password` runs the configured hasher and throws the result away — this is the
+        # same mitigation `django.contrib.auth.backends.ModelBackend` applies, for the same
+        # reason (Django #20760).
+        User().set_password(password)
+        raise AuthenticationError(_GENERIC_LOGIN_FAILURE)
+
+    if not user.check_password(password):
+        raise AuthenticationError(_GENERIC_LOGIN_FAILURE)
+
+    # ⚠️ Checked *after* the password, deliberately. Reporting "locked" to someone who has
+    # not proved they own the account would confirm it exists and reveal its moderation
+    # state; reaching this line means they supplied the right password.
+    #
+    # `is_active` is derived from `status` (A6) — registered/verified/active authenticate,
+    # suspended/deprovisioned/deleted do not. An unverified account CAN log in; BR-30 limits
+    # what it may then do, which is not this function's concern.
+    if not user.is_active:
+        raise AccountLockedError("This account is not permitted to sign in.")
+
+    return user
+
+
+def start_session(*, request: HttpRequest, user: User) -> None:
+    """Attach a server-validated session to `request` for `user` (T1.3).
+
+    `django.contrib.auth.login()` writes the session row, cycles the session key, and sets
+    `request.user`; Django's `SessionMiddleware` then emits the cookie on the way out with
+    the `Secure`/`HttpOnly`/`SameSite` flags from settings (API §2, set in A4).
+
+    ⚠️ **The key cycling is the security-relevant part, not a detail.** `login()` calls
+    `cycle_key()`, which discards the pre-login anonymous session and issues a new
+    identifier. Without it, a token an attacker planted in the victim's browser before login
+    would still be valid after it — session fixation. Writing `request.session[...]` by hand
+    instead of calling `login()` would silently drop that protection.
+
+    ⚠️ **`backend=` is passed explicitly.** `login()` reads `user.backend` when the argument
+    is omitted, and that attribute only exists if the user came from `django.contrib.auth
+    .authenticate()`. Ours comes from `authenticate_user()` above — a service function, not
+    an auth backend — so omitting it raises. The named backend is the one in
+    `AUTHENTICATION_BACKENDS`; it is recorded in the session and used to reload the user on
+    subsequent requests.
+
+    [doc: API §2, Arch §8, auth.md]
+    """
+    django_login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+
+
+def end_session(*, request: HttpRequest) -> None:
+    """Revoke the caller's own session (T1.3, API §6.1 `POST /auth/logout`).
+
+    `django.contrib.auth.logout()` flushes the session — deleting the `django_session` row
+    *and* the cached copy — then clears `request.user`. The cookie is expired by
+    `SessionMiddleware` on the response.
+
+    ⚠️ **No authorization check, and none is needed.** The only session this can end is the
+    one on the request, so a caller can revoke nothing but their own. That is why this is
+    the one identity service without an actor argument. Revoking *another* user's sessions
+    is `revoke_all_sessions()` below, which is a different operation with a different
+    caller.
+
+    Idempotent: calling it without a session is a no-op, so a double-submitted logout does
+    not error.
+    """
+    django_logout(request)
+
+
+def revoke_all_sessions(*, user: User) -> int:
+    """Delete every active session belonging to `user`, server-side (T1.3).
+
+    Returns:
+        The number of sessions destroyed.
+
+    This is the capability that justified choosing sessions over JWT in the first place
+    (Arch §8): moderation suspends an account (BR-25) or a user is deprovisioned or
+    anonymized (BR-33, C-14), and their live sessions must stop working *now*, not whenever
+    a token happens to expire. A stateless token cannot do this without a revocation list,
+    which is a session table wearing a disguise.
+
+    ⚠️ **Deleting the `django_session` rows directly is NOT sufficient on the `cached_db`
+    backend, and doing so is a silent security hole.** `cached_db.SessionStore.load()` reads
+    Redis first and only falls back to the table on a miss, so a session whose row is gone
+    but whose cache entry is still warm keeps authenticating until the cache expires — up to
+    `SESSION_COOKIE_AGE` later. Going through `SessionStore(key).delete()` removes both
+    copies. A `Session.objects.filter(...).delete()` would pass a naive test (the row really
+    is gone) while leaving the session live.
+
+    ⚠️ **Sessions are scanned, not queried by user.** `django_session` stores the user id
+    inside the opaque encoded blob with no column or index for it, so there is nothing to
+    filter on — every unexpired row has to be decoded. That is acceptable because this runs
+    on suspension and deletion, not per request. If the table ever grows enough for this to
+    hurt, the fix is a `user`-keyed index table written at login, not a query against this
+    one.
+
+    [doc: Arch §8, API §2 "session revocation is immediate", BR-25/BR-33]
+    """
+    from django.contrib.sessions.models import Session
+
+    session_store = import_module(settings.SESSION_ENGINE).SessionStore
+    target_id = str(user.pk)
+    revoked = 0
+
+    for session in Session.objects.filter(expire_date__gt=timezone.now()).iterator():
+        # `get_decoded()` returns {} on a tampered or undecodable payload rather than
+        # raising, so a corrupt row cannot abort the revocation of the others.
+        if session.get_decoded().get(SESSION_KEY) != target_id:
+            continue
+        session_store(session_key=session.session_key).delete()
+        revoked += 1
+
+    return revoked

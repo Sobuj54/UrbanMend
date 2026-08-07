@@ -70,6 +70,59 @@ class VerifyResponseSerializer(CamelCaseSerializer):
     verified = serializers.BooleanField()
 
 
+class LoginSerializer(CamelCaseSerializer):
+    """POST /auth/login request body (API §6.1).
+
+    ⚠️ Shape only — no `EmailField`, no length or complexity rules on `password`. Every
+    check here would answer a question the caller has not earned an answer to: rejecting a
+    malformed identifier before the credential check tells an attacker their guess was not
+    even a valid address, and a minimum length on login leaks the password policy. The
+    service returns one generic failure for all of it.
+    """
+
+    identifier = serializers.CharField(max_length=254)
+    password = serializers.CharField(write_only=True, max_length=128, trim_whitespace=False)
+
+
+class LoginResponseSerializer(CamelCaseSerializer):
+    """POST /auth/login 200 response (API §6.1).
+
+    Spec body: `{ "user": { "id", "role", "preferredLanguage" }, "requires2fa": false }`.
+
+    ⚠️ Exactly those three user fields. Not `email`/`phone`/`status` — a login response is
+    the easiest place to over-serialize, and contact details are precisely what API §2.1
+    says the API never hands out.
+    """
+
+    user = serializers.SerializerMethodField()
+    # ⚠️ Declared as `requires2fa`, NOT `requires_2fa`. The camelCase mixin renames on the
+    # `_x` boundary, so `requires_2fa` would emit `requires2fa` — the same string — but only
+    # by coincidence of the digit following the underscore. Spelling it as the spec does
+    # removes the coincidence from the contract.
+    requires2fa = serializers.SerializerMethodField()
+
+    def get_user(self, obj: User) -> dict[str, str]:
+        return {
+            "id": str(obj.id),
+            "role": obj.role,
+            "preferredLanguage": obj.preferred_language,
+        }
+
+    def get_requires2fa(self, obj: User) -> bool:
+        """Always `False` until T1.7 wires `django-otp` (FR-4).
+
+        ⚠️ The field is in the contract now, so it ships now — a client written against
+        the spec must not have to handle its absence. `False` is the truthful value while
+        no user can have a confirmed OTP device: there is nothing to require.
+
+        ⚠️ When T1.7 lands, this becomes a real check AND `LoginView` must stop issuing a
+        full session in the same breath — the spec puts `/auth/2fa/verify` on a *partial*
+        post-password session. Returning `True` here without that change would tell the
+        client 2FA is pending while already having granted full access.
+        """
+        return False
+
+
 class UserSerializer(CamelCaseModelSerializer):
     """User resource shape for API responses (API §6.2)."""
 

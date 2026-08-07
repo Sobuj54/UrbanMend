@@ -154,6 +154,39 @@ read-only `VerificationCodeAdmin`, 22 tests. `pytest` **205 passed / 1 xfailed**
 - **Verification failure is always an exception, never a `False` return** — a bool invites
   `if verify_code(...)` with no `else`, which fails open.
 
+✅ Built in T1.3 (2026-08-07): sessions, login, logout, revocation. `authenticate_user` /
+`start_session` / `end_session` / `revoke_all_sessions` in `identity/services.py`;
+`Login`/`LoginResponse` serializers; `LoginView` + `LogoutView`; `POST /auth/login` +
+`POST /auth/logout`; `InvalidCredentials` + `AccountLocked` in `api/exceptions.py`; 28 tests.
+**No migration.** `pytest` **233 passed / 1 xfailed**, mypy (109 files) / ruff clean.
+
+- ⚠️ **Revoke through `SessionStore(session_key=...).delete()` — never
+  `Session.objects.filter(...).delete()`.** On `cached_db` a raw row delete leaves the cached copy
+  live and the session keeps authenticating until the cache expires. The ORM call looks correct and
+  the row really does vanish, which is what makes it a silent hole. Applies to every future caller:
+  BR-25 suspension and BR-33 deprovisioning both revoke this way.
+- **`start_session()` wraps `django.contrib.auth.login()`** for its `cycle_key()` — the
+  session-fixation defence. A hand-rolled `request.session[SESSION_KEY] = ...` sets the same keys
+  and looks equivalent while leaving a planted pre-login token valid. `backend=` must be passed
+  explicitly since the user comes from a service, not `authenticate()`.
+- ⚠️ **Password is checked BEFORE account status**, and `AccountLockedError` subclasses
+  `AuthenticationError` (fail-closed for `except AuthenticationError`). The view's `except` clauses
+  are ordered locked-first — reversing them silently turns every `403 ACCOUNT_LOCKED` into a `401`.
+- **`authenticate_user()` hashes a throwaway password when the identifier is unknown**, or response
+  timing becomes the enumeration oracle the identical error messages exist to prevent.
+- ⚠️ **DRF's `NotAuthenticated` → `403` rewrite is undone in `urbenmend_exception_handler`.**
+  `SessionAuthentication` offers no `WWW-Authenticate` header, so DRF rewrote every unauthenticated
+  reply to `403`; API §4.2 requires `401 UNAUTHENTICATED`. Fixed once globally — do not re-add
+  per-view `handle_exception` overrides. For the same reason login failures use a plain
+  `APIException` (`InvalidCredentials`), not `NotAuthenticated`/`AuthenticationFailed`, which
+  `handle_exception` special-cases.
+- **`LoginSerializer` validates shape only** — no `EmailField`, no password `min_length`. Both would
+  answer a question the caller has not earned: that their guess was not even a valid address, or
+  what the password policy is. `trim_whitespace=False` — a leading space is part of the secret.
+- ⚠️ **`requires2fa` ships hardcoded `False`.** When T1.7 makes it a real check, `LoginView` must
+  simultaneously stop issuing a full session — the spec puts `/auth/2fa/verify` on a *partial*
+  post-password session.
+
 ## Commands
 
 Sourced from `docs/06-devops-guide.md` §4.1 and its Dockerfile example. **No manifest or task

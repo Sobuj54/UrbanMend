@@ -22,14 +22,16 @@ urlpatterns = [
     # API §6.16 — liveness/readiness with dependency degradation flags. The K8s readiness
     # probe targets this path [doc: DevOps §8.4].
     path("health", platform_views.health, name="health"),
-    # API §6.1 — authentication. T1.2 covers register + verify; login/logout/2fa/password
-    # are T1.3/T1.7 and are deliberately absent until then rather than stubbed.
+    # API §6.1 — authentication. T1.2 covers register + verify; T1.3 adds login + logout.
+    # 2fa/password are T1.7 and are deliberately absent until then rather than stubbed.
     path("auth/register", identity_views.RegisterView.as_view(), name="auth-register"),
     path("auth/verify", identity_views.VerifyView.as_view(), name="auth-verify"),
+    path("auth/login", identity_views.LoginView.as_view(), name="auth-login"),
+    path("auth/logout", identity_views.LogoutView.as_view(), name="auth-logout"),
 ]
 
 # Remaining §6 resources land with their phases, not here:
-#   /auth/login, /auth/logout, /auth/2fa, /auth/password → T1.3, T1.7
+#   /auth/2fa, /auth/password → T1.7
 #   /users                   → P1 (T1.6, T1.9)
 #   /reports, /media         → P1/P3
 #   /issues, /map, /comments → P2/P4

@@ -18,15 +18,22 @@ from typing import Any
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from urbenmend.api.exceptions import Conflict, UnprocessableEntity
+from urbenmend.api.exceptions import (
+    AccountLocked,
+    Conflict,
+    InvalidCredentials,
+    UnprocessableEntity,
+)
 from urbenmend.identity import services
 from urbenmend.identity.models import Channel, User
 from urbenmend.identity.serializers import (
+    LoginResponseSerializer,
+    LoginSerializer,
     RegisterSerializer,
     VerifyRequestSerializer,
 )
@@ -135,3 +142,61 @@ class VerifyView(APIView):
             raise UnprocessableEntity(self._GENERIC_FAILURE) from exc
 
         return Response({"verified": True}, status=status.HTTP_200_OK)
+
+
+class LoginView(APIView):
+    """`POST /auth/login` — start a session (FR-1, API §6.1)."""
+
+    permission_classes = [AllowAny]
+    # ⚠️ Authentication is disabled on this view, which also disables DRF's
+    # `SessionAuthentication` CSRF enforcement for it. That is correct and not a hole: there
+    # is no session to protect yet, and Django's `CsrfViewMiddleware` still guards the
+    # request. Leaving `SessionAuthentication` on would demand a CSRF token from a caller
+    # who has never been issued one.
+    authentication_classes: list[Any] = []
+
+    def post(self, request: Request) -> Response:
+        serializer = LoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            user = services.authenticate_user(
+                identifier=data["identifier"],
+                password=data["password"],
+            )
+        except services.AccountLockedError as exc:
+            # ⚠️ Ordered before the `AuthenticationError` clause because it subclasses it —
+            # reversing these two makes every locked account report `401` instead of
+            # `403 ACCOUNT_LOCKED` (API §6.1), and nothing would fail loudly.
+            raise AccountLocked(str(exc)) from exc
+        except services.AuthenticationError as exc:
+            raise InvalidCredentials(str(exc)) from exc
+
+        # ⚠️ Session established only after `authenticate_user` returned. The service raises
+        # on every failure path, so there is no arrangement of its results that reaches this
+        # line without a verified password.
+        services.start_session(request=request._request, user=user)
+
+        return Response(
+            LoginResponseSerializer(user).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class LogoutView(APIView):
+    """`POST /auth/logout` — revoke the current session (API §6.1, Arch §8).
+
+    API §6.1: "Auth: Session. Authorization: Self." A caller can only ever end the session
+    they presented, so "self" is structural rather than a check the service performs.
+    """
+
+    # `IsAuthenticated` is the project default, restated here because this view's whole
+    # contract is that it needs a session. It is defence-in-depth, not the enforcement
+    # point — `end_session()` on a request with no session is a harmless no-op.
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request) -> Response:
+        services.end_session(request=request._request)
+        # API §6.1: `204`, no body.
+        return Response(status=status.HTTP_204_NO_CONTENT)

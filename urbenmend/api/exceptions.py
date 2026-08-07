@@ -22,7 +22,7 @@ from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import Http404
 from rest_framework import status as http_status
-from rest_framework.exceptions import APIException, ValidationError
+from rest_framework.exceptions import APIException, NotAuthenticated, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
@@ -56,6 +56,43 @@ class UnprocessableEntity(APIException):
     status_code = http_status.HTTP_422_UNPROCESSABLE_ENTITY
     default_detail = "The request could not be processed."
     default_code = "VALIDATION_FAILED"
+
+
+class InvalidCredentials(APIException):
+    """`401 UNAUTHENTICATED` — the generic login failure (API §6.1).
+
+    ⚠️ **Deliberately not DRF's `NotAuthenticated` or `AuthenticationFailed`.** `APIView
+    .handle_exception` special-cases those two: it asks the view's authenticators for a
+    `WWW-Authenticate` header and, finding none, **rewrites the status to `403`**. Both
+    conditions hold on `LoginView` — `authentication_classes` is empty, and
+    `SessionAuthentication.authenticate_header()` returns `None` in any case — so using
+    either class would turn every bad-password reply into a `403` that the spec says must
+    be a `401`. A plain `APIException` is not touched by that branch.
+    """
+
+    status_code = http_status.HTTP_401_UNAUTHORIZED
+    default_detail = "Invalid credentials."
+    default_code = "UNAUTHENTICATED"
+
+
+class AccountLocked(APIException):
+    """`403 ACCOUNT_LOCKED` — correct password, but the account may not sign in (FR-4).
+
+    ⚠️ API §6.1 specifies this as a "`423`-equivalent surfaced as `403 ACCOUNT_LOCKED`".
+    `423 Locked` is a WebDAV status, not part of core HTTP, so the contract carries the
+    distinction in the error `code` rather than the status line. Do not "correct" this to
+    `423` — the status is the spec's deliberate choice, and `_STATUS_TO_CODE` has no entry
+    for 423 precisely because none is wanted.
+
+    DRF's own `PermissionDenied` cannot express it: its `default_code` is in
+    `_DRF_DEFAULT_CODES`, so the handler would flatten this to the generic `FORBIDDEN` and
+    the client would lose the one signal that tells "wrong password" apart from "your
+    account has been suspended" — the difference between retrying and contacting support.
+    """
+
+    status_code = http_status.HTTP_403_FORBIDDEN
+    default_detail = "This account is not permitted to sign in."
+    default_code = "ACCOUNT_LOCKED"
 
 
 # API §4.3 base codes, plus the status-specific codes §4.2 names. Anything not listed falls
@@ -191,6 +228,14 @@ def urbenmend_exception_handler(exc: Exception, context: dict[str, Any]) -> Resp
         # A service raising Django's ValidationError (the natural choice in `services.py`,
         # which should not import DRF) still produces the contract shape.
         exc = ValidationError(detail=exc.messages)
+    # ⚠️ DRF rewrites `NotAuthenticated` to 403 when no authenticator offers a
+    # `WWW-Authenticate` header — which `SessionAuthentication` never does (Django #20760,
+    # django-rest-framework #6021). API §4.2 fixes the distinction: `401 UNAUTHENTICATED`
+    # means "show me a credential", `403 FORBIDDEN` means "I see who you are and you may
+    # not". Undoing the rewrite at this point applies the correction to every protected
+    # endpoint at once rather than type-ignoring each view's `handle_exception` override.
+    elif isinstance(exc, NotAuthenticated) and exc.status_code == http_status.HTTP_403_FORBIDDEN:
+        exc.status_code = http_status.HTTP_401_UNAUTHORIZED
 
     response = drf_exception_handler(exc, context)
     if response is None:

@@ -775,14 +775,92 @@ pre-check `exists()`, which would race.
 Verified in the container: `ruff check` and `ruff format --check` clean, `mypy --strict` clean
 (108 files), `pytest` **205 passed / 1 xfailed**, `makemigrations --check --dry-run` exit 0.
 
+### T1.3 — sessions, login, logout, revocation
+
+✅ **Built and verified (2026-08-07).** Four service functions (`authenticate_user`,
+`start_session`, `end_session`, `revoke_all_sessions`); `LoginSerializer` +
+`LoginResponseSerializer`; `LoginView`/`LogoutView`; `POST /auth/login` and `POST /auth/logout` in
+`api/urls.py`; `InvalidCredentials` and `AccountLocked` in `api/exceptions.py` plus a fix to the
+handler itself (below); 28 tests in `identity/tests/test_sessions.py`. **No migration** — sessions
+live in `django.contrib.sessions`' own table and the user model was unchanged.
+
+⚠️ **The revocation tests are the deliverable, not an extra.** Sessions were chosen over JWT for
+exactly one reason (Arch §8), so a suite proving login works but never proving a session can be
+killed has not tested the decision. C2's own wording is the acceptance criterion: *delete the
+session row and assert the next request returns 401.*
+
+Six decisions this task forced:
+
+1. **⚠️ Revocation goes through `SessionStore(session_key=...).delete()`, never
+   `Session.objects.filter(...).delete()`.** On the `cached_db` backend the row is the *slower* of
+   two copies; a raw row delete leaves the cached copy live and the session keeps authenticating
+   until the cache entry expires on its own. That is a silent security hole — the ORM call looks
+   correct, the row really does vanish, and the revoked session still works. The test deletes via
+   the store *and* asserts the next request is `401`, so a future "optimization" to a queryset
+   delete fails loudly. `revoke_all_sessions()` therefore iterates unexpired sessions, decodes each
+   one, and matches on `SESSION_KEY` rather than issuing one bulk `DELETE`.
+2. **`start_session()` delegates to `django.contrib.auth.login()`.** It calls `cycle_key()`, which
+   is the session-fixation defence; a hand-rolled `request.session[SESSION_KEY] = ...` would set
+   the same three keys and *look* equivalent while leaving an attacker-planted pre-login token
+   valid. `backend=` is passed explicitly because our user comes from a service function rather
+   than `authenticate()`, and `login()` cannot infer it otherwise.
+3. **⚠️ The password is checked BEFORE the account status.** Reporting `403 ACCOUNT_LOCKED` to
+   someone who did not supply the password would confirm both that the account exists and that it
+   has been suspended, to anyone who asked. A test asserts a wrong password on a suspended account
+   reports invalid-credentials, not locked.
+4. **`AccountLockedError` subclasses `AuthenticationError`** so `except AuthenticationError` still
+   catches both — the fail-closed direction. A test asserts the subclass relation, because if it
+   were ever broken a caller with only the broad `except` would fall through and treat a suspended
+   account as authenticated. The view's two `except` clauses are ordered locked-first for the same
+   reason; reversing them turns every locked account into a `401` and nothing fails loudly.
+5. **`authenticate_user()` hashes a throwaway password on the unknown-identifier path.** Otherwise
+   the unknown-user path returns without an Argon2 verification and is measurably faster than the
+   wrong-password path, which turns response *timing* into the enumeration oracle that the
+   identical error messages exist to prevent. Same mitigation as Django's own `ModelBackend`.
+6. **`requires2fa` ships now, hardcoded `False`.** It is in the API §6.1 body, so a client written
+   against the spec must not have to handle its absence, and `False` is truthful while no user can
+   have a confirmed OTP device. ⚠️ When T1.7 lands this becomes a real check **and** `LoginView`
+   must stop issuing a full session in the same breath — the spec puts `/auth/2fa/verify` on a
+   *partial* post-password session, so returning `True` without that change would tell the client
+   2FA is pending after already granting full access. The docstring carries that warning.
+
+⚠️ **One defect fixed outside this task's surface: DRF was returning `403` where the spec says
+`401`.** `APIView.handle_exception` rewrites `NotAuthenticated` to `403` when no authenticator
+offers a `WWW-Authenticate` header, and `SessionAuthentication.authenticate_header()` returns
+`None` by design (Django #20760, django-rest-framework #6021). API §4.2 fixes the distinction —
+`401 UNAUTHENTICATED` means "show me a credential", `403 FORBIDDEN` means "I see who you are and
+you may not" — and api-conventions.md states every protected endpoint implicitly returns `401`.
+This was found by the logout-without-a-session test, and it was **not** a wrong test: left alone,
+every protected endpoint in the project would have shipped the wrong status. Corrected once in
+`urbenmend_exception_handler` rather than per-view, so T1.5 onward inherits it.
+
+Related: `InvalidCredentials` is a plain `APIException`, deliberately **not** DRF's
+`NotAuthenticated` or `AuthenticationFailed` — `handle_exception` special-cases exactly those two,
+so either one would turn every bad-password reply into the `403` the spec forbids. `AccountLocked`
+likewise cannot be DRF's `PermissionDenied`: that class's `default_code` is in `_DRF_DEFAULT_CODES`,
+so the handler would flatten it to the generic `FORBIDDEN` and the client would lose the one signal
+separating "retry" from "contact support".
+
+Also settled here: `LoginSerializer` validates *shape only* — no `EmailField`, no `min_length` on
+`password` — because rejecting a malformed identifier before the credential check tells an attacker
+their guess was not even a valid address, and a length rule on login leaks the password policy;
+`trim_whitespace=False` on the password, since a leading space is part of the secret. The login
+response carries exactly `{id, role, preferredLanguage}`, with a test asserting the body contains
+neither the email nor the phone — a login body is the easiest place for contact details to creep in
+against API §2.1. `end_session()` performs no authorization check: a caller can only ever end the
+session they presented, so "self" is structural rather than a rule to enforce.
+
+Verified in the container: `ruff check` and `ruff format --check` clean, `mypy --strict` clean
+(109 files), `pytest` **233 passed / 1 xfailed**, `makemigrations --check --dry-run` exit 0.
+
 **M1 gate:** a citizen can register → verify → log in; an admin can provision a scope-limited
 authority; RBAC denies out-of-scope actions; sessions revoke immediately.
 
 - [x] register → verify (T1.2)
-- [ ] log in (T1.3 — sessions)
+- [x] log in (T1.3 — sessions)
 - [ ] admin provisions a scope-limited authority (T1.4/T1.6 — needs Category, ❓Q1)
 - [ ] RBAC denies out-of-scope actions (T1.5)
-- [ ] sessions revoke immediately (T1.3)
+- [x] sessions revoke immediately (T1.3)
 
 ## C3. P2 Reporting & Media
 - T2.2: the `POST /reports` response is `202 Accepted` — the report is written synchronously, triage
