@@ -34,13 +34,19 @@ from django.conf import settings
 from django.db import transaction
 from django.test import Client, TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from urbenmend.classification.models import Category
 from urbenmend.geo.tests.factories import OUTSIDE_POINT
 from urbenmend.identity.models import Language
 from urbenmend.identity.tests.factories import AuthorityFactory, UserFactory
 from urbenmend.reporting import services
-from urbenmend.reporting.models import ClassificationSource, Report, ReportStatus
+from urbenmend.reporting.models import (
+    ClassificationSource,
+    Report,
+    ReportStatus,
+    SeveritySignal,
+)
 from urbenmend.reporting.tests.factories import DEFAULT_LOCATION
 
 pytestmark = pytest.mark.django_db
@@ -106,13 +112,13 @@ def test_the_task_is_published_once_the_transaction_commits() -> None:
     citizen = UserFactory.create()
 
     with patch(DELAY) as delay, TestCase.captureOnCommitCallbacks(execute=True):
-        report = services.submit_report(
+        acknowledgement = services.submit_report(
             author=citizen,
             location=DEFAULT_LOCATION,
             description="Large pothole across the lane.",
         )
 
-    delay.assert_called_once_with(str(report.pk))
+    delay.assert_called_once_with(acknowledgement.report_id)
 
 
 def test_only_the_id_crosses_the_broker_boundary() -> None:
@@ -176,18 +182,24 @@ def test_submission_leaves_the_report_processing_not_submitted() -> None:
 
     `create_report()` writes `submitted` and refuses a `status` argument (T2.1, asserted on its
     signature), so this transition has to happen here or the §6.3 `202` body would be lying.
+
+    ⚠️ **Read back from the database, not off the return value.** T2.3 made `submit_report()` return
+    a `SubmissionAcknowledgement` rather than the `Report`, and the acknowledgement carries the
+    status it *reported* — asserting on that alone would pass even if the UPDATE never reached the
+    row. Both are checked: the row moved, and the body agrees with it.
     """
     citizen = UserFactory.create()
 
     with patch(DELAY):
-        report = services.submit_report(
+        acknowledgement = services.submit_report(
             author=citizen,
             location=DEFAULT_LOCATION,
             description="Large pothole across the lane.",
         )
 
-    report.refresh_from_db()
+    report = Report.objects.get(pk=acknowledgement.report_id)
     assert report.status == ReportStatus.PROCESSING
+    assert acknowledgement.status == ReportStatus.PROCESSING
 
 
 def test_submission_leaves_the_report_unclassified() -> None:
@@ -195,15 +207,17 @@ def test_submission_leaves_the_report_unclassified() -> None:
     citizen = UserFactory.create()
 
     with patch(DELAY):
-        report = services.submit_report(
+        acknowledgement = services.submit_report(
             author=citizen,
             location=DEFAULT_LOCATION,
             description="Large pothole across the lane.",
         )
 
+    report = Report.objects.get(pk=acknowledgement.report_id)
     assert report.is_classified is False
     assert report.severity_signal is None
     assert report.classified_at is None
+    assert acknowledgement.classification == {"state": "pending"}
 
 
 def test_submission_enforces_every_t21_rule_rather_than_reimplementing_them() -> None:
@@ -558,34 +572,324 @@ def test_get_reports_is_405_until_t27() -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# T2.3's target (BR-5)
+# Idempotency-Key — BR-5, API §4.6, T2.3
+#
+# ⚠️ **`captureOnCommitCallbacks(execute=True)` is load-bearing in every test below, and its
+# placement is the assertion.** `idempotency.complete()` is registered with `transaction.on_commit`
+# (a completed record is a promise the row exists), and pytest-django never commits — so *inside* the
+# block the key is still in flight, and *after* it the key is completed. That is not a testing
+# artifact: it is exactly the production window a double-tap lands in, which is why the in-flight and
+# replay cases are written as "inside" and "outside" the same construct.
 # ---------------------------------------------------------------------------------------
-@pytest.mark.xfail(
-    strict=True,
-    reason="T2.3 owns Idempotency-Key. Deliberately failing so the requirement has a target.",
-)
+
+IDEMPOTENCY_KEY = "3f2a6f3e-1111-4000-8000-000000000000"
+
+
+def _post(client: Client, key: str | None = IDEMPOTENCY_KEY, **overrides: Any) -> Any:
+    """`POST /reports` with an `Idempotency-Key`, in the spelling §6.3 documents.
+
+    `headers=`, not the legacy `HTTP_*` WSGI-environ spelling — the header name is part of the
+    contract, and `**{"HTTP_IDEMPOTENCY_KEY": ...}` would also unpack into `Client.post`'s fourth
+    positional parameter (`secure: bool`) rather than the environ.
+    """
+    headers = {} if key is None else {"Idempotency-Key": key}
+    return client.post(
+        _url(), data=_body(**overrides), content_type="application/json", headers=headers
+    )
+
+
 def test_a_replayed_idempotency_key_returns_the_original_report() -> None:
-    """⚠️ **Failing on purpose** — BR-5, API §6.3 `Idempotency-Key`, plan T2.3.
+    """**The T2.3 deliverable** — BR-5, API §4.6, §6.3.
 
-    Today the header is accepted and ignored, so a retried submission on a flaky mobile connection
-    creates a second Report — which then clusters into the same Issue and inflates the corroboration
-    count that FR-16 uses to judge how many people are affected. One person's dropped connection
-    reads as two complaints.
+    Without this, a retried submission on a flaky mobile connection creates a second Report, which
+    clusters into the same Issue and inflates the corroboration count FR-16 uses to judge how many
+    people are affected. One person's dropped connection reads as two complaints.
 
-    `strict=True` per the A10 precedent: when T2.3 lands, this test *passing* fails the suite until
-    the marker is deleted, so the fix cannot ship with a stale `xfail` hiding whether it worked.
+    ⚠️ This test previously carried `xfail(strict=True)` as T2.3's target (the A10 precedent). The
+    marker is gone because the behaviour landed — that is what `strict=True` forces.
     """
     client, _ = _signed_in_citizen()
-    # `headers=`, not the legacy `HTTP_*` WSGI-environ spelling: the header name is part of the §6.3
-    # contract, so it is written here exactly as a client sends it.
-    headers = {"Idempotency-Key": "3f2a6f3e-1111-4000-8000-000000000000"}
 
     with patch(DELAY):
-        first = client.post(_url(), data=_body(), content_type="application/json", headers=headers)
-        second = client.post(_url(), data=_body(), content_type="application/json", headers=headers)
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            first = _post(client)
+        second = _post(client)
 
+    assert first.status_code == 202
+    assert second.status_code == 202
     assert second.json()["reportId"] == first.json()["reportId"]
     assert Report.objects.count() == 1
+
+
+def test_a_replay_returns_the_body_verbatim_not_the_current_state() -> None:
+    """§6.3 as amended: a replay "returns this same `202` body verbatim".
+
+    ⚠️ **The point is what happens after triage.** The replayed acknowledgement must still read
+    `status: processing` and `classification.state: pending` even once the report has moved on —
+    re-serializing the live row would make the POST response a second, weaker `GET /reports/{id}`
+    and let a retrying client tell a re-delivered response from a first one by its content.
+    """
+    client, _ = _signed_in_citizen()
+
+    with patch(DELAY):
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            first = _post(client)
+
+        # Triage lands between the two requests, exactly as it would in production.
+        report = Report.objects.get(pk=first.json()["reportId"])
+        report.status = ReportStatus.TRIAGED
+        report.severity_signal = SeveritySignal.HIGH
+        report.classified_at = timezone.now()
+        report.classification_source = ClassificationSource.LLM
+        report.save()
+
+        second = _post(client)
+
+    assert second.json() == first.json()
+    assert second.json()["status"] == "processing"
+    assert second.json()["classification"] == {"state": "pending"}
+
+
+def test_a_replay_carries_the_idempotency_replayed_header() -> None:
+    """§4.6 — "the only way a client can tell a re-delivered acknowledgement from a first one".
+
+    ⚠️ Asserted on **both** responses. The bodies are identical by design, so a header that were
+    always present, or always absent, would satisfy a one-sided assertion and signal nothing.
+    """
+    client, _ = _signed_in_citizen()
+
+    with patch(DELAY):
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            first = _post(client)
+        second = _post(client)
+
+    assert "Idempotency-Replayed" not in first
+    assert second["Idempotency-Replayed"] == "true"
+
+
+def test_the_replayed_body_carries_no_extra_keys() -> None:
+    """The acknowledgement's `replayed` flag must not leak into the §6.3 body.
+
+    It is a transport fact, carried by the header. A `replayed` key in the body would break the
+    "verbatim" guarantee the previous tests rest on, and clients do not know the field.
+    """
+    client, _ = _signed_in_citizen()
+
+    with patch(DELAY):
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            _post(client)
+        second = _post(client)
+
+    assert set(second.json()) == {"reportId", "status", "issueId", "classification"}
+
+
+def test_a_second_request_while_the_first_is_in_flight_is_409_in_progress() -> None:
+    """§4.6 — the third outcome, and the one that makes the double-tap safe.
+
+    ⚠️ **This is why `complete()` is deferred to `on_commit`.** Until the first transaction commits
+    there is no durable row, so replaying its id would hand a client a `reportId` that may never
+    exist. `409 IDEMPOTENCY_IN_PROGRESS` tells them to retry shortly instead — a different remedy
+    from `IDEMPOTENCY_KEY_REUSED`, which is why the two codes are distinct.
+
+    Both requests run *inside* the capture block, so the first one's completion callback has not run.
+    """
+    client, _ = _signed_in_citizen()
+
+    with patch(DELAY), TestCase.captureOnCommitCallbacks(execute=True):
+        first = _post(client)
+        second = _post(client)
+
+    assert first.status_code == 202
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "IDEMPOTENCY_IN_PROGRESS"
+    assert Report.objects.count() == 1
+
+
+def test_the_same_key_with_a_different_body_is_409_key_reused() -> None:
+    """§4.6 — reuse is refused, never replayed.
+
+    ⚠️ **Replaying the first result here would be silent data loss.** The client would get a `202`
+    and a `reportId` for a submission the server never recorded — a second, genuinely different
+    report that vanishes with no way for the citizen to detect it.
+    """
+    client, _ = _signed_in_citizen()
+
+    with patch(DELAY):
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            _post(client)
+        second = _post(client, description="A different problem entirely, on another street.")
+
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+    assert Report.objects.count() == 1
+
+
+def test_a_reused_key_is_refused_even_while_the_original_is_in_flight() -> None:
+    """⚠️ The fingerprint is checked **before** the state, and the ordering is observable.
+
+    A key bound to different content can never be honoured, whatever the original is doing. Reporting
+    it as merely "in progress" would tell the client to retry a request that will be refused forever.
+    """
+    client, _ = _signed_in_citizen()
+
+    with patch(DELAY), TestCase.captureOnCommitCallbacks(execute=True):
+        _post(client)
+        second = _post(client, description="A different problem entirely, on another street.")
+
+    assert second.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+
+
+def test_a_normalized_resend_is_a_replay_not_a_reuse() -> None:
+    """§4.6 — "payload equality is compared on the server's normalized view", not on raw bytes.
+
+    ⚠️ **This is the difference between a safety net and a fault.** A client that pads its
+    description, reorders its JSON keys, or writes `90.3990` for `90.399` is making the same
+    submission; a byte-level comparison would answer `409` to an ordinary retry.
+    """
+    client, _ = _signed_in_citizen()
+    padded = _body()["description"] + "  "
+    lng, lat = DEFAULT_LOCATION.x, DEFAULT_LOCATION.y
+
+    with patch(DELAY):
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            first = _post(client)
+        second = _post(
+            client,
+            description=padded,
+            location={"lat": float(f"{lat:.10f}"), "lng": float(f"{lng:.10f}")},
+        )
+
+    assert second.status_code == 202
+    assert second.json()["reportId"] == first.json()["reportId"]
+
+
+def test_a_key_is_scoped_to_one_user() -> None:
+    """§4.6 — "keys are scoped **per user** and per operation".
+
+    ⚠️ **Without this, the second citizen to submit gets the first one's report back** — and their
+    own is never filed. Clients generate keys independently, so a collision is ordinary, not an
+    attack.
+    """
+    first_client, _ = _signed_in_citizen()
+    second_client, _ = _signed_in_citizen()
+
+    with patch(DELAY), TestCase.captureOnCommitCallbacks(execute=True):
+        first = _post(first_client)
+        second = _post(second_client)
+
+    assert second.status_code == 202
+    assert second.json()["reportId"] != first.json()["reportId"]
+    assert Report.objects.count() == 2
+
+
+def test_a_rejected_submission_does_not_consume_its_key() -> None:
+    """§4.6 — "a request that fails validation does not consume its key".
+
+    ⚠️ **The natural client behaviour is the test.** Fix the body, retry with the same key. Without
+    the release-on-failure path the retry comes back `409 IDEMPOTENCY_KEY_REUSED` and the citizen is
+    stuck until the retention window expires — the safety net becoming the obstacle.
+    """
+    client, _ = _signed_in_citizen()
+
+    with patch(DELAY):
+        rejected = _post(client, description="short")
+        assert rejected.status_code == 400
+
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            accepted = _post(client)
+
+    assert accepted.status_code == 202
+    assert Report.objects.count() == 1
+
+
+def test_an_out_of_city_submission_does_not_consume_its_key() -> None:
+    """The same guarantee for the `422` path — the release covers every failure, not just `400`.
+
+    A citizen who moved the pin outside Dhaka by accident retries with a corrected coordinate. That
+    is a *different* payload, so the key must be free rather than merely replayable.
+    """
+    client, _ = _signed_in_citizen()
+
+    with patch(DELAY):
+        rejected = _post(client, location={"lng": OUTSIDE_POINT.x, "lat": OUTSIDE_POINT.y})
+        assert rejected.status_code == 422
+
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            accepted = _post(client)
+
+    assert accepted.status_code == 202
+    assert Report.objects.count() == 1
+
+
+def test_two_identical_submissions_without_a_key_both_create_a_report() -> None:
+    """§4.6 — the header is optional and absence carries **no** de-duplication guarantee.
+
+    ⚠️ **Inferring a key from the payload would be wrong, not merely out of scope.** Two reports
+    about the same pothole from the same spot are two corroborating voices under FR-16, and refusing
+    the second would silently discard a citizen's submission. De-duplication is opt-in by design.
+    """
+    client, _ = _signed_in_citizen()
+
+    with patch(DELAY), TestCase.captureOnCommitCallbacks(execute=True):
+        _post(client, key=None)
+        _post(client, key=None)
+
+    assert Report.objects.count() == 2
+
+
+def test_a_blank_key_header_is_treated_as_absent() -> None:
+    """§4.6 — "a blank value is treated as absent".
+
+    ⚠️ **Otherwise every client that sends an empty header shares one bucket**, so the second
+    citizen to submit is handed the first one's report. Some HTTP stacks emit `Idempotency-Key:` for
+    an unset value; absence has to mean absence.
+    """
+    first_client, _ = _signed_in_citizen()
+    second_client, _ = _signed_in_citizen()
+
+    with patch(DELAY), TestCase.captureOnCommitCallbacks(execute=True):
+        first = _post(first_client, key="   ")
+        second = _post(second_client, key="")
+
+    assert (first.status_code, second.status_code) == (202, 202)
+    assert first.json()["reportId"] != second.json()["reportId"]
+    assert Report.objects.count() == 2
+
+
+def test_an_over_long_key_is_400_not_truncated() -> None:
+    """§4.6 — over-long keys are rejected, and the bound is configuration.
+
+    ⚠️ **Truncating would alias two distinct keys onto one record**, so the holder of the second key
+    would be handed the first one's report: the same bug as an unscoped key, arrived at politely.
+    """
+    client, _ = _signed_in_citizen()
+    limit = settings.IDEMPOTENCY_KEY_MAX_LENGTH
+
+    with patch(DELAY):
+        accepted = _post(client, key="k" * limit)
+        rejected = _post(client, key="k" * (limit + 1))
+
+    assert accepted.status_code == 202
+    assert rejected.status_code == 400
+    assert rejected.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_an_authority_is_403_before_the_key_is_examined() -> None:
+    """⚠️ T2.1's observable ordering, extended: authorization runs before idempotency.
+
+    A non-Citizen gets `403` and learns nothing else about the request — including whether their key
+    was free, which a `409` would tell them. Reversing the two would make the store a probe.
+    """
+    authority = AuthorityFactory.create()
+    client = Client()
+    client.force_login(authority)
+
+    with patch(DELAY):
+        first = _post(client)
+        second = _post(client)
+
+    assert (first.status_code, second.status_code) == (403, 403)
+    assert Report.objects.count() == 0
 
 
 def test_the_seeded_taxonomy_is_present_for_this_suite() -> None:

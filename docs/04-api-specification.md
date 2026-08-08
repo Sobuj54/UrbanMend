@@ -143,7 +143,7 @@ Uniform envelope for all errors:
 | 401 Unauthorized | Missing/invalid session |
 | 403 Forbidden | Authenticated but not permitted (role/scope) |
 | 404 Not Found | Resource absent, or hidden from this caller |
-| 409 Conflict | State conflict (invalid status transition BR-16, duplicate confirmation BR-23, idempotency replay) |
+| 409 Conflict | State conflict (invalid status transition BR-16, duplicate confirmation BR-23, idempotency-key **reuse or in-flight** — see §4.6; a *replay* returns the original success, not `409`) |
 | 410 Gone | Resource removed by moderation (FR-31) |
 | 413 Payload Too Large | Image exceeds limit (FR-7) |
 | 415 Unsupported Media Type | Disallowed file type (FR-7) |
@@ -168,7 +168,39 @@ Uniform envelope for all errors:
 - Exceeding LLM cost/rate caps does **not** fail submission — triage degrades to the keyword fallback (FR-13a); the API still returns `202`.
 
 ### 4.6 Idempotency
-`POST /reports` (and other duplicate-sensitive creates) accept `Idempotency-Key`. A replay with the same key returns the original result (`200`/`201`) rather than creating a duplicate (BR-5). Keys are scoped per user and retained for a bounded window.
+`POST /reports` (and other duplicate-sensitive creates) accept `Idempotency-Key`. Keys are scoped **per user and per operation**, and retained for a bounded window.
+
+**The header is optional.** A request without it is processed normally and carries **no** de-duplication guarantee — BR-5 is satisfied by clients that send a key and retry with the same one. A blank value is treated as absent. A key longer than the documented bound is rejected `400 VALIDATION_FAILED`.
+
+Three outcomes, and they are distinct on purpose:
+
+| Situation | Result |
+|---|---|
+| First use of the key | Request is processed normally. |
+| **Replay** — same key, same request payload, original already completed | The **original success status and body are returned again** (`202` for `POST /reports`); no second resource is created (BR-5). |
+| **Reuse** — same key, *different* request payload | `409 IDEMPOTENCY_KEY_REUSED`. |
+| **In flight** — same key, original has not finished | `409 IDEMPOTENCY_IN_PROGRESS`; the client may retry shortly. |
+
+⚠️ **A replay is not an error.** It returns the endpoint's own success status, not `409` — a client whose connection dropped mid-submission must be able to retry and learn the outcome, which a `409` with no resource id does not give it. `409` is reserved for the two cases where the server genuinely cannot honour the request: a key reused for different content (silently replaying it would discard a real second submission), and a key whose original is still running.
+
+⚠️ **Payload equality is compared on the server's normalized view of the submission**, not on raw bytes, so key ordering and whitespace do not turn a legitimate retry into a `409`.
+
+A request that fails validation does **not** consume its key: the client may correct the body and retry with the same key.
+
+Replayed responses carry **`Idempotency-Replayed: true`**. Additive and safe to ignore, but it is the only way a client — or an operator reading a log — can tell a re-delivered acknowledgement from a first one, since by design the bodies are identical.
+
+**Amended 2026-08-08 (T2.3) — the replay status code, which this section and §4.2/§6.3 previously
+contradicted.** The original text said a replay "returns the original result (`200`/`201`)" while
+§4.2 and §6.3 both listed `409` for "idempotency replay", and `POST /reports` answers `202` in any
+case. Resolved as above: a **replay** returns the endpoint's own success status (`202` here), and
+the `409` those two sections list is for **key reuse with a different payload** or an **in-flight**
+original. All three sections now say the same thing, and the two `409` codes are named.
+
+⚠️ **The retention window is deliberately not a number in this contract.** It is deployment
+configuration (`IDEMPOTENCY_RETENTION_SECONDS`), on the same footing as rate-limit windows: a
+client must treat a key as valid only for its own retry burst, and must not depend on a specific
+duration. Outside the window a replay is indistinguishable from a first use and will create a
+second resource.
 
 ---
 
@@ -363,7 +395,7 @@ public Issue history keeps a stable author reference (C-14).
 - **Purpose:** Submit a report; persists immediately, triage runs async (FR-5, NFR-3, Architecture §4).
 - **Auth:** Session required (Q4 RESOLVED: login required for all submissions).
 - **Authorization:** Citizen.
-- **Headers:** `Idempotency-Key` (BR-5).
+- **Headers:** `Idempotency-Key` (optional, BR-5 — semantics in §4.6).
 - **Body:**
 ```json
 {
@@ -381,7 +413,9 @@ public Issue history keeps a stable author reference (C-14).
   "classification": { "state":"pending" } }
 ```
 `issueId` and `classification` populate after async triage (poll via `GET`, or receive a notification).
-- **Errors:** `VALIDATION_FAILED`, `422 OUT_OF_CITY`, `413`/`415` (if inline media), `409` (idempotency replay returns original), standard.
+
+An `Idempotency-Key` **replay returns this same `202` body verbatim** — the acknowledgement the original request received, not the report's current state. Current state is what `GET /reports/{id}` is for; a replay must stay deterministic so a retrying client cannot tell a delivered response from a re-delivered one. Replays carry `Idempotency-Replayed: true`.
+- **Errors:** `VALIDATION_FAILED`, `422 OUT_OF_CITY`, `413`/`415` (if inline media), `409 IDEMPOTENCY_KEY_REUSED` / `409 IDEMPOTENCY_IN_PROGRESS` (§4.6 — a replay is **not** an error), standard.
 
 #### `GET /reports/{id}`
 - **Purpose:** Retrieve a report incl. classification result and its Issue link once triaged.

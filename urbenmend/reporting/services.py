@@ -16,24 +16,34 @@ Rules for this file [doc: Arch §3.1, FR-3]:
   - Reads belong in selectors.py.
 
 ⚠️ **T2.1 is the entity plus its validation rules — not the endpoint.** `POST /reports` (T2.2)
-and idempotency (T2.3) call `create_report()`; it is written to be callable without a request,
-so a management command or the T2.2 view get the same rules (FR-3).
+calls `create_report()`; it is written to be callable without a request, so a management command
+or the T2.2 view get the same rules (FR-3).
 
 ⚠️ **T2.2 adds `submit_report()` on top, and the split is deliberate.** `create_report()` is the
 pure write; `submit_report()` is the write *plus* the async hand-off. Keeping them separate means
 T2.1's rules stay testable with no broker, and every caller that must trigger triage goes through
 one place instead of remembering to enqueue.
 
+⚠️ **T2.3 resolves `Idempotency-Key` inside `submit_report()`, before the write** (plan T2.3,
+API §4.6, BR-5) — not in the view, and not in `create_report()`. Not the view, because a duplicate
+that reaches the write is already a duplicate and FR-3 puts rules here; not `create_report()`,
+because the thing being de-duplicated is *the submission*, and a caller who wants only the T2.1
+write (a fixture, a management command, T2.4's media backfill) must not need a key to get it.
+
 [doc: Arch §3 (FR-5, FR-8, FR-9, FR-11); BR-1..BR-3, BR-35; C-3, C-11]
 """
 
 from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from typing import Any
 
 import structlog
 from django.contrib.gis.geos import Point
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 
+from urbenmend.api import idempotency
 from urbenmend.api.exceptions import OutOfCity
 from urbenmend.classification.models import Category, CategoryStatus
 from urbenmend.classification.tasks import classify_report
@@ -42,6 +52,13 @@ from urbenmend.identity.models import Role, User
 from urbenmend.reporting.models import ClassificationSource, Report, ReportStatus
 
 logger = structlog.get_logger(__name__)
+
+# ⚠️ **The per-operation half of §4.6's "scoped per user and per operation".** A client that mints
+# one key per user action and sends it to several endpoints must not have one endpoint's stored
+# response replayed for another; the scope is what makes that impossible. It is a stored cache-key
+# component, so **renaming it silently frees every key currently held** — every in-flight submission
+# becomes a first use again. Treat it as data, not a label.
+IDEMPOTENCY_SCOPE = "reports.submit"
 
 # ⚠️ **BR-3's "adequate description" threshold, and it is a project decision, not doc-derived.**
 # FR-5 and BR-3 both say "at least one of {photo, adequate description}" without defining
@@ -59,6 +76,74 @@ class ReportValidationError(ValidationError):
     A Django `ValidationError` subclass so the view layer renders it as the `400`/`422` the
     envelope requires without this module importing DRF.
     """
+
+
+@dataclass(frozen=True)
+class SubmissionAcknowledgement:
+    """What `POST /reports` answered — the acceptance record, not the report's live state (§6.3).
+
+    ⚠️ **This exists so a replay and a first response cannot drift.** §6.3 as amended by T2.3 says a
+    replay "returns this same `202` body verbatim". If the fresh path serialized a `Report` and the
+    replay path returned a stored dict, the two would be produced by different code and could
+    disagree the moment a field is added — the client-visible symptom being a retry that looks like
+    a *different* submission. Both paths now render this one object through one serializer, so the
+    bodies are identical by construction.
+
+    ⚠️ **It is a snapshot, deliberately frozen in time.** By the time a replay arrives, triage may
+    have finished and the report may be `triaged` with an `issueId`. Re-reading the row would answer
+    a `202` with post-acceptance state, which is `GET /reports/{id}`'s job — §6.3 directs clients
+    there for current state precisely so this response can stay deterministic.
+
+    `replayed` is **not** part of the body: the serializer declares only §6.3's four fields, and the
+    view turns this flag into the `Idempotency-Replayed` header instead.
+    """
+
+    report_id: str
+    status: str
+    issue_id: str | None
+    classification: dict[str, str]
+    replayed: bool = False
+
+
+def _acknowledge(report: Report) -> SubmissionAcknowledgement:
+    """Build the §6.3 acceptance record from the row that was just written.
+
+    ⚠️ **`status` is read off the row, never hardcoded `"processing"`** (the T2.2 decision): a
+    literal here would keep reporting success after the transition is moved or removed. `str()`
+    because the value is stored in the cache for a replay, and pickling a `ReportStatus` member
+    would put a domain enum in Redis for a field the contract defines as a string.
+
+    ⚠️ **`issue_id` is `None` until T4.5.** Clustering (T4.4) is what assigns an Issue, and it runs
+    in the worker — so at acceptance there is genuinely no Issue to name. §6.3 documents the field
+    as populating later, via `GET /reports/{id}`.
+
+    ⚠️ **`classification.state` is derived from the row, not fixed to `"pending"`.** It is always
+    pending at acceptance today, but deriving it means a future synchronous-classification path
+    cannot silently report a finished triage as pending (BR-9, the T2.1 `is_classified` reasoning).
+    """
+    return SubmissionAcknowledgement(
+        report_id=str(report.pk),
+        status=str(report.status),
+        issue_id=None,
+        classification={"state": "ready" if report.is_classified else "pending"},
+    )
+
+
+def _require_citizen(author: User) -> None:
+    """API §6.3 "Authorization: Citizen" — the single check both entry points call.
+
+    Django's `PermissionDenied`, which the handler renders as the generic `403 FORBIDDEN`. API §6.3
+    names no endpoint-specific code for this, and inventing one would put a contract decision in a
+    service (the reasoning T1.9 recorded for `MeView`).
+
+    ⚠️ **One function with two callers, not one check reimplemented twice.** `submit_report()` needs
+    it *before* it touches the idempotency store, so that T2.1's observable ordering holds — a
+    non-Citizen gets `403` and learns nothing else about the request, including whether their key
+    was accepted. `create_report()` keeps calling it too: it is reachable on its own, and an
+    authorization check that only runs on one path is not an authorization check.
+    """
+    if author.role != Role.CITIZEN:
+        raise PermissionDenied("Only citizens may submit reports.")
 
 
 def _resolve_category(slug: str | None) -> Category | None:
@@ -158,11 +243,7 @@ def create_report(
     job exists", which only T2.2 knows; accepting a status argument would let a caller mark a
     report `triaged` and skip the pipeline entirely.
     """
-    if author.role != Role.CITIZEN:
-        # Django's `PermissionDenied`, which the handler renders as the generic `403 FORBIDDEN`.
-        # API §6.3 names no endpoint-specific code for this, and inventing one would put a
-        # contract decision in a service (the reasoning T1.9 recorded for `MeView`).
-        raise PermissionDenied("Only citizens may submit reports.")
+    _require_citizen(author)
 
     point = validate_location(location=location)
     validate_report_content(description=description, media_count=media_count)
@@ -183,6 +264,45 @@ def create_report(
     )
 
 
+def _submission_fingerprint(
+    *,
+    author: User,
+    location: Point | None,
+    description: str,
+    category_slug: str | None,
+    address: str,
+    language: str,
+    media_count: int,
+) -> str:
+    """The normalized view of a submission that two requests must share to be "the same" (§4.6).
+
+    ⚠️ **Normalized, not the raw body** — §4.6 fixes this. `description` and `address` are stripped
+    exactly as `create_report()` strips them before writing, and the coordinate is reduced to the
+    two floats that will be stored. A client that resends with different key ordering, trailing
+    whitespace, or `90.3990` for `90.399` is making the same submission, and answering `409` to that
+    would turn the retry safety net into the fault it exists to prevent.
+
+    ⚠️ **`author` is in the fingerprint even though the cache key is already per-user.** Belt and
+    braces is not the reason: the key is a *hash*, so a collision — or a future scope that widens —
+    would otherwise let one citizen's stored response be handed to another. The cost is one field.
+
+    ⚠️ **`location is None` fingerprints as `None` rather than raising.** The key is resolved before
+    validation (so that a rejected request does not consume it), which means this function must
+    tolerate every input the caller could pass, including the invalid ones.
+    """
+    payload: dict[str, Any] = {
+        "author": str(author.pk),
+        "description": description.strip(),
+        "category": category_slug,
+        "address": address.strip(),
+        "language": language,
+        "media_count": media_count,
+        "lng": None if location is None else location.x,
+        "lat": None if location is None else location.y,
+    }
+    return idempotency.fingerprint(payload)
+
+
 @transaction.atomic
 def submit_report(
     *,
@@ -193,8 +313,9 @@ def submit_report(
     address: str = "",
     language: str = "en",
     media_count: int = 0,
-) -> Report:
-    """Intake for `POST /reports` (T2.2): persist, mark processing, enqueue triage (FR-5, NFR-3).
+    idempotency_key: str | None = None,
+) -> SubmissionAcknowledgement:
+    """Intake for `POST /reports` (T2.2, T2.3): persist, mark processing, enqueue triage (FR-5, NFR-3).
 
     The synchronous half of Arch §4's flow. Everything expensive — the LLM call, clustering,
     notification — happens in the worker, so the citizen's request returns as soon as the row is
@@ -220,37 +341,105 @@ def submit_report(
     is the thing that would let a caller mark a report `triaged` and skip the pipeline. The two
     writes share one transaction, so no reader ever observes a submitted-but-never-queued row.
 
-    ⚠️ **Idempotency (BR-5, `Idempotency-Key`) is NOT handled here — T2.3 owns it.** Two identical
-    submissions today create two Reports, which then cluster into one Issue and inflate the
-    corroboration count FR-16 reads as "how many people are affected". The header is part of the
-    §6.3 contract, so this is a known gap with a task against it, not an oversight;
-    `tests/test_submission.py` carries the `xfail(strict=True)` test that T2.3 makes pass.
+    ---
+
+    ⚠️ **T2.3 — the key is resolved BEFORE the write, and the ordering of the four steps is the
+    whole design** (plan T2.3: "resolved in the service before the write"):
+
+    1. **Authorization first**, so T2.1's observable ordering survives — a non-Citizen gets `403`
+       and learns nothing else, not even whether their key was free.
+    2. **Reserve second**, before validation. A replay then short-circuits without re-validating,
+       which is both cheaper and correct: the original already passed. Reserving *after* validation
+       would still be race-safe (`cache.add()` is atomic either way) but would run the duplicate's
+       validation for nothing.
+    3. **Release on any failure**, so §4.6's "a request that fails validation does not consume its
+       key" holds and the client can fix the body and retry with the same key.
+    4. **Complete from `on_commit`**, never inline — see `idempotency.complete()`. Until the
+       transaction commits the key stays *in progress*, so a concurrent double-tap gets
+       `409 IDEMPOTENCY_IN_PROGRESS` rather than a replay of a report that does not exist yet.
+       That in-flight window is the guarantee, not an artifact.
+
+    ⚠️ **Without a key there is no de-duplication, by design** (§4.6: the header is optional and
+    carries "no de-duplication guarantee" when absent). Inferring a key from the payload would
+    silently refuse a citizen who really is filing two reports about the same pothole from the same
+    spot — which FR-16 counts as two corroborating voices, not a mistake.
     """
-    report = create_report(
-        author=author,
-        location=location,
-        description=description,
-        category_slug=category_slug,
-        address=address,
-        language=language,
-        media_count=media_count,
-    )
+    _require_citizen(author)
 
-    report.status = ReportStatus.PROCESSING
-    # ⚠️ `updated_at` must be listed: it is `auto_now`, and `save(update_fields=...)` writes only
-    # the named columns, so omitting it leaves the row's timestamp reading as never-modified.
-    report.save(update_fields=["status", "updated_at"])
+    key = idempotency.normalize_key(idempotency_key)
+    reservation: idempotency.Reservation | None = None
+    if key is not None:
+        outcome = idempotency.reserve(
+            scope=IDEMPOTENCY_SCOPE,
+            user_id=author.pk,
+            key=key,
+            request_fingerprint=_submission_fingerprint(
+                author=author,
+                location=location,
+                description=description,
+                category_slug=category_slug,
+                address=address,
+                language=language,
+                media_count=media_count,
+            ),
+        )
+        if isinstance(outcome, idempotency.Replay):
+            # ⚠️ The stored payload is rehydrated rather than re-serialized, and `replayed` is
+            # forced on here — the flag is never persisted as `True`, so a record cannot come back
+            # claiming to be a replay of a replay.
+            acknowledgement = SubmissionAcknowledgement(**{**outcome.payload, "replayed": True})
+            logger.info(
+                "report.submission.replayed",
+                report_id=acknowledgement.report_id,
+                # ⚠️ The key itself is never logged: it is client-supplied and may carry anything,
+                # and a log line is exactly where a key becomes reusable by someone else (NFR-12).
+                scope=IDEMPOTENCY_SCOPE,
+            )
+            return acknowledgement
+        reservation = outcome
 
-    report_id = str(report.pk)
-    transaction.on_commit(lambda: classify_report.delay(report_id))
+    try:
+        report = create_report(
+            author=author,
+            location=location,
+            description=description,
+            category_slug=category_slug,
+            address=address,
+            language=language,
+            media_count=media_count,
+        )
+
+        report.status = ReportStatus.PROCESSING
+        # ⚠️ `updated_at` must be listed: it is `auto_now`, and `save(update_fields=...)` writes only
+        # the named columns, so omitting it leaves the row's timestamp reading as never-modified.
+        report.save(update_fields=["status", "updated_at"])
+
+        report_id = str(report.pk)
+        transaction.on_commit(lambda: classify_report.delay(report_id))
+        acknowledgement = _acknowledge(report)
+    except Exception:
+        # ⚠️ Covers every failure inside the write, not just validation — an out-of-city `422`, a
+        # database error, anything. The alternative is a key held for the full retention window by a
+        # request that produced nothing. A caller-wrapped transaction that rolls back *after* this
+        # function returns is the one case this cannot see; the short in-progress TTL is the
+        # backstop there, which is why it exists.
+        if reservation is not None:
+            idempotency.release(reservation)
+        raise
+
+    if reservation is not None:
+        held = reservation
+        payload = asdict(acknowledgement)
+        transaction.on_commit(lambda: idempotency.complete(held, payload=payload))
 
     logger.info(
         "report.submitted",
-        report_id=report_id,
+        report_id=acknowledgement.report_id,
         # ⚠️ No description, no address, no coordinate. NFR-12 keeps PII out of logs, and a
         # report's free text is the citizen's own account of where they are.
         category_hint=category_slug,
         language=language,
         media_count=media_count,
+        idempotent=key is not None,
     )
-    return report
+    return acknowledgement

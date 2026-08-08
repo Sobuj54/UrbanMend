@@ -140,33 +140,34 @@ class ReportSubmitResponseSerializer(CamelCaseSerializer):
         {"reportId": "…", "status": "processing", "issueId": null,
          "classification": {"state": "pending"}}
 
-    ⚠️ **`status` is read off the row, not hardcoded `"processing"`.** The whole point of T2.2 is
-    that the status moves `submitted` → `processing` when a classification job exists; a literal
-    string would report success even if the flip were removed, and the test asserting the body
-    would still pass.
+    ⚠️ **Serializes `services.SubmissionAcknowledgement`, not a `Report` — T2.3 changed this.**
+    §6.3 as amended says an `Idempotency-Key` replay "returns this same `202` body verbatim", and a
+    replay has no live row to read: what it has is the acceptance record the original request
+    produced. Rendering a `Report` on the fresh path and a stored dict on the replay path would put
+    the two bodies in two different pieces of code, free to drift — the client-visible symptom being
+    a retry that looks like a *different* submission. One dataclass through one serializer makes them
+    identical by construction.
+
+    ⚠️ **The four §6.3 fields, and nothing else.** `SubmissionAcknowledgement` also carries
+    `replayed`, which is deliberately not declared here: it is signalled by the
+    `Idempotency-Replayed` header (§4.6), and the bodies must stay byte-identical or the header
+    would be redundant and the "verbatim" guarantee false. A test asserts the exact key set.
+
+    The derivations these fields used to compute — `issueId` always `null` until T4.5 attaches an
+    Issue (BR-6), `classification.state` from `is_classified` rather than a literal `"pending"`
+    (BR-9), and `status` read off the row instead of a hardcoded `"processing"` (the T2.2 decision) —
+    now live in `services._acknowledge()`, with their reasoning. They moved because they must be
+    evaluated **at acceptance time**: by the time a replay arrives, triage may have finished, and
+    re-deriving them then would answer a `202` with post-acceptance state that §6.3 sends clients to
+    `GET /reports/{id}` for.
     """
 
-    report_id = serializers.UUIDField(source="pk", read_only=True)
+    # `CharField`, not `UUIDField(source="pk")`: the acknowledgement already holds a `str`, which is
+    # also what survives a round-trip through the idempotency cache. A `UUID` there would be a type
+    # the contract does not describe and JSON cannot carry.
+    report_id = serializers.CharField(read_only=True)
     status = serializers.CharField(read_only=True)
-    issue_id = serializers.SerializerMethodField()
-    classification = serializers.SerializerMethodField()
-
-    def get_issue_id(self, obj: Any) -> None:
-        """Always `null` at T2.2 — and structurally so, not by omission.
-
-        ⚠️ `Report` has **no Issue FK yet**; T4.1 creates `issues.Issue` and T4.5 attaches one
-        (BR-6, at most one per Report). Emitting the key anyway keeps the §6.3 shape stable for
-        clients now, and this method is where T4.5 returns a real id. A test asserts the absence of
-        the field on the model, so this cannot quietly start reading a loose UUID column.
-        """
-        return None
-
-    def get_classification(self, obj: Any) -> dict[str, str]:
-        """`{"state": "pending"}` until async triage completes (BR-9).
-
-        Derived from `is_classified` (i.e. `classified_at`) rather than returned as a literal, so a
-        classification that *has* landed is never reported as pending. ⚠️ Only these two states are
-        emitted here; the populated `{category, severitySignal, confidence, source}` object belongs
-        to `GET /reports/{id}` (T2.7), and the full vocabulary is T3.5's to settle.
-        """
-        return {"state": "ready" if obj.is_classified else "pending"}
+    # Nullable output: DRF's `Serializer.to_representation` emits `None` without calling the field,
+    # so no `allow_null` is needed and `str(None)` can never leak as `"None"`.
+    issue_id = serializers.CharField(read_only=True)
+    classification = serializers.DictField(child=serializers.CharField(), read_only=True)

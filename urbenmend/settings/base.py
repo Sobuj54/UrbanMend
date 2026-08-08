@@ -323,6 +323,34 @@ AUTH_THROTTLE_RATES = {
 }
 
 # --------------------------------------------------------------------------------------
+# Idempotency (T2.3, BR-5, API §4.6)
+# --------------------------------------------------------------------------------------
+# ⚠️ **Also our policy, not spec-derived** — `api-conventions.md` names the "idempotency-key
+# retention window" under "Not specified — do not invent", and §4.6 was amended to say explicitly
+# that the window is deployment configuration rather than contract. Clients must treat a key as
+# valid for their own retry burst only.
+#
+# Backed by the Redis `default` cache above (`urbenmend/api/idempotency.py`). A cache flush drops
+# every held key: in-flight requests then behave as first uses, so a client retrying across the
+# flush can create a second Report. Acceptable for the same reason as the throttle counters — this
+# is a retry window, not durable state — but it is why a flush is not a routine operation.
+#
+# 24 hours. Long enough to cover a phone that lost connectivity mid-submission and retries when it
+# comes back, short enough that Redis is not accumulating a record per submission indefinitely.
+IDEMPOTENCY_RETENTION_SECONDS = env.int("IDEMPOTENCY_RETENTION_SECONDS", default=86_400)
+# How long an unfinished request holds its key before another attempt may claim it. This is the
+# backstop for a process killed between `reserve()` and `complete()`/`release()` — the ordinary
+# paths return the key themselves. ⚠️ Must stay comfortably above the worst-case duration of a
+# `POST /reports` transaction: too low and a slow request's own retry starts a second write while
+# the first is still running, which is the duplicate BR-5 exists to prevent.
+IDEMPOTENCY_IN_PROGRESS_SECONDS = env.int("IDEMPOTENCY_IN_PROGRESS_SECONDS", default=60)
+# ⚠️ A bound, not a format. §4.6 does not constrain the key's *shape* — a UUID, a ULID and a
+# client-composed string are all legitimate — so this only stops an unbounded header becoming an
+# unbounded cache write. Over-long keys are rejected `400`, never truncated (truncation would alias
+# two distinct keys onto one record).
+IDEMPOTENCY_KEY_MAX_LENGTH = env.int("IDEMPOTENCY_KEY_MAX_LENGTH", default=255)
+
+# --------------------------------------------------------------------------------------
 # Celery
 # --------------------------------------------------------------------------------------
 # Async worker + beat (Arch §2.3, T0.7).

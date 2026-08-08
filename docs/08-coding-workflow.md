@@ -1542,12 +1542,132 @@ in `api/tests/test_serializers.py`. **No migration.** Full suite **491 passed / 
   authoritative location as the explicit coordinate, so nothing here depends on it. Q9 (LLM provider)
   is why `classify_report`'s body is a stub rather than a provider call.
 
+### T2.3 — `Idempotency-Key` for submission (P2, BR-5, API §4.6)
+
+New `urbenmend/api/idempotency.py` (`normalize_key`, `fingerprint`, `reserve`/`complete`/`release`,
+`Reservation`/`Replay`); `IdempotencyKeyReused` + `IdempotencyInProgress` in `api/exceptions.py`;
+three `IDEMPOTENCY_*` settings in `settings/base.py`; `SubmissionAcknowledgement`,
+`IDEMPOTENCY_SCOPE`, `_acknowledge()`, `_require_citizen()` and `_submission_fingerprint()` in
+`reporting/services.py`, with `submit_report()` rewritten around them;
+`ReportSubmitResponseSerializer` re-pointed at the dataclass; `ReportSubmitView` reads the header and
+sets `Idempotency-Replayed`. 23 tests in the new `api/tests/test_idempotency.py`, 15 added to
+`reporting/tests/test_submission.py` (whose `xfail(strict=True)` marker is deleted). **No migration.**
+Full suite **529 passed / 1 xfailed** (up from 491 / 2), mypy (131 files) / ruff (139 files) clean, no
+drift, `check --deploy` clean on `prod`.
+
+- ⚠️ **API §4.6 was amended first** (the rule, followed), and the amendment settled a real ambiguity:
+  §4.6 spoke of replaying "the original response" while §4.2's `409` row listed "idempotency replay",
+  which reads as *replay is an error*. It is not — a replay re-serves the original **`202`** and body
+  verbatim. `409` is now scoped to the two cases that genuinely conflict: the same key with a
+  *different* payload (`IDEMPOTENCY_KEY_REUSED`) and a key whose original has not finished
+  (`IDEMPOTENCY_IN_PROGRESS`). This also corrects §C3's stale "returns the original `201` result"
+  above.
+- ⚠️ **`cache.add()`, never `get()` then `set()` — this single line is the whole concurrency claim.**
+  `add()` is Redis `SETNX`: exactly one of N simultaneous callers gets `True`. A read-then-write pair
+  reads as equivalent and is not; both callers find an empty slot, both reserve, both write a Report,
+  and BR-5's double-tap ships as two rows. `test_only_one_of_two_simultaneous_callers_reserves_the_key`
+  is R-2's mandated mitigation — 8 real threads through a `threading.Barrier`, asserting exactly one
+  reservation and seven `IDEMPOTENCY_IN_PROGRESS`. **The barrier is what makes it a race**: without it
+  the threads serialize and the test passes against the broken implementation.
+- ⚠️ **That test runs against real Redis and touches no ORM, deliberately.** Overriding `CACHES` to
+  locmem would assert an atomicity guarantee the deployed system does not get from the same code
+  path — `add()`'s atomicity is a property of the *backend*. And two threads sharing a
+  `pytest-django` test transaction would deadlock long before reaching the interesting line, which is
+  why the concurrency proof lives at the store and the endpoint tests are deterministic instead.
+- ⚠️ **`complete()` runs from `transaction.on_commit`, never inline.** A completed record is a promise
+  that a row exists; writing it before commit means a rollback leaves a record that replays a
+  `reportId` for a row which never persisted — and it does so for the entire retention window, to a
+  client with no way to detect it. The visible consequence is that a concurrent double-tap gets
+  `409 IDEMPOTENCY_IN_PROGRESS` rather than a premature replay. **That is the guarantee, not an
+  artifact.** In the tests, the placement of `captureOnCommitCallbacks(execute=True)` *is* the
+  assertion: inside the block the original is still in flight, outside it has completed.
+- ⚠️ **A failed request does not consume its key** (§4.6). `release()` is called from a broad
+  `except Exception`, so a `400`, a `422` and a database error all free the key — the client's next
+  move after a validation failure is to fix the body and retry, which is a *different* fingerprint,
+  and a consumed key would answer that correction with `409 IDEMPOTENCY_KEY_REUSED` and no way
+  forward. Asserted with a corrected body precisely so a `release()` that only downgraded the record
+  would still fail.
+- ⚠️ **`submit_report()` returns a `SubmissionAcknowledgement`, not a `Report` — and that is what makes
+  "verbatim" true by construction.** §6.3 says a replay returns *this same `202` body*. A replay has
+  no live row to render: what it has is the acceptance record the original produced. Serializing a
+  `Report` on the fresh path and a stored dict on the replay path would put the two bodies in two
+  pieces of code, free to drift, with the client-visible symptom being a retry that looks like a
+  *different* submission. One dataclass through one serializer.
+- ⚠️ **The derivations moved into `_acknowledge()` because they must be evaluated at acceptance
+  time.** `issueId` (null until T4.5), `classification.state` (from `is_classified`, BR-9) and
+  `status` (read off the row) used to be `SerializerMethodField`s. By the time a replay arrives,
+  triage may have finished — re-deriving then would answer a `202` with post-acceptance state that
+  §6.3 sends clients to `GET /reports/{id}` for. A test mutates the row to `triaged`/`high`/classified
+  between the two calls and asserts the replay still reports the original.
+- ⚠️ **The fingerprint is checked *before* the state, and both states must agree.** A key bound to
+  different content is `409 IDEMPOTENCY_KEY_REUSED` whether the original finished or not: the remedy
+  (use a new key) is identical, and reporting an in-flight mismatch as `IN_PROGRESS` would tell the
+  client to retry a request that can never be honoured under that key.
+- ⚠️ **Nothing identifying reaches Redis** (NFR-12). The cache key is
+  `idempotency:<scope>:<sha256(scope|user|key)[:40]>` — the client's key is a bearer token for a
+  stored response, and anyone reading it out of `redis-cli KEYS` could replay that response; the same
+  reasoning `AuthIdentityRateThrottle` records for hashing an email. The scope stays readable so
+  operations can `SCAN` one endpoint. The stored record holds the fingerprint digest and the response
+  payload only — never the submission. A test asserts a description does not appear in its own digest.
+- ⚠️ **Comparison is on normalized values, not raw bytes** (§4.6). The fingerprint is built from the
+  post-validation service arguments — `description`/`address` stripped exactly as `create_report()`
+  strips them, the coordinate reduced to the two floats that will be stored. A client that re-sends
+  with reordered JSON keys or trailing whitespace is making the same submission; a byte-level
+  comparison would answer `409` to an ordinary retry and turn the safety net into a fault. `author` is
+  in the payload as well as the cache key — insurance against a collision or a future scope widening.
+- ⚠️ **Two TTLs, and the shorter one is not a tuning detail.** `IDEMPOTENCY_IN_PROGRESS_SECONDS` (60)
+  is the only backstop for a process killed between `reserve()` and `complete()`/`release()` — and for
+  a caller-wrapped transaction that rolls back *after* `submit_report()` returns. At retention length
+  (86 400) one crash would lock a citizen's key for a day.
+- ⚠️ **The retention window is deployment configuration, and the spec says so rather than fixing a
+  number.** `api-conventions.md` lists "idempotency-key retention window" under *not specified — do
+  not invent*. The settings carry the numbers with the T1.2/T1.8 "our policy, not spec-derived"
+  banner; §4.6 tells clients not to depend on a duration. Also recorded there: a cache flush drops
+  every held key, so replays become fresh submissions — a real operational consequence of `default`
+  being the same Redis the throttles use.
+- ⚠️ **A vanished or unreadable record reads as a fresh claim, not a `409`.** `add()` can lose to a
+  record whose TTL expires a microsecond before the read, and a deploy that changes the stored shape
+  would otherwise turn every in-flight key into an `AttributeError` — a `500` on submission, for every
+  retrying client, until the window drained. Nobody holds the key in either case, so rejecting a
+  legitimate submission is strictly worse than one duplicate in a race already outside retention. The
+  re-claim goes through `set()`, not a bare pass: without it the caller holds no record and a
+  concurrent duplicate would also find an empty slot.
+- ⚠️ **Authorization runs before the key is examined**, extending T2.1's observable ordering. A
+  non-Citizen gets `403` and learns nothing about whether that key is held — a test asserts the
+  authority path never reaches the store.
+- ⚠️ **An absent or blank key means no de-duplication, and `""` must not become a key.** Some clients
+  send an empty header for an unset value; treating that as a real key would put every such client in
+  one bucket and hand the second caller the first one's response. Inferring a key from the body was
+  rejected outright: two identical reports from one citizen are two corroborating voices (FR-16), and
+  the client is the only party that knows whether a resend is a retry or a second pothole.
+- ⚠️ **An over-long key raises rather than truncating.** Truncation aliases two distinct keys onto one
+  record — the aliasing bug, politely. It raises Django's `ValidationError`, so the handler renders
+  §4.6's `400 VALIDATION_FAILED` without this module importing DRF; the bound is read at call time,
+  not bound at import, or `override_settings` cannot reach it (the T1.8 trap).
+- ⚠️ **`IDEMPOTENCY_SCOPE = "reports.submit"` is a stored cache-key component.** Renaming it frees
+  every key currently held, so every in-flight retry becomes a fresh submission. It lives in `api/`
+  rather than `reporting/` because §4.6 governs "other duplicate-sensitive creates" too — T5.x
+  confirmations and assignment will reserve through the same store.
+- **`Idempotency-Replayed: true` is set only on a replay**, never as a `false` on the fresh path. §4.6
+  describes it as additive and as the *only* way a client or an operator reading a log can tell a
+  re-delivered acknowledgement from a first one — by design the bodies are identical. `replayed` is
+  therefore deliberately **not** declared on the response serializer; a test asserts the exact key set,
+  because a leaked fifth key would make the header redundant and the "verbatim" guarantee false.
+- **No new migration, and none was expected** — the whole mechanism is Redis-resident. A durable
+  idempotency table was considered and rejected: it would need its own retention sweep, and the
+  atomicity `add()` gets free would become a `SELECT FOR UPDATE` in the submission's hot path.
+- ❓ **Unchanged and still open:** Q9 (LLM provider) — the enqueue this task now de-duplicates still
+  reaches a stub. Q6 (EXIF) gates T2.5. FR-33 submission throttling remains **T2.9**; idempotency
+  bounds *accidental* duplication, not abuse, and must not be mistaken for a rate limit.
+
 ## C3. P2 Reporting & Media
 - T2.2: the `POST /reports` response is `202 Accepted` — the report is written synchronously, triage
   is async. The response body is the created report resource (not empty). Return immediately; do not
   wait for classification.
 - T2.3: idempotency key is checked *before* the write, in the service. A replay returns the original
-  `201` result. Key is scoped per user, stored in Redis.
+  **`202`** result — corrected from `201` when T2.3 shipped: `POST /reports` answers `202` (§6.3), and
+  a replay that returned a different status from the request it replays would not be a replay. Key is
+  scoped per user **and per operation**, stored in Redis.
 - T2.5: EXIF orientation must be applied *before* stripping — Pillow's `ImageOps.exif_transpose`
   then strip all EXIF. Never store the original EXIF-bearing file.
 - T2.1: boundary check uses PostGIS point-in-polygon (`ST_Within` or `dwithin` against the city
@@ -1564,7 +1684,8 @@ are idempotent.
       until T2.4 associates real media)
 - [x] report submitted → `202` immediately, triage enqueued (T2.2 — ⚠️ `transaction.on_commit`;
       ⚠️ unthrottled until T2.9; the *photo* half of this gate line is T2.4/T2.5)
-- [ ] duplicate submits are idempotent (T2.3)
+- [x] duplicate submits are idempotent (T2.3 — ⚠️ `cache.add()` atomicity is the concurrency claim;
+      ⚠️ failed requests do not consume their key)
 - [ ] photo stored with EXIF stripped (T2.5 — ❓Q6)
 - [ ] citizen can retrieve own reports (T2.7)
 

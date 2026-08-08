@@ -77,6 +77,32 @@ class OutOfCity(APIException):
     default_code = "OUT_OF_CITY"
 
 
+class IdempotencyKeyReused(Conflict):
+    """`409 IDEMPOTENCY_KEY_REUSED` — the key is bound to a *different* submission (§4.6, T2.3).
+
+    ⚠️ **Reuse is refused rather than replayed, and that is the whole point of storing a request
+    fingerprint.** Replaying the first result for a second, different body would answer `202` to a
+    submission the server never recorded — silent data loss, and the citizen has no way to detect
+    it. The client's remedy is a fresh key, which is why this is worth a distinct code.
+    """
+
+    default_detail = "This Idempotency-Key was already used for a different request."
+    default_code = "IDEMPOTENCY_KEY_REUSED"
+
+
+class IdempotencyInProgress(Conflict):
+    """`409 IDEMPOTENCY_IN_PROGRESS` — the original request holding this key has not finished.
+
+    ⚠️ **Distinct from `IdempotencyKeyReused` because the remedy is opposite**: retry the same
+    request shortly, rather than change the key. One generic `CONFLICT` for both would leave a
+    client either giving up on a submission that is about to succeed, or retrying forever against a
+    key it must abandon.
+    """
+
+    default_detail = "A request with this Idempotency-Key is still being processed."
+    default_code = "IDEMPOTENCY_IN_PROGRESS"
+
+
 class InvalidCredentials(APIException):
     """`401 UNAUTHENTICATED` — the generic login failure (API §6.1).
 
