@@ -96,6 +96,52 @@ def test_django_exceptions_are_translated_not_leaked() -> None:
     assert handle(DjangoValidationError("nope")).status_code == http_status.HTTP_400_BAD_REQUEST
 
 
+def test_a_service_raised_field_error_keeps_its_field_name() -> None:
+    """⚠️ **`exc.message_dict`, not `exc.messages`** — found in T2.6, and it was a live contract gap.
+
+    `services.py` raises Django's `ValidationError({"field": "..."})` rather than DRF's (Arch §3.1),
+    and `.messages` flattens a mapping to a bare list of its values. So every dict-shaped service
+    error rendered as a §4.1 `details` entry with **no `field` key at all** — the client got the
+    right status and no way to know which input to fix. It went unnoticed because the field name in
+    T2.2's tests came from the *serializer*, where the camelCase layer supplies it.
+    """
+    exc = DjangoValidationError({"category": "'bridges' is not an active category."})
+
+    details = handle(exc).data["error"]["details"]
+
+    assert len(details) == 1
+    assert details[0]["field"] == "category"
+    assert details[0]["message"] == "'bridges' is not an active category."
+
+
+def test_a_service_raised_field_name_is_camel_cased() -> None:
+    """⚠️ The other half of the same fix: no serializer is in the loop for a service-raised error.
+
+    A service's dict keys are `snake_case` — they name model columns and function parameters — so
+    `media_ids` would otherwise reach a contract that says `mediaIds` (§1.2). The keys are field
+    names rather than content, which is what makes rewriting them safe.
+    """
+    exc = DjangoValidationError({"media_ids": "A report may carry at most 5 photos."})
+
+    assert handle(exc).data["error"]["details"][0]["field"] == "mediaIds"
+
+
+def test_a_list_shaped_service_error_does_not_crash_the_handler() -> None:
+    """⚠️ `hasattr(exc, "error_dict")` is the documented discriminator, and it has to be.
+
+    Django only sets `error_dict` when the exception was built from a mapping; reading
+    `.message_dict` on a list-shaped one raises `AttributeError` **from inside the error handler**,
+    which turns a tidy `400` into an unhandled `500` on the error path itself.
+    """
+    response = handle(DjangoValidationError(["Something was wrong.", "And another thing."]))
+
+    assert response.status_code == http_status.HTTP_400_BAD_REQUEST
+    details = response.data["error"]["details"]
+    assert len(details) == 2
+    # No field to name — §4.1 omits the key rather than inventing one.
+    assert "field" not in details[0]
+
+
 def test_validation_details_are_flat_with_field_issue_and_message() -> None:
     """API §4.1's `details` is a flat array of `{field, issue, message}`.
 

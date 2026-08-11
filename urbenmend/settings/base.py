@@ -255,6 +255,58 @@ AWS_QUERYSTRING_AUTH = True  # Presigned URLs for private objects (FR-7, NFR-12)
 AWS_QUERYSTRING_EXPIRE = 3600  # 1 hour.
 
 # --------------------------------------------------------------------------------------
+# Photo upload limits (T2.4/T2.5, FR-7, API §6.4)
+# --------------------------------------------------------------------------------------
+# ⚠️ **Our policy, not spec-derived.** FR-7 says "enforce size/type limits" and §6.4 names the
+# statuses (`413`, `415`) without fixing a number, so these are defensible defaults kept in config
+# (NFR-11) — the same resolution T1.2 took for the verification-code policy and T1.8 for the
+# throttle rates. Raise them in `docs/04-api-specification.md` if they ever become a contract.
+
+# 10 MiB. A modern phone camera JPEG is 2–6 MiB, so this accepts an unmodified photo from the
+# devices PRD §5.2 targets while bounding what one request can push through the API pod.
+# ⚠️ Django's own `DATA_UPLOAD_MAX_MEMORY_SIZE` does NOT bound a file upload — it exempts
+# `request.FILES` — so without this check there is no size limit at all.
+MEDIA_MAX_UPLOAD_BYTES = env.int("MEDIA_MAX_UPLOAD_BYTES", default=10 * 1024 * 1024)
+
+# ⚠️ **An allowlist of formats we can actually re-encode, not a blocklist of dangerous ones.**
+# The values are Pillow format names, checked against what Pillow *detects*, never against the
+# client's `Content-Type` header — a `.php` renamed to `.jpg` arrives with an image content type and
+# only the decoder can tell. SVG is absent deliberately: it is a script container, not a raster
+# photo, and Pillow cannot strip anything from it.
+MEDIA_ALLOWED_IMAGE_FORMATS = env.list(
+    "MEDIA_ALLOWED_IMAGE_FORMATS", default=["JPEG", "PNG", "WEBP"]
+)
+
+# Longest edge of the stored image, in pixels. 2048 is enough for an Authority to read a house
+# number off a photo on a desktop screen; beyond it the bytes buy nothing an operator can use
+# (FR-7 "server-side compression").
+MEDIA_MAX_DIMENSION = env.int("MEDIA_MAX_DIMENSION", default=2048)
+
+# Longest edge of the thumbnail (FR-7). Sized for the Authority queue and map popups, where the
+# whole point is that a list of 50 issues does not download 50 full photos (NFR-1).
+MEDIA_THUMBNAIL_DIMENSION = env.int("MEDIA_THUMBNAIL_DIMENSION", default=320)
+
+# JPEG/WebP quality for both derivatives. 82 is the usual "no visible artefacts" floor.
+MEDIA_IMAGE_QUALITY = env.int("MEDIA_IMAGE_QUALITY", default=82)
+
+# BR-3 needs at least one photo; nothing needs fifty. A cap keeps one report from turning the
+# Authority queue into a gallery, and bounds the work T2.6's attach step does in one transaction.
+MEDIA_MAX_PER_REPORT = env.int("MEDIA_MAX_PER_REPORT", default=5)
+
+# --------------------------------------------------------------------------------------
+# Report search limits (T2.7, API §6.3)
+# --------------------------------------------------------------------------------------
+# ⚠️ **Our policy, not spec-derived.** §6.3 documents `?nearLng=&nearLat=&radiusM=` without bounding
+# the radius. This is a defensible default kept in config (NFR-11), like the media limits above.
+#
+# ⚠️ **Uncapped, `radiusM` is a free full-table spatial scan on a public-shaped read.** A radius
+# larger than the planet makes `ST_DWithin` match every row, so the GiST index (T2.1) stops helping
+# and the sort runs over the whole table on every request. 50 km bounds a search to "the whole
+# city with room to spare" — Dhaka's metropolitan area is roughly 30 km across, and UrbanMend serves
+# one city (PRD §11), so a larger value cannot express a question about *this* deployment.
+REPORT_SEARCH_MAX_RADIUS_M = env.int("REPORT_SEARCH_MAX_RADIUS_M", default=50_000)
+
+# --------------------------------------------------------------------------------------
 # Django REST Framework
 # --------------------------------------------------------------------------------------
 # API conventions (API §1.2, T0.6).
@@ -320,6 +372,60 @@ AUTH_THROTTLE_RATES = {
     "auth_identity": env("AUTH_THROTTLE_RATE_IDENTITY", default="5/15m"),
     # Per-session, for auth actions taken with a session already in hand.
     "auth_user": env("AUTH_THROTTLE_RATE_USER", default="20/15m"),
+}
+
+# --------------------------------------------------------------------------------------
+# Submission rate limiting (T2.9, FR-33, API §4.5)
+# --------------------------------------------------------------------------------------
+# ⚠️ **A separate dict from `AUTH_THROTTLE_RATES`, and not a rename of it.** The auth buckets are
+# sized for credential guessing — five attempts a quarter hour. Borrowing them here would cut off a
+# citizen photographing one flooded street after their fifth photo, so the two policies must be
+# tunable independently by an operator reading settings. `ScopedWindowRateThrottle` merges both
+# dicts by scope name, which is why the scopes are prefixed (`auth_*` / `submit_*`).
+#
+# ⚠️ **Also our policy, not spec-derived.** §4.5 requires "tighter buckets on … report submission
+# (spam, FR-33)" and NFR-13 caps LLM cost, but neither fixes a number, and `api-conventions.md`
+# lists "numeric rate limits and windows" under "do not invent". Same resolution as T1.2 and T1.8:
+# defensible values, in config (NFR-11), labelled as chosen.
+#
+# ⚠️ **Every request counts, including one the endpoint then rejects.** DRF consumes the bucket in
+# `allow_request()`, before the handler runs, so an out-of-city or malformed submission spends
+# budget. That is correct for FR-33 — serving garbage costs the same as serving a real report — and
+# it is why these windows are hours rather than minutes.
+#
+# ⚠️ **An idempotent replay also spends budget.** Exempting it would mean doing the §4.6 lookup
+# inside a throttle's `get_cache_key()`, i.e. moving idempotency into the throttle layer. The
+# `RateLimit-Remaining` header (§4.5) is the client's signal instead, and a retry burst is nowhere
+# near these limits.
+SUBMISSION_THROTTLE_RATES = {
+    # Per-account, `POST /reports`. One report every three minutes, sustained for an hour, is far
+    # above what a citizen walking a neighbourhood produces and far below what makes a spam script
+    # worth writing. This is also the per-account LLM cost ceiling (NFR-13/RISK-3): triage runs once
+    # per accepted report, so 20/h bounds what one account can spend.
+    "submit_report": env("SUBMISSION_THROTTLE_RATE_REPORT", default="20/1h"),
+    # Per-account, `POST /media`.
+    #
+    # ⚠️ **Deliberately NOT `MEDIA_MAX_PER_REPORT × submit_report`.** Making the report bucket the
+    # binding one at sustained volume would leave the *expensive* endpoint effectively unlimited —
+    # each upload costs a decode, a re-encode and a storage write, while a report costs one INSERT.
+    # So at 60/h the upload bucket binds first for photo-heavy use (twelve five-photo reports an
+    # hour) and the report bucket binds for text-only use. A single submission always fits inside
+    # both (5 ≤ 60, 1 ≤ 20); only sustained volume meets either.
+    "submit_media": env("SUBMISSION_THROTTLE_RATE_MEDIA", default="60/1h"),
+    # Per-IP, and **shared by both endpoints** — 5 photos plus their report spend 6. That is what
+    # makes it the Sybil bucket PRD §T3 asks for: a farm of fresh accounts has a fresh per-account
+    # bucket each time, but the address does not change.
+    #
+    # ⚠️ **Sized for NAT, not for one household.** Mobile-carrier NAT in Bangladesh can put many
+    # citizens behind one address (the tension `auth_anon` above already records), and a per-IP
+    # submission limit that is too tight silences a whole neighbourhood during exactly the event —
+    # a flood, a collapse — that produces a legitimate burst.
+    #
+    # ⚠️ **This bucket never sees anonymous traffic.** DRF's `initial()` runs `check_permissions()`
+    # before `check_throttles()` (verified against the installed source), and both endpoints are
+    # `IsAuthenticated`, so an anonymous flood is answered `401` before any counter moves. It costs
+    # no rows, no bytes and no LLM calls, so there is nothing here to protect.
+    "submit_ip": env("SUBMISSION_THROTTLE_RATE_IP", default="120/1h"),
 }
 
 # --------------------------------------------------------------------------------------

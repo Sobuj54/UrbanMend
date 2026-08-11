@@ -167,6 +167,22 @@ Uniform envelope for all errors:
 - Response headers on every limited endpoint: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`; `429` includes `Retry-After`.
 - Exceeding LLM cost/rate caps does **not** fail submission — triage degrades to the keyword fallback (FR-13a); the API still returns `202`.
 
+**Which endpoints are limited** (amended 2026-08-11, T2.9 — the doc named "report submission" without saying whether the photo route was included):
+
+| Endpoint | Buckets |
+|---|---|
+| `POST /auth/login`, `/auth/verify`, `/auth/register`, `/auth/2fa/*` | per-IP, per-identifier, per-session as applicable (FR-4) |
+| `POST /reports` | per-account **and** per-IP |
+| `POST /media` | per-account **and** per-IP |
+| everything else | unlimited beyond the platform default |
+
+- ⚠️ **`POST /media` is limited, and `GET /reports`, `GET /reports/{id}`, `GET /media/{id}` are not.** FR-33 is about submission. An upload is the most expensive request a citizen can make (decode, re-encode, storage write, worker job); a read is one indexed query, and limiting it would degrade the map and the authority queue for a legitimately busy operator.
+- ⚠️ **The per-IP bucket is shared between `POST /reports` and `POST /media`.** A five-photo report spends six units of it. This is the Sybil control (PRD §T3): a per-account bucket resets with every new registration, but the source address does not. A client may therefore see `429` on `POST /reports` as a consequence of its own uploads — `RateLimit-Remaining` reflects whichever bucket has least headroom, so it is the value to respect.
+- ⚠️ **A request that the endpoint then rejects still consumes its bucket**, including `422 OUT_OF_CITY`, `400 VALIDATION_FAILED` and `413`/`415` on upload. Serving invalid content is not cheaper than serving valid content, and exempting failures would make the limit apply only to legitimate use.
+- ⚠️ **An idempotent replay (§4.6) also consumes its bucket**, even though it creates nothing. A retry burst is far below these limits; clients that poll a key aggressively should read `RateLimit-Remaining` rather than assume replays are free.
+- **The numeric limits and windows are deployment configuration, not contract** — the same status §4.6 gives the idempotency retention window. Clients must read the `RateLimit-*` headers rather than hard-code a rate, and must treat `429` as retryable after `Retry-After`.
+
+
 ### 4.6 Idempotency
 `POST /reports` (and other duplicate-sensitive creates) accept `Idempotency-Key`. Keys are scoped **per user and per operation**, and retained for a bounded window.
 
@@ -407,6 +423,11 @@ public Issue history keeps a stable author reference (C-14).
 }
 ```
 - **Validation:** location required (BR-2); at least one of {media, adequate description} (BR-3); location must be inside city boundary (BR-35, `422 OUT_OF_CITY`); category (if given) must be in taxonomy (C-2).
+
+**`mediaIds` constraints** (amended 2026-08-11, T2.4/T2.6 — the field was listed without saying what makes an id usable, so a client could only discover these by hitting them):
+  - Each id must be **owned by the caller**, **not already attached** to another report, and not removed by moderation. Attachment is **single-use**: an id spent on one report cannot be reused on another.
+  - A report may carry **at most `MEDIA_MAX_PER_REPORT` photos** (deployment configuration, default 5 — not contract). Exceeding it is `VALIDATION_FAILED` on this request, not on the upload — the cap is a property of the *report*, and `POST /media` cannot know which report a handle is destined for.
+  - Any unusable id fails the whole submission rather than being silently dropped: a citizen who photographed a flooded street and got a report with no photos would have no way to tell. Repeating the same id *within one request* is not an error — duplicates collapse and count once.
 - **Response `202`:**
 ```json
 { "reportId":"rep_123", "status":"processing", "issueId": null,
@@ -425,26 +446,43 @@ An `Idempotency-Key` **replay returns this same `202` body verbatim** — the ac
 ```json
 { "id":"rep_123", "authorId":"usr_x", "description":"…",
   "location": { "lng":90.399, "lat":23.777, "address":"…" },
-  "media":[{ "id":"media_abc","thumbnailUrl":"…","state":"ready" }],
+  "media":[{ "id":"media_abc","state":"ready","url":"…","thumbnailUrl":"…" }],
   "classification": { "category":"roads","severitySignal":"high","confidence":0.92,"source":"llm" },
   "issueId":"iss_456", "status":"triaged", "createdAt":"…" }
 ```
+`media[]` entries are the **same four-key media resource** §6.4 returns, so a client has one shape to
+parse wherever a photo appears. `url` and `thumbnailUrl` are both `null` until the derivative worker
+finishes (`state: "processing"`); entries removed by moderation are **omitted from the array**, not
+listed with a `removed` state — the array is the public view, and §6.13 governs the removal.
+
+`classification` is **always present**, with all four values `null` before triage (BR-9 makes an
+unclassified report valid). A citizen's optional `category` hint fills `category` alone and leaves
+`severitySignal`, `confidence` and `source` null — a hint is not a classification.
 - **Errors:** `404`, `410` (moderated), `FORBIDDEN`, standard.
 
 #### `GET /reports`
 - **Purpose:** List **own** reports for tracking (FR-1 transparency); Authority/Admin variants via scope.
-- **Auth:** Session.
-- **Authorization:** Citizen → own only; Authority → in-scope; Admin → all.
+- **Auth:** Session. Unlike `GET /reports/{id}`, this endpoint is **not public** — the collection is defined by its caller, so there is no anonymous reading of it.
+- **Authorization:** Citizen → own only; Authority → in-scope; Admin → all. Reports removed or hidden by moderation are excluded for **every** role. An unclassified report has no category and is therefore in no Authority's scope.
 - **Params:** `?status=&category=&q=&nearLng=&nearLat=&radiusM=` + pagination; `sort` default `-createdAt`.
-- **Response `200`:** collection.
+  - `status` and `category` take comma-separated values, each checked against its allowlist; an unknown value is `400`, not an empty page. A **retired** category is still filterable — reports classified before the retirement stay findable.
+  - `nearLng`, `nearLat` and `radiusM` are **all-or-nothing**: a partial triple is `400` rather than a silently unfiltered list. `radiusM` is in metres and capped server-side (`REPORT_SEARCH_MAX_RADIUS_M`; an uncapped radius is a full spatial scan).
+  - `sort` allowlist: `-createdAt` (default) and `createdAt`.
+- **Response `200`:** collection of the `GET /reports/{id}` resource, in the `{data, page, meta}` envelope (§1.3).
 - **Errors:** standard.
 
 #### `PATCH /reports/{id}`
 - **Purpose:** Limited edits **before triage** (description/category correction), and citizen category override at submission (FR-11).
 - **Auth:** Session. **Authorization:** Author, **only while pre-triage** (BR: report edit constrained); Authority/Admin may re-categorize (FR-11).
+  - The **author** may change `description` and `category`, and only while the report is pre-triage — afterwards it may already be clustered into an Issue an Authority is working, so the edit is `409 NOT_EDITABLE`.
+  - An **Authority in scope**, or an **Admin**, may re-categorize **at any time** — that correction path is what FR-11 exists for. They may **not** change `description`: it is the citizen's account of what they saw, and an official rewriting it is not a correction (`403`). An **unclassified** report has no category and is therefore in no Authority's scope (`403`); Admins bypass scope.
 - **Body:** `{ "description":"…", "category":"water_drainage" }`
-- **Response `200`.**
-- **Errors:** `409 NOT_EDITABLE` (already triaged), `422`, `FORBIDDEN`, standard.
+  - Partial: send only what changes. An **empty body is `400`**, not a `200` no-op. Unknown fields are **refused**, not ignored.
+  - **No `severity` field.** FR-11's "re-severity" is an **Issue-level** Authority override (§6.5) — severity never lives on a Report — so sending one here is `400` rather than a silent `200`.
+  - `category` is a slug from the **active** taxonomy; an unknown or retired slug is `400`. `null` is refused: clearing a category is a request to re-run triage, which this endpoint does not do.
+  - BR-3 is **re-checked** against the photos the report still has, so blanking the description of a report whose only photo was removed by moderation is `400`.
+- **Response `200`:** the `GET /reports/{id}` resource. A human correction sets `classification.source` to `"citizen"` (author) or `"authority"` (Authority **or** Admin) and leaves `severitySignal` and `confidence` untouched.
+- **Errors:** `409 NOT_EDITABLE` (already triaged), `400 VALIDATION_FAILED`, `403 FORBIDDEN`, `404`, `410` (moderated), standard. There is no reachable `422` on this endpoint — the only business-rule `422` in this resource is `OUT_OF_CITY`, and `PATCH` accepts no location.
 
 > Reports are not deleted by citizens; removal is a moderation action on the Issue/Report by Admin (FR-31) — see §6.13.
 
@@ -457,6 +495,13 @@ An `Idempotency-Key` **replay returns this same `202` body verbatim** — the ac
 - **Auth:** Session required (Q4 RESOLVED: login required).
 - **Authorization:** Citizen.
 - **Request:** `multipart/form-data` with `file`. Enforce size/type limits (FR-7).
+
+**Limits** (amended 2026-08-11, T2.4 — FR-7 said "enforce size/type limits" without naming them, leaving a client no way to pre-validate or to tell the three rejections apart):
+  - **Size:** `413 PAYLOAD_TOO_LARGE` above `MEDIA_MAX_UPLOAD_BYTES` (deployment configuration, default 10 MiB — not contract). An **empty** part is `VALIDATION_FAILED`, not `413`: nothing was uploaded, so "take the photo again" would be the wrong instruction.
+  - **Type:** `415 UNSUPPORTED_MEDIA_TYPE` when the image is read successfully and its format is outside `MEDIA_ALLOWED_IMAGE_FORMATS` (default JPEG/PNG/WEBP) — e.g. a valid GIF or TIFF. The response names the accepted formats.
+  - **Readability:** `422` when the bytes cannot be read as an image at all — a renamed PDF or executable, or a permitted format that is corrupt or truncated.
+  - ⚠️ **The format is taken from the decoded image, never from `Content-Type` or the filename.** A correct JPEG mislabelled `image/png` is accepted; a `.jpg` that is really a PDF is `422` (nothing identified it as an image), not `415`. So the split a client should code against is *"we recognize this format and do not accept it"* (`415`, convert it) versus *"we could not read this"* (`422`, re-capture it).
+  - One upload is one photo. There is no batch form; the per-report cap is enforced at attachment time (§6.3).
 - **Response `202`:**
 ```json
 { "id":"media_abc", "state":"processing", "thumbnailUrl": null }

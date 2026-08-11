@@ -22,6 +22,7 @@ Applying the rename at the serializer boundary keeps it to fields this project d
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from rest_framework import serializers
@@ -43,7 +44,7 @@ def to_snake_case(value: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value).lower()
 
 
-def _camelize_error_detail(detail: Any) -> Any:
+def camelize_error_detail(detail: Any) -> Any:
     """Rename the field keys inside a DRF `ValidationError.detail`, at any depth.
 
     ⚠️ **Leaves are returned untouched, and that is load-bearing.** DRF's `ErrorDetail` is a `str`
@@ -58,10 +59,10 @@ def _camelize_error_detail(detail: Any) -> Any:
     """
     if isinstance(detail, dict):
         return {
-            to_camel_case(str(key)): _camelize_error_detail(value) for key, value in detail.items()
+            to_camel_case(str(key)): camelize_error_detail(value) for key, value in detail.items()
         }
     if isinstance(detail, list):
-        return [_camelize_error_detail(item) for item in detail]
+        return [camelize_error_detail(item) for item in detail]
     return detail
 
 
@@ -107,7 +108,7 @@ class CamelCaseSerializerMixin:
         try:
             return super().run_validation(data)  # type: ignore[misc]
         except serializers.ValidationError as exc:
-            raise serializers.ValidationError(_camelize_error_detail(exc.detail)) from exc
+            raise serializers.ValidationError(camelize_error_detail(exc.detail)) from exc
 
 
 class CamelCaseSerializer(CamelCaseSerializerMixin, serializers.Serializer[Any]):
@@ -116,3 +117,53 @@ class CamelCaseSerializer(CamelCaseSerializerMixin, serializers.Serializer[Any])
 
 class CamelCaseModelSerializer(CamelCaseSerializerMixin, serializers.ModelSerializer[Any]):
     """Model serializer with the rename applied. The default base for API resources."""
+
+
+def reject_unknown_fields(
+    # ⚠️ `Serializer`, not `BaseSerializer`: `fields` is declared on the former. The wider annotation
+    # reads as more accommodating and is simply wrong — a `ListSerializer` or a bare `BaseSerializer`
+    # has no `fields`, so accepting one here would be an `AttributeError` at runtime.
+    serializer: serializers.Serializer[Any],
+    *,
+    extra_allowed: Iterable[str] = (),
+    message: str = "This field is not accepted by this endpoint.",
+) -> None:
+    """Refuse keys the endpoint does not declare, instead of silently dropping them.
+
+    Call from a serializer's `validate()`. Raises DRF's `ValidationError` — a `400` with one
+    `details[]` entry per unknown key (API §4.1).
+
+    ⚠️ **DRF's default is to discard unknown keys, and the failure that causes is a silent success.**
+    `POST /reports {"severity": "critical"}` answers `202` and the citizen believes they filed a
+    Critical report; `PATCH /users/me {"role": "admin"}` answers `200`. Every field adjacent to these
+    bodies is derived data that api-conventions.md makes read-only to all clients, so "ignored" and
+    "accepted" are indistinguishable to the caller.
+
+    ⚠️ **A function, not a mixin.** Three serializers need this rule and a fourth (T1.9's
+    `ProfileUpdateSerializer`) already carries its own copy — but a mixin would have to sit at a
+    fixed place in the MRO relative to `CamelCaseSerializerMixin` to see the renamed keys, and
+    getting that order wrong fails open rather than loudly. One call in one `validate()` cannot be
+    mis-ordered.
+
+    ⚠️ **Both spellings are allowed, and that is not belt-and-braces.**
+    `CamelCaseSerializerMixin.to_internal_value()` has already rewritten the keys by the time
+    `validate()` runs, while `initial_data` keeps the client's originals — so comparing against
+    `serializer.fields` alone would flag the caller's own `mediaIds` as an unknown field.
+
+    ⚠️ **`extra_allowed` exists for keys that are real but belong to another layer** — `?limit=` and
+    `?cursor=` are the paginator's, not the serializer's, and a query serializer that refused them
+    would make every second page a `400`.
+
+    The trade-off, stated rather than hidden: a client written against a *newer* additive field gets
+    a `400` from this server instead of having it ignored. Additive fields must be declared as they
+    ship, which is required for them to work at all.
+    """
+    # ⚠️ `.keys()`, not iteration: DRF's `BindingDict` yields names at runtime but its stubs type
+    # `__iter__` as yielding `Field`, so plain iteration type-checks and then compares the wrong
+    # objects.
+    declared = {str(name) for name in serializer.fields.keys()}  # noqa: SIM118
+    allowed = declared | {to_camel_case(name) for name in declared} | set(extra_allowed)
+    submitted = set(serializer.initial_data) if isinstance(serializer.initial_data, dict) else set()
+
+    if unknown := sorted(submitted - allowed):
+        raise serializers.ValidationError(dict.fromkeys(unknown, message), code="VALIDATION_FAILED")

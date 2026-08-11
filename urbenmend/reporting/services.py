@@ -36,7 +36,7 @@ write (a fixture, a management command, T2.4's media backfill) must not need a k
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from django.contrib.gis.geos import Point
@@ -44,12 +44,25 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 
 from urbenmend.api import idempotency
-from urbenmend.api.exceptions import OutOfCity
+from urbenmend.api.exceptions import Conflict, OutOfCity
 from urbenmend.classification.models import Category, CategoryStatus
 from urbenmend.classification.tasks import classify_report
 from urbenmend.geo.selectors import is_within_city
 from urbenmend.identity.models import Role, User
+from urbenmend.identity.services import has_role, require_category_scope
+
+# ⚠️ **`media` imports `reporting` only under `TYPE_CHECKING`, which is what makes this direction
+# safe** — `media/models.py` names the FK as the string `"reporting.Report"` and `media/services.py`
+# keeps its `Report` annotation behind the guard. Reversing that (a runtime `from urbenmend.reporting
+# ... import` in `media`) would turn this line into an import cycle that only fails once Django loads
+# the app registry, i.e. at container start rather than in any single test module.
+from urbenmend.media import selectors as media_selectors
+from urbenmend.media import services as media_services
 from urbenmend.reporting.models import ClassificationSource, Report, ReportStatus
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from uuid import UUID
 
 logger = structlog.get_logger(__name__)
 
@@ -173,11 +186,16 @@ def _resolve_category(slug: str | None) -> Category | None:
 def validate_report_content(*, description: str, media_count: int) -> None:
     """BR-3 — at least one of {photo, adequate description} (FR-5).
 
-    ⚠️ **`media_count` is passed in rather than counted here.** The `media` app does not exist
-    until T2.4, and at intake the media rows are not yet attached to the report anyway — the
-    client pre-uploads and sends `mediaIds` (API §6.3), so the count is only knowable to the
-    caller. T2.6 wires the real number through; until then a caller supplying `0` gets the
-    description rule, which is the honest answer for a text-only submission.
+    ⚠️ **`media_count` is passed in rather than counted here, and T2.6 did not change that.** At
+    intake the media rows are not yet attached to the report — the client pre-uploads via §6.4 and
+    sends `mediaIds` (§6.3) — so the count is only knowable *before* the report exists. T2.6 wires
+    the real number: `submit_report()` resolves the ids through
+    `media.services.resolve_media_for_attachment()`, which proves each one is real, owned by this
+    citizen and not already attached, and hands back the count this rule reads.
+
+    Keeping the parameter rather than querying `report.media` is what makes BR-3 checkable before
+    the write. A caller supplying `0` gets the description rule, which is the honest answer for a
+    text-only submission.
     """
     if media_count > 0:
         return
@@ -264,6 +282,191 @@ def create_report(
     )
 
 
+def _human_classification_source(actor: User) -> str:
+    """Which `ClassificationSource` a human correction records (FR-11).
+
+    ⚠️ **An Admin records `AUTHORITY`, and the enum has no `ADMIN` member on purpose.** What this
+    column answers is "who decided this category" at the granularity the pipeline cares about:
+    the LLM, its fallback, the reporting citizen, or **a human official**. PRD §4.2 gives Admin every
+    Authority capability, so an Admin re-categorizing is doing the Authority's job — and adding a
+    fifth member would silently divide the "a human official set this" set in two, so every future
+    query that has to exclude human decisions (T3.5's, below) would need updating and would fail open
+    if it were not.
+    """
+    return (
+        ClassificationSource.CITIZEN
+        if actor.role == Role.CITIZEN
+        else ClassificationSource.AUTHORITY
+    )
+
+
+def update_report(
+    *,
+    actor: User,
+    report: Report,
+    description: str | None = None,
+    category_slug: str | None = None,
+) -> Report:
+    """`PATCH /reports/{id}` — the pre-triage edit and the human re-categorization (T2.8, FR-11).
+
+    Two callers with two different rights, and §6.3 grants them separately:
+
+    * **The author**, and *only while pre-triage*, may correct `description` and `category`. Past
+      triage the answer is `409 NOT_EDITABLE`: the report has been classified and may already be
+      clustered into an Issue an Authority is working, so rewriting the text underneath them would
+      change what was triaged without re-triaging it.
+    * **An Authority in scope, or an Admin**, may **re-categorize at any time** — that is the whole
+      point of FR-11's correction path, which exists precisely because the LLM gets some wrong. They
+      may not touch `description`: it is the citizen's own account of what they saw, and an official
+      editing it is not a correction, it is a rewrite of evidence.
+
+    ⚠️ **`None` means "not sent", which is why neither field accepts `null` at the HTTP layer.**
+    `PATCH` is partial (api-conventions.md), so absence has to be expressible — and `description=""`
+    is a real value a client may send (BR-3 lets a photo carry the report). `ReportPatchSerializer`
+    refuses an explicit `null` for both fields, which is what makes this collapse unambiguous:
+    clearing a category is not an edit, it is a request to re-run triage, and this endpoint does not
+    do that.
+
+    ⚠️ **No `severity` parameter, and its absence is the contract.** FR-11 also says authorities may
+    "re-severity" — but severity lives on the **Issue**, never on the Report (data-model "Ownership &
+    Permissions"; CLAUDE.md), so that override is §6.5's, not this one's. A `severity` key in the body
+    is refused `400` by `reject_unknown_fields()` rather than dropped: dropping it would answer `200`
+    to an Authority who believed they had just escalated a Critical report.
+
+    ⚠️ **`classified_at` is deliberately NOT stamped by a human correction, and this is the trap.**
+    Stamping it would look like an improvement — `is_classified` becomes true, so T3.5's worker skips
+    the report and cannot revert the official's decision. What it actually produces is a report that
+    *reads* as triaged while `severity_signal` is still `NULL`, and `SEVERITY_RANK[None]` raises
+    inside BR-11's `max()` when T4.6 computes the Issue's severity. The report would be a landmine
+    planted in a code path that does not exist yet.
+
+    ⚠️ **So the protection T3.5 must implement is on `classification_source`, not on
+    `classified_at`:** the triage worker must not overwrite the `category` of a report whose source is
+    `ClassificationSource.AUTHORITY` (`_human_classification_source()` above is why an Admin lands
+    there too). `CITIZEN` carries no such protection — §6.3 is explicit that a citizen's category is
+    "a hint only" and FR-10 has the LLM decide.
+
+    Raises:
+        AuthorizationError: `403 FORBIDDEN` — an Authority outside the report's category scope.
+        PermissionDenied: `403 FORBIDDEN` — a citizen who is not the author, or an official trying to
+            edit the description.
+        Conflict: `409 NOT_EDITABLE` — the author editing a report past triage, or any caller
+            reaching a moderated row.
+        ReportValidationError: `400 VALIDATION_FAILED` — an unknown or retired category slug, or an
+            edit that would leave the report with neither a photo nor an adequate description (BR-3).
+
+    ⚠️ **The moderation guard is unreachable from the endpoint and is kept anyway.**
+    `ReportDetailView` routes through `get_report_for_read()`, which raises `410` for a hidden or
+    removed report before this function is called. A management command holding a `Report` does not,
+    and without the guard an Authority could re-categorize suppressed content back into a live
+    queue — FR-31 undone by a code path nobody was looking at.
+
+    ⚠️ **No `select_for_update`, and last-write-wins is the intended semantics here.** Two officials
+    re-categorizing the same report concurrently are both making a correction; the second one's is
+    the current answer. Locking the row would serialize a queue for no correctness gain, and the
+    `updated_at` bump plus the FR-11 log line record both attempts.
+    """
+    if report.status in {ReportStatus.HIDDEN, ReportStatus.REMOVED}:
+        raise Conflict("This report has been removed and can no longer be edited.")
+
+    is_author = report.author_id == actor.pk
+    official = has_role(actor, Role.AUTHORITY, Role.ADMIN)
+
+    if official:
+        # ⚠️ **`403`, not the usual `404`-to-see for an out-of-scope Authority.** T1.5's rule is that
+        # a scoped *read* answers `404` so a `403` cannot confirm an id exists elsewhere — but
+        # `GET /reports/{id}` is **public** (Q7), so this report's existence is not a secret this
+        # endpoint could keep. A `404` here would be a lie the same client disproves with one `GET`,
+        # and §6.3's error list for `PATCH` names `FORBIDDEN`.
+        #
+        # ⚠️ An **unclassified** report has no category, so no Authority is in scope for it and this
+        # raises for all of them. That is consistent with `list_reports()` — a report nobody has
+        # categorized belongs to no department — and Admins bypass it, as `has_category_scope()`
+        # documents. The un-triaged backlog is T3.5's to clear, not an Authority's to claim.
+        if report.category is None:
+            raise PermissionDenied("This report has not been categorized yet.")
+        require_category_scope(actor, report.category)
+        if description is not None:
+            raise PermissionDenied("Only the author may edit a report's description.")
+    elif not is_author:
+        # ⚠️ Deliberately the same generic `403` an official gets, and it names neither the role nor
+        # the reason (T1.5: "denial messages name neither role nor resource").
+        raise PermissionDenied("You do not have permission to edit this report.")
+    elif not report.is_editable:
+        # ⚠️ §6.3's own code, not the generic `CONFLICT`. "Already triaged" is a state a client can
+        # act on — stop offering the edit affordance — while `CONFLICT` is indistinguishable from a
+        # duplicate submission.
+        raise Conflict(
+            "This report has already been triaged and can no longer be edited.",
+            code="NOT_EDITABLE",
+        )
+
+    changed: list[str] = []
+    # ⚠️ Read through the object rather than the `category_id` column, and read it **before** the
+    # mutation below — FR-11's log wants the *pair* (what was there, what the human chose), and after
+    # the assignment the old slug is gone. Going through `category` costs nothing extra: Django
+    # answers `None` for a `NULL` FK without touching the database, and it is the only spelling a
+    # type-checker can narrow (the id column tells it nothing about the relation being non-`None`).
+    previous_category = report.category
+    previous_slug = previous_category.slug if previous_category else None
+
+    if description is None and category_slug is None:
+        # ⚠️ **Checked *after* authorization, not before.** A caller who may not edit this report must
+        # not be able to distinguish "your body was empty" from "you may not touch this" — the same
+        # observable ordering `submit_report()` records for the idempotency key. `ReportPatchSerializer`
+        # refuses an empty body first, so this is the guard for a non-HTTP caller (FR-3): without it
+        # the function answers `200` and a bumped `updated_at` to a request that changed nothing.
+        raise ReportValidationError(
+            {"description": "Send a description or a category to change."},
+            code="REQUIRED",
+        )
+
+    if description is not None:
+        # ⚠️ **BR-3 is re-checked on the edit, against the photos the report still has.** The rule is
+        # "a photo *or* an adequate description"; an author blanking the description of a report whose
+        # only photo was removed under FR-31 would otherwise leave a submission with no content at
+        # all — a state `POST /reports` cannot produce, reached by editing.
+        validate_report_content(
+            description=description,
+            media_count=media_selectors.visible_media_count(report_id=report.pk),
+        )
+        report.description = description.strip()
+        changed.append("description")
+
+    if category_slug is not None:
+        # Reuses intake's resolver, so a retired slug is refused here too — the same reasoning:
+        # BR-7's coercion to `Other` is for an *LLM* returning something off-taxonomy, and silently
+        # filing an official's correction under `Other` loses the decision they just made.
+        report.category = _resolve_category(category_slug)
+        report.classification_source = _human_classification_source(actor)
+        changed.extend(["category", "classification_source"])
+
+    # ⚠️ `updated_at` must be listed: it is `auto_now`, and `save(update_fields=...)` writes only the
+    # named columns, so omitting it leaves the row reading as never-modified — the same trap
+    # `submit_report()`'s status flip records.
+    report.save(update_fields=[*changed, "updated_at"])
+
+    current_category = report.category
+    logger.info(
+        # ⚠️ **FR-11's "corrections are logged", and this line is the whole of it today.** The
+        # requirement continues "and can seed prompt examples / evaluation sets", which needs the
+        # *pair* (what the machine said, what the human chose) — so both slugs are here, not just the
+        # new one. A structured log rather than a table for the same reason BR-25's audit is: the
+        # immutable store is T8.1, and this is the call site it replaces.
+        "report.updated",
+        report_id=str(report.pk),
+        # ⚠️ No description text, before or after. NFR-12 keeps PII out of logs, and the description
+        # is the citizen's own account of where they were standing. That it *changed* is the
+        # auditable fact; what it says is on the row.
+        description_changed="description" in changed,
+        category_from=previous_slug,
+        category_to=current_category.slug if current_category else None,
+        actor_role=str(actor.role),
+        by_author=is_author,
+    )
+    return report
+
+
 def _submission_fingerprint(
     *,
     author: User,
@@ -272,7 +475,7 @@ def _submission_fingerprint(
     category_slug: str | None,
     address: str,
     language: str,
-    media_count: int,
+    media_ids: Sequence[UUID | str],
 ) -> str:
     """The normalized view of a submission that two requests must share to be "the same" (§4.6).
 
@@ -289,6 +492,14 @@ def _submission_fingerprint(
     ⚠️ **`location is None` fingerprints as `None` rather than raising.** The key is resolved before
     validation (so that a rejected request does not consume it), which means this function must
     tolerate every input the caller could pass, including the invalid ones.
+
+    ⚠️ **T2.6: the media *ids* are fingerprinted, sorted — not the count.** Two submissions that
+    carry the same text at the same spot but different photos are different submissions, and a count
+    cannot tell them apart: a retry that swapped one photo for another would replay the first
+    response and the second photo would be silently discarded. Sorted because `mediaIds` is a set in
+    meaning and a list in JSON, so a reordering client is making the same submission (§4.6
+    "normalized"). Ids are opaque UUIDs, so unlike a description they carry nothing about the
+    citizen.
     """
     payload: dict[str, Any] = {
         "author": str(author.pk),
@@ -296,7 +507,7 @@ def _submission_fingerprint(
         "category": category_slug,
         "address": address.strip(),
         "language": language,
-        "media_count": media_count,
+        "media_ids": sorted(str(value) for value in media_ids),
         "lng": None if location is None else location.x,
         "lat": None if location is None else location.y,
     }
@@ -312,7 +523,7 @@ def submit_report(
     category_slug: str | None = None,
     address: str = "",
     language: str = "en",
-    media_count: int = 0,
+    media_ids: Sequence[UUID | str] | None = None,
     idempotency_key: str | None = None,
 ) -> SubmissionAcknowledgement:
     """Intake for `POST /reports` (T2.2, T2.3): persist, mark processing, enqueue triage (FR-5, NFR-3).
@@ -363,9 +574,24 @@ def submit_report(
     carries "no de-duplication guarantee" when absent). Inferring a key from the payload would
     silently refuse a citizen who really is filing two reports about the same pothole from the same
     spot — which FR-16 counts as two corroborating voices, not a mistake.
+
+    ---
+
+    ⚠️ **T2.6 — `mediaIds` is resolved BEFORE the write and attached AFTER it, and it has to be
+    both.** BR-3 accepts a photo-only submission, so the report cannot be created until the photos
+    are known to be real, owned by this citizen and not already spent — but there is nothing to
+    attach them to until the row exists. `resolve_media_for_attachment()` proves and counts;
+    `attach_media()` binds. Both run inside this transaction, so a failure at either end leaves
+    neither a report with phantom evidence nor photos bound to a report that rolled back.
+
+    ⚠️ **The resolve runs before `create_report()`, which means before the location check.** A
+    client sending five unusable ids *and* an out-of-city point is told about the ids first. That is
+    a deliberate departure from T2.1's "authorization → location → content" ordering for one reason:
+    `media_count` is an *input* to the content rule (BR-3), so it cannot be established after it.
     """
     _require_citizen(author)
 
+    ids = list(media_ids or [])
     key = idempotency.normalize_key(idempotency_key)
     reservation: idempotency.Reservation | None = None
     if key is not None:
@@ -380,7 +606,7 @@ def submit_report(
                 category_slug=category_slug,
                 address=address,
                 language=language,
-                media_count=media_count,
+                media_ids=ids,
             ),
         )
         if isinstance(outcome, idempotency.Replay):
@@ -399,6 +625,10 @@ def submit_report(
         reservation = outcome
 
     try:
+        # ⚠️ Inside the `try`, so a bad id releases the idempotency key like any other failure — the
+        # client's next move is a corrected `mediaIds`, which is a different fingerprint anyway.
+        media_count = media_services.resolve_media_for_attachment(owner=author, media_ids=ids)
+
         report = create_report(
             author=author,
             location=location,
@@ -408,6 +638,11 @@ def submit_report(
             language=language,
             media_count=media_count,
         )
+
+        # ⚠️ After the row exists and before the `PROCESSING` flip: `attach_media()` deliberately
+        # carries no `@transaction.atomic` of its own, so it joins this one. If the status write
+        # below fails, the photos come unattached again with it.
+        media_services.attach_media(report=report, owner=author, media_ids=ids)
 
         report.status = ReportStatus.PROCESSING
         # ⚠️ `updated_at` must be listed: it is `auto_now`, and `save(update_fields=...)` writes only

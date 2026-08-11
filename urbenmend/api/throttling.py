@@ -1,5 +1,5 @@
 """
-Rate limiting for auth endpoints (T1.8, FR-4, API §4.5).
+Rate limiting for auth (T1.8, FR-4) and submission (T2.9, FR-33) endpoints — API §4.5.
 
 ⚠️ **The numbers are our policy, not spec-derived.** `api-conventions.md` lists "numeric rate
 limits and windows" under "Not specified — do not invent". These follow T1.2's precedent for the
@@ -11,6 +11,11 @@ success clears it. No per-account lock state, so this cannot be weaponised — a
 an authority's identifier bucket delays that bucket, not the account, and the real owner still
 authenticates from their own IP. That is the "backoff" half of FR-4's "lockout/backoff".
 
+⚠️ **Auth and submission rates live in two settings dicts, merged here by scope name.** They are
+different policies with different shapes — five login attempts a quarter hour versus sixty photos an
+hour — and one dict would invite an operator tightening spam controls into locking citizens out of
+their accounts. The `auth_*` / `submit_*` scope prefixes are what keeps the merge unambiguous.
+
 Two divergences from DRF, both verified against the installed source rather than assumed:
 
 1. ⚠️ **`SimpleRateThrottle.parse_rate` reads only `period[0]`**, so `"5/15min"` silently means
@@ -21,7 +26,7 @@ Two divergences from DRF, both verified against the installed source rather than
    `check_throttles()` stores nothing on the request, so the mixin captures the throttle instances
    via `get_throttles()` and reads their post-`allow_request` state.
 
-[doc: API §4.5, FR-4, workflow §722-723 "Test that the 429 fires and includes Retry-After"]
+[doc: API §4.5, FR-4, FR-33, workflow §722-723 "Test that the 429 fires and includes Retry-After"]
 """
 
 from __future__ import annotations
@@ -43,21 +48,33 @@ if TYPE_CHECKING:
 _PERIOD_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 # ⚠️ Policy, not spec (see module docstring). Overridable per environment via `AUTH_THROTTLE_RATES`
-# in settings; tests override the same key.
+# and `SUBMISSION_THROTTLE_RATES` in settings; tests override the same keys.
+#
+# ⚠️ **This is the fallback for every scope, not a mirror of either settings dict.** An
+# `override_settings(AUTH_THROTTLE_RATES={"auth_anon": "1/1h"})` replaces the whole dict, so the
+# scopes it omits resolve here — which is what keeps a test that tightens one bucket from
+# accidentally disabling the others.
 _DEFAULT_RATES = {
     "auth_anon": "10/15m",
     "auth_identity": "5/15m",
     "auth_user": "20/15m",
+    "submit_report": "20/1h",
+    "submit_media": "60/1h",
+    "submit_ip": "120/1h",
 }
+
+# The settings dicts consulted, in order. Later entries win on a duplicate scope, which the
+# `auth_*`/`submit_*` prefixes make impossible in practice.
+_RATE_SETTINGS = ("AUTH_THROTTLE_RATES", "SUBMISSION_THROTTLE_RATES")
 
 
 class ScopedWindowRateThrottle(SimpleRateThrottle):
     """`SimpleRateThrottle` with a window that can span more than one unit.
 
-    ⚠️ Rates are read from `settings.AUTH_THROTTLE_RATES` at instantiation, not bound as a class
-    attribute. DRF's `THROTTLE_RATES = api_settings.DEFAULT_THROTTLE_RATES` binds the dict once at
-    import, so `override_settings` in a test would not reach it — and a rate limit that cannot be
-    turned down in a test is a rate limit whose 429 path never gets exercised.
+    ⚠️ Rates are read from settings at instantiation, not bound as a class attribute. DRF's
+    `THROTTLE_RATES = api_settings.DEFAULT_THROTTLE_RATES` binds the dict once at import, so
+    `override_settings` in a test would not reach it — and a rate limit that cannot be turned down
+    in a test is a rate limit whose 429 path never gets exercised.
     """
 
     # Set by `SimpleRateThrottle.__init__` and `allow_request`, neither of which carries
@@ -71,7 +88,9 @@ class ScopedWindowRateThrottle(SimpleRateThrottle):
         scope = getattr(self, "scope", None)
         if not scope:
             raise ImproperlyConfigured(f"{type(self).__name__} must set `.scope`.")
-        rates: dict[str, str] = {**_DEFAULT_RATES, **getattr(settings, "AUTH_THROTTLE_RATES", {})}
+        rates: dict[str, str] = dict(_DEFAULT_RATES)
+        for name in _RATE_SETTINGS:
+            rates.update(getattr(settings, name, {}) or {})
         try:
             return rates[scope]
         except KeyError as exc:
@@ -121,7 +140,38 @@ class ScopedWindowRateThrottle(SimpleRateThrottle):
         return (self.num_requests, remaining, int(oldest + self.duration))
 
 
-class AuthAnonRateThrottle(ScopedWindowRateThrottle):
+class PerAccountScopedThrottle(ScopedWindowRateThrottle):
+    """Base for any bucket keyed on the authenticated account. One definition of that cache key.
+
+    ⚠️ **Unauthenticated callers get `None` (this bucket does not apply), NOT an IP fallback.** DRF's
+    own `UserRateThrottle` falls back to the IP for anonymous requests, which would file anonymous
+    traffic under a scope named for accounts — so `RateLimit-Limit` would then advertise a per-account
+    allowance to a caller who has no account, and one IP's anonymous requests would share a bucket
+    with nothing meaningful. Every endpoint using these is `IsAuthenticated`, and DRF's `initial()`
+    runs `check_permissions()` *before* `check_throttles()`, so an anonymous request is already a
+    `401` by the time this would be consulted (verified against the installed source).
+    """
+
+    def get_cache_key(self, request: Request, view: APIView) -> str | None:
+        if not request.user or not request.user.is_authenticated:
+            return None
+        return self.cache_format % {"scope": self.scope, "ident": request.user.pk}
+
+
+class PerIPScopedThrottle(ScopedWindowRateThrottle):
+    """Base for any bucket keyed on the request's source address.
+
+    ⚠️ `get_ident()` is DRF's, which honours `NUM_PROXIES`/`X-Forwarded-For` — the address is only as
+    trustworthy as the ingress in front of it, and a misconfigured proxy count makes every request
+    look like it came from the load balancer (one shared bucket for the whole city). That is a
+    deployment concern DevOps §8 owns, not something a throttle can defend against.
+    """
+
+    def get_cache_key(self, request: Request, view: APIView) -> str | None:
+        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
+
+
+class AuthAnonRateThrottle(PerIPScopedThrottle):
     """Per-IP bucket for pre-session auth endpoints (API §4.5 "and per-IP").
 
     ⚠️ Deliberately keyed on IP for *every* caller, authenticated or not — unlike DRF's
@@ -131,9 +181,6 @@ class AuthAnonRateThrottle(ScopedWindowRateThrottle):
     """
 
     scope = "auth_anon"
-
-    def get_cache_key(self, request: Request, view: APIView) -> str | None:
-        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
 
 
 class AuthIdentityRateThrottle(ScopedWindowRateThrottle):
@@ -177,7 +224,7 @@ class AuthIdentityRateThrottle(ScopedWindowRateThrottle):
         return self.cache_format % {"scope": self.scope, "ident": digest}
 
 
-class AuthUserRateThrottle(ScopedWindowRateThrottle):
+class AuthUserRateThrottle(PerAccountScopedThrottle):
     """Per-identity bucket for auth endpoints reached *with* a session (API §4.5 "per-identity").
 
     Covers `/auth/2fa/verify` on a full session and `/auth/verify` for an additional channel.
@@ -189,10 +236,63 @@ class AuthUserRateThrottle(ScopedWindowRateThrottle):
 
     scope = "auth_user"
 
-    def get_cache_key(self, request: Request, view: APIView) -> str | None:
-        if not request.user or not request.user.is_authenticated:
-            return None
-        return self.cache_format % {"scope": self.scope, "ident": request.user.pk}
+
+# --------------------------------------------------------------------------------------
+# Submission (T2.9, FR-33, API §4.5 "tighter buckets on … report submission")
+# --------------------------------------------------------------------------------------
+# ⚠️ **Three buckets, and the two per-account ones are separate on purpose.** A single
+# `submit_user` scope shared by `POST /reports` and `POST /media` would make a five-photo report
+# spend six units of one allowance, so the only way to size it would be for the photo-heavy case —
+# which then leaves text-only spam six times the budget it should have. Separate scopes let each
+# endpoint be sized for what it actually costs to serve.
+#
+# ⚠️ **None of these clears on success.** `clear_identity_throttle()` exists because a legitimate
+# login proves the caller is not guessing; a legitimate report proves nothing of the sort — volume
+# *is* the thing FR-33 limits, so a successful submission must consume its budget or the limit only
+# applies to failures.
+
+
+class SubmissionRateThrottle(PerAccountScopedThrottle):
+    """Per-account bucket for `POST /reports` (FR-33, and the per-account LLM cost cap, NFR-13).
+
+    ⚠️ **Not applied to `GET /reports`.** FR-33 is about submission; a read that costs one indexed
+    query is not the abuse surface, and throttling it would break the map and an Authority queue
+    under legitimately heavy use. `throttle_classes` alone cannot express that — it applies to every
+    method on the view — so `ReportCollectionView.get_throttles()` is where the split is made.
+    """
+
+    scope = "submit_report"
+
+
+class MediaUploadRateThrottle(PerAccountScopedThrottle):
+    """Per-account bucket for `POST /media` (FR-33).
+
+    ⚠️ **The more attractive target of the two, which is why it is not simply the report bucket
+    times `MEDIA_MAX_PER_REPORT`.** Each upload costs a decode, a re-encode, a storage write and a
+    worker job; a report costs one INSERT. Sizing this to never bind before the report bucket would
+    make the cheap endpoint the limit and leave the expensive one unbounded in practice — see the
+    reasoning on `SUBMISSION_THROTTLE_RATES` in `settings/base.py`.
+    """
+
+    scope = "submit_media"
+
+
+class SubmissionIPRateThrottle(PerIPScopedThrottle):
+    """Per-IP bucket **shared by both submission endpoints** — the Sybil limit (PRD §T3, FR-33).
+
+    ⚠️ **Shared deliberately, and it is the only bucket here that is.** The per-account buckets
+    cannot see the attack PRD §T3 names: a farm of fresh accounts gets a fresh per-account allowance
+    with every registration, and FR-1 verification raises the cost of each account without bounding
+    how many an attacker makes. The address is the thing that does not rotate for free. Counting
+    reports and uploads together is what makes it a limit on *submission traffic from one source*
+    rather than two limits neither of which sees the total.
+
+    ⚠️ **It never sees anonymous traffic**, because `check_permissions()` runs first on both
+    endpoints (see `PerAccountScopedThrottle`). A `401` costs no rows, no bytes and no LLM calls, so
+    there is nothing here for a per-IP counter to protect.
+    """
+
+    scope = "submit_ip"
 
 
 class RateLimitHeadersMixin:

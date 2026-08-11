@@ -26,6 +26,7 @@ from rest_framework.exceptions import APIException, NotAuthenticated, Validation
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
+from urbenmend.api.serializers import camelize_error_detail
 from urbenmend.platform.tracing import get_trace_id
 
 # --------------------------------------------------------------------------------------
@@ -75,6 +76,54 @@ class OutOfCity(APIException):
     status_code = http_status.HTTP_422_UNPROCESSABLE_ENTITY
     default_detail = "This location is outside the area UrbanMend serves."
     default_code = "OUT_OF_CITY"
+
+
+class PayloadTooLarge(APIException):
+    """`413 PAYLOAD_TOO_LARGE` — the uploaded photo exceeds the size limit (FR-7, API §6.4, T2.4).
+
+    ⚠️ **Raised by our own check, because Django's does not cover this.**
+    `DATA_UPLOAD_MAX_MEMORY_SIZE` explicitly exempts `request.FILES`, so a file upload has no
+    framework-level size bound at all — the limit is `settings.MEDIA_MAX_UPLOAD_BYTES` and this is
+    what surfaces it. Django's `RequestDataTooBig` (which the form-data limit raises) is a
+    `SuspiciousOperation` and renders as `400`, not the `413` §6.4 specifies.
+    """
+
+    status_code = http_status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+    default_detail = "This photo is larger than the maximum allowed upload size."
+    default_code = "PAYLOAD_TOO_LARGE"
+
+
+class UnsupportedMediaType(APIException):
+    """`415 UNSUPPORTED_MEDIA_TYPE` — not an image format we accept (FR-7, API §6.4, T2.4).
+
+    ⚠️ **Distinct from the corrupt-image `422`, and the difference is actionable.** `415` means
+    "send a JPEG instead of this"; `422` means "this JPEG is damaged, take the photo again". One
+    code for both would leave a client unable to tell which.
+
+    ⚠️ **Deliberately not DRF's own `UnsupportedMediaType`.** That one is raised by the parser for a
+    request `Content-Type` no parser handles, and its `default_code` sits in `_DRF_DEFAULT_CODES`
+    below — so the handler would flatten it to the status-derived bucket. Same reason
+    `AccountLocked` is not `PermissionDenied`.
+    """
+
+    status_code = http_status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+    default_detail = "This file type is not an accepted image format."
+    default_code = "UNSUPPORTED_MEDIA_TYPE"
+
+
+class Gone(APIException):
+    """`410 GONE` — the resource existed and was removed by moderation (FR-31, API §4.2, §6.4).
+
+    ⚠️ **`410`, not `404`, and only for moderation.** api-conventions.md reserves `404` for "absent
+    **or hidden from this caller**" — the existence-leak-free answer — while `410` is the deliberate
+    admission that something *was* here and was taken down. Answering `404` for a moderated photo
+    would let a client retry forever; answering `410` for a photo that never existed would confirm
+    the id had once been valid.
+    """
+
+    status_code = http_status.HTTP_410_GONE
+    default_detail = "This content was removed by moderation."
+    default_code = "GONE"
 
 
 class IdempotencyKeyReused(Conflict):
@@ -272,7 +321,22 @@ def urbenmend_exception_handler(exc: Exception, context: dict[str, Any]) -> Resp
     elif isinstance(exc, DjangoValidationError):
         # A service raising Django's ValidationError (the natural choice in `services.py`,
         # which should not import DRF) still produces the contract shape.
-        exc = ValidationError(detail=exc.messages)
+        #
+        # ⚠️ **`message_dict`, not `messages`, so a field-keyed error keeps its field.**
+        # `exc.messages` flattens a dict to its values, and the T2.2 rule says unknown service
+        # errors must name the field (`{"category": ...}` → §4.1's `details[0].field`). `messages`
+        # would have answered `400` with a field-less detail the moment the first service raised a
+        # dict-shaped error — which is exactly what T2.6's `media_ids` rejection does.
+        # ⚠️ `hasattr(exc, "error_dict")` is the documented discriminator — Django only sets it
+        # when the exception was built from a mapping, and reading `.message_dict` on a
+        # list-shaped one raises `AttributeError` from inside the error handler itself.
+        detail: Any = exc.message_dict if hasattr(exc, "error_dict") else exc.messages
+        # ⚠️ **Keys are camelCased here, because no serializer is in the loop.** A service's
+        # dict keys are `snake_case` (they name model/param columns), and the serializer-level
+        # camelization never sees a service-raised error — so `media_ids` would otherwise leak
+        # through as `media_ids` in a contract that says `mediaIds`. The keys are field names,
+        # not content, so rewriting them is safe.
+        exc = ValidationError(detail=camelize_error_detail(detail))
     # ⚠️ DRF rewrites `NotAuthenticated` to 403 when no authenticator offers a
     # `WWW-Authenticate` header — which `SessionAuthentication` never does (Django #20760,
     # django-rest-framework #6021). API §4.2 fixes the distinction: `401 UNAUTHENTICATED`

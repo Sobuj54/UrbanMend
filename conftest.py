@@ -17,9 +17,41 @@ from typing import TYPE_CHECKING
 
 import pytest
 from django.core.cache import cache
+from django.test import override_settings
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _in_memory_media_storage() -> Iterator[None]:
+    """Swap object storage for `InMemoryStorage` for the whole run (T2.4).
+
+    ⚠️ **Added in T2.4 for the same class of reason as `_reset_throttle_cache`: the default
+    storage is not part of the test transaction.** `STORAGES["default"]` is `S3Boto3Storage`, so
+    the moment a `Media` fixture existed, saving one opened a real connection to the MinIO
+    container — and with no `STORAGE_ACCESS_KEY` in the test environment botocore fell through to
+    an EC2 instance-metadata lookup and failed with `NoCredentialsError` after a timeout.
+
+    ⚠️ **A real `Storage`, not a mock.** `InMemoryStorage` implements `save`, `open`, `exists`,
+    `delete` and `url`, so `upload_media()`'s `media.file.save(...)` and the serializer's
+    `stored.url` run their genuine code paths — only the network is gone. A patched-out storage
+    would let a regression that never writes the sanitized bytes pass unnoticed.
+
+    ⚠️ **Overridden here rather than in `settings/dev.py`.** `dev.py` is what the local dev server
+    runs on, where uploads are meant to reach MinIO; flipping it there would make the running
+    application silently lose every photo on restart.
+
+    ⚠️ `staticfiles` is respecified because `override_settings` replaces `STORAGES` wholesale
+    rather than merging into it — omitting the key leaves `staticfiles_storage` unresolvable.
+    """
+    with override_settings(
+        STORAGES={
+            "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+            "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+        }
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)

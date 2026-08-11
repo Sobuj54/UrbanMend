@@ -1660,6 +1660,376 @@ drift, `check --deploy` clean on `prod`.
   reaches a stub. Q6 (EXIF) gates T2.5. FR-33 submission throttling remains **T2.9**; idempotency
   bounds *accidental* duplication, not abuse, and must not be mistaken for a rate limit.
 
+### T2.4 + T2.5 + T2.6 — photo upload, EXIF/derivatives, attach to report (P2, FR-7, P3, BR-3/4)
+
+**Built as one batch** (the owner's call: gates run once per batch, not once per task). The three
+tasks are one pipeline — a `Media` row with no upload endpoint, an EXIF policy with no row to apply
+it to, and an attach step with nothing to attach are not independently shippable.
+
+- ⚠️ **✅ ❓Q6 RESOLVED (2026-08-08, by the project owner): strip all EXIF, always.** No per-user
+  setting, no retain branch, no admin toggle. BR-4 already makes the report's explicit coordinate
+  authoritative, so photo GPS is not merely private — it is *unused*: keeping it would create a
+  second, unvalidated location for the same report that nothing reads and P3 has to defend.
+- ⚠️ **The strip is SYNCHRONOUS; only the derivatives are deferred. This is the central decision of
+  the batch.** §6.4 describes the pipeline as asynchronous and answers `202`, while §C3 above says
+  "Never store the original EXIF-bearing file". Both hold at once only if the sanitizing re-encode
+  runs *before* the first `storage.save()` — which is what `upload_media()` does. Writing the raw
+  upload and stripping in the worker would put a GPS-tagged photo of a citizen's home in object
+  storage for as long as the queue is deep, and every retry, dead-letter or worker outage extends
+  that window. The step is also already paid for: deciding `415` vs `422` requires a full decode, so
+  the pixel buffer is in memory by the time the policy check finishes. What stays in the worker is
+  the genuinely expensive part — LANCZOS downscale and thumbnail.
+- ⚠️ **`ImageOps.exif_transpose` THEN strip, and the order is invisible in any metadata assertion.**
+  The orientation tag lives *in* EXIF, so stripping first discards the instruction that says which
+  way is up — and the image is stored rotated, permanently, with nothing left to correct it from.
+  Every portrait phone photo is affected. `test_sanitize_applies_orientation_before_stripping_it`
+  asserts a 64×48 source with orientation `6` comes out 48×64; the EXIF test passes either way.
+- ⚠️ **The EXIF test asserts the fixture carries GPS *before* the strip runs.** Pillow silently drops
+  EXIF it cannot serialize, so a fixture that quietly stopped writing the GPS IFD would leave the
+  rest of the test passing while proving nothing — the exact shape of a security test that has rotted
+  into a no-op. (The fixture needs `IFDRational` values, not `(num, den)` tuples: `Exif.tobytes()`
+  calls `abs()` while writing and a plain tuple raises `TypeError` there.)
+- ⚠️ **A fresh `save()` from a decoded image *is* the strip.** There is no `Image.strip_exif()`, and
+  deleting keys out of `image.info` does not help — `save()` re-emits whatever the plugin finds there
+  plus whatever the source carried. Writing the pixel buffer to a new buffer with no `exif=` and no
+  `icc_profile=` is the operation: the output has no EXIF because nothing ever put any in it.
+- ⚠️ **A transparent PNG is composited onto white, not `convert("RGB")`d.** The bare convert discards
+  the alpha channel and keeps whatever RGB sits underneath, which for a transparent PNG is usually
+  black — so a screenshot with a transparent background is stored as a black rectangle. It looks like
+  a corrupt upload and is unreachable from the pixels. Asserted on a corner pixel.
+- ⚠️ **`_open()` calls `load()`, because `Image.open()` is lazy and is not a validity check.** A file
+  truncated halfway through its scan data opens without complaint and fails later, inside whatever
+  touches a pixel — surfacing as a `500` from the worker rather than a `422` on the request that
+  caused it. `verify()` was rejected as the alternative: Pillow documents that the image must be
+  reopened afterwards, so a `verify()`-then-reuse raises on the next operation and invites someone to
+  "fix" it by dropping the check.
+- ⚠️ **The format allowlist is checked against what Pillow *detects*, never `upload.content_type`.**
+  A renamed executable arrives with a perfectly respectable `image/jpeg` on it. SVG is absent
+  deliberately: it is a script container, not a raster photo, and Pillow cannot strip anything from it.
+- ⚠️ **`413`/`415`/`422` are three distinct answers and the distinctions are actionable.** `413` is
+  "this file is too big", `415` is "send a JPEG instead of this", `422` is "this JPEG is damaged,
+  retake the photo". One code for the last two leaves a client unable to tell which remedy applies.
+  The checks run in **cost order** — size (a length comparison, no decode), then format, then
+  decodability — because reversed, a 500 MB file is fully decoded before being refused for its size.
+- ⚠️ **`PayloadTooLarge` exists because Django has no bound here at all.**
+  `DATA_UPLOAD_MAX_MEMORY_SIZE` explicitly exempts `request.FILES`, so without
+  `MEDIA_MAX_UPLOAD_BYTES` a file upload is unbounded. Django's own `RequestDataTooBig` is a
+  `SuspiciousOperation` and renders `400`, not §6.4's `413`.
+- ⚠️ **The decoder's message never reaches the client.** Pillow quotes header bytes in some errors, so
+  a crafted upload could echo chosen content back out through the §4.1 envelope. Operators get the
+  real text in the log line, correlated by `traceId` (NFR-12). Same reason `failure_reason` is a
+  column but not a serializer field.
+- ⚠️ **`Media` is created *unattached*, and that is the contract.** §6.4 uploads and hands back a
+  handle; §6.3 then submits with `mediaIds`. During that window `owner` is the only thing
+  authorization can key on — which is why it is a column of its own rather than derived from
+  `report.author`, and why the FK is nullable.
+- ⚠️ **Two-step attach: `resolve_media_for_attachment()` proves, `attach_media()` binds.** BR-3 is
+  validated *before* the report row exists (a photo-only submission is only legal if the photos are
+  real), so the count has to be established first and the binding cannot happen until there is a
+  report to bind to. Merging them means either creating the report on unverified ids or validating
+  BR-3 after the write.
+- ⚠️ **`report__isnull=True` appears in *both* queries, and it is what makes attachment single-use.**
+  Without it a citizen could pass one of their earlier reports' `mediaIds` and mount the same photo
+  on ten reports — which FR-16 would then count as ten corroborating voices for one pothole. The
+  ownership filter is re-applied on the write too: an authorization check that only runs on the read
+  path is not an authorization check (FR-3).
+- ⚠️ **`attach_media()` has no `transaction.atomic` of its own — it rides `submit_report()`'s.** A
+  nested decorator would create a savepoint that commits independently of the report write, so a
+  `422 OUT_OF_CITY` would leave photos attached to a report that was rolled back. A test submits an
+  out-of-city location and asserts the media are still unattached.
+- ⚠️ **Every id must resolve, or the whole submission is refused.** Silently dropping an unresolvable
+  id makes a photo-only submission fail BR-3 with "describe the problem" — an error about
+  `description` when the client did attach a photo, and no way to act on it. That is the failure T2.2
+  refused when it declared `mediaIds` rather than letting DRF drop the key.
+- ⚠️ **One message for "not yours", "already attached" and "does not exist".** Three distinct messages
+  turn this field into an oracle for whether a media id exists and who owns it — T1.5's "`403` to act,
+  `404` to see", applied at field level.
+- ⚠️ **A still-`PROCESSING` photo counts toward BR-3.** Arch §4.1 says a Report can be usable before
+  its Media is `Ready`; requiring `READY` would make BR-3 depend on worker latency, so a citizen who
+  submits a second after uploading is told their photo does not exist. Duplicated ids collapse rather
+  than raising — a client sending the same id twice is buggy, not abusive.
+- ⚠️ **The idempotency fingerprint now hashes `sorted(media_ids)`, not the count.** Two submissions
+  with the same description and different photos are different submissions; a count-based fingerprint
+  would replay the first one's acknowledgement for the second.
+- ⚠️ **`READY` describes the *derivatives*, not the safety of the original** — the stored master is
+  already EXIF-free in `UPLOADED`. Reading `READY` as "now it is safe to serve" inverts the pipeline
+  and implies the earlier states are not.
+- ⚠️ **`FAILED` is not a delete and the task does not raise.** data-model §4 marks the branch "retry",
+  and the retry is an operator action against a durable state: the common causes (a permanently
+  undecodable master, a storage misconfiguration) would be hammered forever by an automatic redelivery
+  while the queue backs up behind them (O-2). A row that vanished on a transient error would also take
+  its Report's BR-3 justification with it — a report valid at submission would retroactively have
+  neither photo nor adequate description.
+- ⚠️ **The worker re-reads the row and re-checks its state, never trusting the id.** At-least-once
+  delivery means it runs twice for one photo; the state guard is what stops a second downscale
+  compressing an already-downscaled master (a photo redelivered three times would visibly degrade with
+  nothing to explain why). It also lets **moderation win the race**: a photo removed between enqueue
+  and execution is left alone rather than flipped back to `READY`.
+- ⚠️ **`REMOVED` is how moderation deletes** (FR-31, database.md). The read answers `410 GONE`, which
+  is only expressible while the row still exists — `404` would leave a client retrying forever and
+  erase the fact that moderation acted, while `410` for an id that never existed would confirm to a
+  scanner that the id had once been valid. **The stored objects stay in the bucket**: FR-31 is
+  moderation, not erasure, and deleting the `FieldFile` would run outside the transaction, so a
+  rollback would leave a live row pointing at nothing.
+- ⚠️ **An Admin moderating is deliberately NOT bound by the author's pre-triage lock.** An author gets
+  `409 NOT_EDITABLE` once triage has run — a photo an Authority has been dispatched on must not vanish
+  from underneath them — but an Admin held to that lock could not remove anything that had been
+  triaged, which is precisely the content a takedown request is about.
+- ⚠️ **`MediaDetailView` uses `AllowAny` and does NOT empty `authentication_classes`.** Setting it to
+  `[]` is what silently disables CSRF (the T1.3 trap `identity/tests/test_csrf.py` exists to catch),
+  and this view has a mutating method. `AllowAny` skips the *permission* check while
+  `SessionAuthentication` still runs, so an authenticated `DELETE` stays CSRF-protected and an
+  anonymous `GET` still works. The `DELETE` checks authentication itself so an anonymous caller gets
+  `401` rather than an `AttributeError` from `AnonymousUser.role`.
+- ⚠️ **`url`/`thumbnailUrl` are `SerializerMethodField`s, not `FileField`s.** A DRF `FileField` renders
+  `.url`, which raises `ValueError` on an empty file — so §6.4's `202` body, where the thumbnail does
+  not exist yet, would be a `500` instead of the documented `null`.
+- ⚠️ **`MediaResponseSerializer` is not a `ModelSerializer`.** The neighbouring columns are `owner`,
+  `report`, `byte_size` and `failure_reason`; an owner id is another citizen's identifier and
+  `failure_reason` carries decoder text. One `"__all__"` publishes all four. A test asserts the exact
+  key set.
+- ⚠️ **A pre-existing §4.1 contract bug was found and fixed here, and it was never media-specific.**
+  The T0.6 handler rendered a service-raised `ValidationError` via `exc.messages`, which **flattens a
+  mapping to a bare list of its values** — so every dict-shaped service error produced a `details`
+  entry with *no `field` key at all*: right status, no way to know which input to fix. It went
+  unnoticed because the field name in T2.2's tests came from the *serializer*, where the camelCase
+  layer supplies it. Now `exc.message_dict` guarded by `hasattr(exc, "error_dict")` — the documented
+  discriminator, because reading `.message_dict` on a list-shaped error raises `AttributeError` *from
+  inside the error handler*. Keys are camelCased **at the handler**, since no serializer is in the loop
+  for a service-raised error and `media_ids` would otherwise reach a contract that says `mediaIds`.
+  `_camelize_error_detail` became public `camelize_error_detail` for the cross-module call.
+- ⚠️ **`conftest.py` swaps `STORAGES["default"]` for `InMemoryStorage` session-wide**, for the same
+  class of reason `_reset_throttle_cache` exists: storage is not part of the test transaction. The
+  default backend is `S3Boto3Storage`, so the moment a `Media` fixture existed, saving one opened a
+  real connection to MinIO and — with no credentials in the test environment — botocore fell through
+  to an **EC2 instance-metadata lookup** and failed with `NoCredentialsError` after a timeout. It is a
+  real `Storage`, not a mock, so `media.file.save(...)` and `stored.url` run their genuine paths; and
+  it is overridden in `conftest.py` rather than `settings/dev.py`, where flipping it would make the
+  running dev server silently lose every photo on restart.
+- ⚠️ **`MediaFactory` passes `filename=".jpg"` — the extension alone — because that is what
+  `upload_media()` passes.** It reaches `_upload_path()` as the `filename` argument and is
+  concatenated onto `"original"`, so a full `"original.jpg"` produces `reports/<id>/originaloriginal.jpg`:
+  a fixture whose storage key does not have production's shape, which is the one thing a fixture
+  holding a real file is for.
+- ⚠️ **`urbenmend.media.tasks` was added to the `disallow_untyped_decorators = false` override list**,
+  not the rule widened — the T2.2 instruction, followed. Consequence at the call site is unchanged:
+  `process_media.delay(...)` types as `Any`, so `test_tasks.py` asserts the task name instead.
+- **`MEDIA_MAX_UPLOAD_BYTES` (10 MiB), `MEDIA_MAX_DIMENSION` (2048), `MEDIA_THUMBNAIL_DIMENSION`
+  (320), `MEDIA_IMAGE_QUALITY` (82), `MEDIA_MAX_PER_REPORT` (5), `MEDIA_ALLOWED_IMAGE_FORMATS` are
+  our numbers, not spec-derived.** FR-7 says "enforce size/type limits" and §6.4 names the statuses
+  without fixing a value; they carry the T1.2/T1.8 banner and are env-overridable (NFR-11). Raise them
+  into `docs/04-api-specification.md` if any ever becomes a contract.
+- **One migration, `media/0001_initial`, verified reversible** (`migrate media zero` → `migrate media`).
+  No new geometry, so no `CreateExtension` dependency is involved.
+- ❓ **Unchanged and still open:** Q9 (LLM provider), Q3, Q5, Q10. **`POST /media` ships unthrottled
+  and it is the more attractive target of the two** — each request costs a full decode and a storage
+  write — so **T2.9 must cover this route, not only `POST /reports`**. The T1.8 auth buckets are the
+  wrong shape: sized for credential guessing, they would cut off a citizen photographing one flooded
+  street.
+
+### T2.7 + T2.8 + T2.9 — the reads, the edit, and submission rate limiting (P2, FR-11/FR-33, API §6.3/§4.5)
+
+**Built as one batch**, the second in P2 (the owner's call: gates run once per batch). These three are
+one endpoint's remaining surface — `GET /reports` needs the resource serializer that `PATCH` answers
+with, `PATCH` needs the `404`/`410` selector the read introduced, and a write endpoint that FR-33
+leaves unlimited is what T2.2 and T2.4 both shipped with a note against.
+
+**T2.7 — `GET /reports` and `GET /reports/{id}`**
+
+- ⚠️ **One view class for both verbs on `/reports`, and `ReportSubmitView` was renamed
+  `ReportCollectionView`.** §6.3 gives `POST` and `GET` the same URL and two `APIView` subclasses on
+  one `path()` is not expressible. The route *name* stayed `reports` — `reverse("api:reports")` is
+  already in T2.2's tests and in clients' generated code, so renaming it would break callers to record
+  a fact the class name already carries. (Two references to the old class name survive in the T2.2
+  record above; they are historical prose about what existed then and are correct as written.)
+- ⚠️ **The detail read is public and the collection is not** — and that is not an inconsistency. Q7
+  resolved report *visibility* as public, but "all reports" has no meaning without a caller: §6.3
+  scopes the list to own / in-scope / all by role, so an anonymous list would have to mean "every
+  report in the city", which is a different endpoint nobody specified.
+- ⚠️ **`404` for absent, `410` for moderated, decided in `get_report_for_read()` and shared by both
+  verbs.** A `404` for a hidden report would be a disclosure choice made twice, in two places, and
+  api-conventions.md fixes `410` for content removed by moderation (FR-31). `HIDDEN` answers `410`
+  too — the outcomes differ in what an operator can still recover, not in what a client is told.
+- ⚠️ **Visibility is resolved before any filter is applied**, in the selector, for all three roles.
+  A filter applied first and a scope applied second is the same query today and a leak the moment
+  someone adds a `.union()` or an early `.values()`.
+- ⚠️ **An Authority's scope is over `category`, so an unclassified report is in nobody's scope** — the
+  un-triaged backlog belongs to T3.5's worker, not to a department. `scoped_category_ids()` returning
+  `None` still means Admin/unrestricted, the T1.5 convention.
+- ⚠️ **Moderated rows are excluded for every role, Admin included.** The moderation review surface is
+  §6.13's; a hidden row appearing in an ordinary list is how a removed photo gets re-shared by someone
+  who never saw the removal.
+- ⚠️ **`visible_media_prefetch()` is a `Prefetch` with `to_attr`, not `prefetch_related("media")`.**
+  The plain form prefetches moderated rows too and pushes the exclusion into the serializer, in
+  Python, where it is invisible to anyone reading the query. `to_attr` leaves `report.media` alone, so
+  a caller that ignores the prefetch gets the ordinary manager rather than a silently-filtered one —
+  and the attribute name is a shared constant (`VISIBLE_MEDIA_ATTR`) because a serializer reading one
+  spelling and a selector writing another would not fail, it would just read a different list.
+- ⚠️ **The cursor's `-pk` tie-break has to flip with the sort direction**, which is the only reason
+  `ReportCursorPagination` exists — and the direction is passed in from the view rather than re-parsed
+  from `request.query_params`, so the validated value and the cursor cannot disagree. It is constructed
+  in the view, not taken from `DEFAULT_PAGINATION_CLASS`: `APIView` has no `self.paginator` to
+  configure, and one explicit construction beats a class attribute plus a hook that mutates it.
+- ⚠️ **The query serializer runs before the selector and its `400`s are the deliverable.** Reading
+  `request.query_params.get()` instead would ignore `?statuss=triaged` and answer `200` with the
+  *unfiltered* list — a citizen looking for their open reports shown all of them, with no signal the
+  filter was dropped. `reject_unknown_fields()` gained `extra_allowed` for `?limit=`/`?cursor=`, which
+  are the paginator's params: a query serializer that refused them would make every second page a
+  `400`.
+- **`?q=` is `icontains` today, and the record says so rather than implying more.** §1.4 wants
+  bilingual search; this is a substring match. `__dwithin` on the `geography` column takes **metres**,
+  which is why `radiusM` needs no conversion — on a `geometry` column the same call would silently
+  mean degrees.
+
+**T2.8 — `PATCH /reports/{id}`**
+
+- ⚠️ **FR-11 grants two different rights to two different callers through one endpoint, and collapsing
+  them into "may this user edit this report?" fails in both directions.** The author may fix
+  description and category *until triage*; an official may re-categorize *after* it and may never
+  touch the description. One merged check either lets an official rewrite a citizen's account of what
+  they saw, or blocks the correction path FR-11 exists for.
+- ⚠️ **A human correction must NOT stamp `classified_at`, and this is a constraint on two later
+  tasks.** Stamping it looks like an improvement — the worker can no longer revert the official — but
+  `is_classified` keys on that column while `severity_signal` stays `NULL`, so the report reads as
+  triaged with no severity band and `SEVERITY_RANK[None]` raises inside BR-11's `max()` in T4.6.
+  **The protection T3.5 must implement instead: do not overwrite the `category` of a report whose
+  `classification_source` is `AUTHORITY`.** `CITIZEN` carries no such protection — §6.3 calls a
+  citizen's category "a hint only" and FR-10 has the LLM decide.
+- ⚠️ **BR-3 is re-checked on the way out, against `visible_media_count()`.** An edit is the one path
+  that can leave a report with neither a photo nor an adequate description — a state `POST /reports`
+  cannot produce. The count excludes moderated rows on purpose: an author blanking the description of
+  a report whose only photo an Admin removed under FR-31 must be refused, and counting the removed row
+  would let the submission end up with no evidence at all.
+- ⚠️ **`None` means "not sent" all the way from the view to the service.** A `data.get("description",
+  "")` in the view turns every category-only edit into a description blanking — and on a photo-less
+  report BR-3 then rejects it, so the visible symptom is a `400` about a field the client never sent.
+- ⚠️ **A stranger gets `403`, not `404` — the usual rule inverted, deliberately.** "`403` to act,
+  `404` to see" (T1.5) protects existence; here `GET /reports/{id}` is public, so this report's
+  existence is not a secret this endpoint could keep and a `404` would be a lie one `GET` disproves.
+  §6.3's error list for `PATCH` names `FORBIDDEN`. The message still names neither role nor resource.
+- ⚠️ **`409 NOT_EDITABLE`, not the generic `CONFLICT`.** "Already triaged" is a state a client can act
+  on — stop offering the edit affordance — while `CONFLICT` is indistinguishable from a duplicate
+  submission. The window is `{submitted, processing}`: it closes at *triage*, not at enqueue, because
+  a report sits in `processing` for as long as the queue is deep and a citizen who spots their own typo
+  one second after submitting must not be told it is too late.
+- ⚠️ **No `severity` field on the `PATCH`, and `reject_unknown_fields()` is why sending one fails
+  loudly.** Report ≠ Issue: severity lives on the Issue, and FR-11's "re-severity" is §6.5's
+  Issue-level Authority override. Dropped silently, `{"severity": "critical"}` would answer `200` and
+  the caller would believe it took.
+- ⚠️ **An Admin correction records `AUTHORITY`; the enum has no `ADMIN` member on purpose.** PRD §4.2
+  gives Admin every Authority capability, so an Admin re-categorizing is doing the Authority's job —
+  and a fifth member would divide the "a human official set this" set in two, so every future query
+  that must exclude human decisions (T3.5's, above) would need updating and would fail open if it were
+  not.
+- ⚠️ **An anonymous `PATCH` is `401`, checked in the method.** `AllowAny` sits on the class so the
+  public `GET` is reachable, so `request.user` can be `AnonymousUser` here; passing that to
+  `update_report()` reads `.role` off a model that has none, i.e. a `500`. **`authentication_classes`
+  is not emptied** — that is the T1.3 trap that silently disables CSRF, and this class carries a
+  mutating verb.
+- ⚠️ **An Authority may move a report *out of* their own scope.** Scope is checked against the report
+  as it stands, not against the destination: a one-way door would mean the only officials who can fix
+  a mis-categorized report are the ones it was wrongly filed with. An unclassified report is in no
+  Authority's scope and so is `403` for all of them; a retired slug is refused `400` rather than
+  coerced to `Other` (BR-7's coercion is for LLM output — filing an official's correction under
+  `Other` loses the decision they just made).
+- ⚠️ **`save(update_fields=...)` must list `updated_at`** — it is `auto_now`, and omitting it leaves
+  the row reading as never-modified. The same trap `submit_report()`'s status flip records.
+- ⚠️ **FR-11's "corrections are logged" is one structured line, and it carries *both* slugs.** The
+  requirement continues "can seed prompt examples / evaluation sets", which needs the pair — what the
+  machine said and what the human chose. No description text, before or after: NFR-12 keeps PII out of
+  logs, and *that* it changed is the auditable fact. The immutable store is still T8.1.
+
+**T2.9 — submission rate limiting**
+
+- ⚠️ **A second settings dict, `SUBMISSION_THROTTLE_RATES`, merged by scope name in `get_rate()`.**
+  Adding `submit_*` scopes to `AUTH_THROTTLE_RATES` would leave ops tuning spam control under a name
+  that says authentication, and renaming that dict is churn across settings, `.env.example` and
+  `docs/09-operations.md`. **The merge is asserted in both directions**, because each is silently
+  wrong in only one: a version reading only the submission dict breaks login backoff, and a version
+  reading only the auth dict passes every submission test by falling through to the module defaults
+  and then ignores the operator's tuning forever.
+- ⚠️ **`POST /media` is limited, which closes the note T2.4 left.** It is the more attractive target
+  of the two — each request costs a full decode and a storage write. The T1.8 auth buckets were the
+  wrong shape for it, as that note predicted.
+- ⚠️ **The per-IP bucket is shared by both `POST`s, and that is the Sybil control** (PRD §T3). A farm
+  of fresh accounts gets a fresh per-account allowance with every registration; the source address is
+  the thing that does not rotate for free. The consequence — a five-photo report spends six units of
+  one limit rather than one unit of two independent ones — is documented in §4.5 so a client can
+  explain a `429` on `POST /reports` caused by its own uploads.
+- ⚠️ **Two per-account scopes, not one shared `submit_user`.** A single bucket would have to be sized
+  for the photo-heavy case, which then hands text-only spam six times the budget it should have.
+- ⚠️ **The `GET`/`POST` split is `get_throttles()`, not `throttle_classes`** — the latter applies to
+  every method on a view, so the obvious wiring throttles the read too, and nothing errors when it
+  does: the map and the Authority queue simply start answering `429` to whoever is using the product
+  most. Returning `[]` for `GET` also suppresses the `RateLimit-*` headers on it, deliberately —
+  advertising a limit an endpoint does not enforce makes a client back off from a read it is free to
+  make. (`self.request`, not an argument: DRF calls `get_throttles()` with none.)
+- ⚠️ **A rejected request consumes its bucket, and so does an idempotent replay.** Both are documented
+  in §4.5 rather than exempted. Refunding failures is the natural-looking fix and it leaves the limit
+  applying only to legitimate use; exempting a replay would mean doing the §4.6 lookup inside a
+  throttle's `get_cache_key()`, i.e. moving idempotency into the throttle layer to save a client that
+  is already far below the limit. `RateLimit-Remaining` is the signal instead.
+- ⚠️ **The per-account throttles return `None` for an anonymous caller rather than DRF's IP
+  fallback**, which would file an anonymous request under a scope named for accounts and advertise a
+  per-account allowance to a caller with no account. Safe because `check_permissions()` runs before
+  `check_throttles()` — verified against DRF's installed `APIView.initial`, then asserted end-to-end
+  (three `401`s cost no budget). ⚠️ **That claim holds only because both endpoints are
+  `IsAuthenticated`**; a future public write on either view breaks it.
+- ⚠️ **An unknown scope raises `ImproperlyConfigured` at instantiation.** `SimpleRateThrottle` treats
+  a `None` rate as *unlimited*, so a silent fallback turns a typo between the class and the settings
+  dict into an endpoint with no limit at all.
+- ⚠️ **None of these buckets clears on success**, unlike `clear_identity_throttle()`. A legitimate
+  report proves nothing about the next one — volume *is* what FR-33 limits, and the T1.8 reasoning
+  (success means the credential was right) does not transfer.
+- **`SUBMISSION_THROTTLE_RATE_REPORT` 20/1h, `_MEDIA` 60/1h, `_IP` 120/1h are our numbers**, not
+  spec-derived: §4.5 requires "tighter buckets on … report submission" without fixing values. They
+  carry the T1.2/T1.8 banner and are env-overridable (NFR-11). The report bucket doubles as the
+  per-account LLM cost ceiling (NFR-13). **Media is deliberately not `MEDIA_MAX_PER_REPORT × report`**
+  — making the report bucket bind first would leave the expensive endpoint effectively unbounded, so
+  60/1h lets the upload bucket bind under photo-heavy load while a single five-photo submission still
+  fits inside both. The per-IP bucket is sized for carrier NAT.
+- ⚠️ **`docs/04-api-specification.md` was amended in three places before the code shipped**, per the
+  spec-first rule. **§4.5:** it said "report submission" and was silent on whether `POST /media` was
+  included, on the shared per-IP bucket, on failure-consumes-budget and on replay-consumes-budget — all
+  four are now written down, plus a table of which endpoints are limited and a note that the numbers
+  are deployment configuration rather than contract. **§6.3:** `mediaIds` was listed without saying
+  what makes an id usable, so ownership, single-use, the `MEDIA_MAX_PER_REPORT` cap and
+  fail-the-whole-submission were discoverable only by hitting them (the T2.4 record's "raise them into
+  the spec if any becomes a contract", acted on — the cap is enforced on `POST /reports`, not on the
+  upload, and a client building a photo picker needs it). **§6.4:** FR-7's "enforce size/type limits"
+  named no values and left the three rejections indistinguishable; the amendment fixes the size cap,
+  the accepted formats, and — the correction worth having — that `415` means *"we recognize this format
+  and do not accept it"* while a renamed PDF is `422`, because nothing identified it as an image at
+  all. Getting that pair backwards tells a client to convert a file it should re-capture.
+- ⚠️ **The suite lives in `api/tests/`**, not in `reporting/` or `media/`: the shared per-IP bucket is
+  a rule about the two endpoints *together*, and asserted from one app's suite it would only ever be
+  half-tested. Its `_rates()` helper sets the two buckets it is not testing **out of reach**, which is
+  the point and not padding — every `Client()` reports `127.0.0.1`, so a test that tightened
+  `submit_report` and left `submit_ip` at its default could pass by tripping the wrong bucket, and
+  would keep passing if the per-account bucket were deleted outright.
+
+**What the once-per-batch gate caught, recorded because it is the argument for the cadence**
+
+- **Five mypy errors, all in this batch's own new code.** `Prefetch` is generic in three parameters
+  under `disallow_any_generics` (`Prefetch[str, QuerySet[Media], str]`); `reject_unknown_fields()` had
+  been widened to `BaseSerializer[Any]`, which has no `fields` (it is declared on `Serializer`, and
+  the wider annotation reads as accommodating while being simply wrong); and
+  `report.category.slug if report.category_id else None` appears three times and cannot narrow — the
+  `category_id` spelling *looks* like the cheap one but is identical in query count, since Django
+  answers `None` for a `NULL` FK without touching the database. All three now bind the related object
+  to a local.
+- **One stale test.** `test_get_reports_is_405_until_t27` was T2.2's honest placeholder and T2.7 made
+  it false. Replaced by a parametrized `PUT`/`DELETE` → `405`, which keeps the claim that was worth
+  asserting: `PUT` is reserved for full replacement (api-conventions.md), so a client sending one has
+  misread the API rather than hit a missing feature.
+- **No migration in this batch** — `makemigrations --check` clean, and `media/0001` (T2.4) re-verified
+  reversible `[X]` → `[ ]` → `[X]`.
+- **Suite: 714 passed / 1 xfailed**; mypy 145 files, ruff 153 files, `check --deploy` clean, no drift.
+- ❓ **Unchanged and still open:** Q9 (LLM provider — T3.5's blocker, and the report bucket above is
+  sized as its cost ceiling), Q3, Q5, Q10. **`CLAUDE.md`'s "Build state" paragraph is stale** (it
+  still reads "Next: T2.4" with a 529-test suite) — left untouched on the owner's instruction, and
+  noted here so it is not mistaken for the current state.
+
 ## C3. P2 Reporting & Media
 - T2.2: the `POST /reports` response is `202 Accepted` — the report is written synchronously, triage
   is async. The response body is the created report resource (not empty). Return immediately; do not
@@ -1672,6 +2042,15 @@ drift, `check --deploy` clean on `prod`.
   then strip all EXIF. Never store the original EXIF-bearing file.
 - T2.1: boundary check uses PostGIS point-in-polygon (`ST_Within` or `dwithin` against the city
   polygon). Reject with `422 OUT_OF_CITY` if outside.
+- T2.7: `GET /reports/{id}` is public (Q7); `GET /reports` is not — the list is scoped to own /
+  in-scope / all by role, so it needs a caller to mean anything. Moderated content answers `410`, for
+  every role.
+- T2.8: `PATCH /reports/{id}` carries **no severity field** — severity lives on the Issue, and FR-11's
+  re-severity is §6.5's Issue-level override. The author's edit window closes at triage; an official
+  may re-categorize after it but never touches the description.
+- T2.9: FR-33 covers **both** write endpoints, `POST /reports` and `POST /media`, per account *and*
+  per source address. The per-source bucket is shared between them — that is the Sybil limit, and it
+  is why a five-photo report costs six units of it.
 
 **M2 gate:** report + photo submitted → `202` immediately; photo stored with EXIF stripped; citizen
 can retrieve own reports; out-of-city and invalid submissions rejected correctly; duplicate submits
@@ -1683,11 +2062,26 @@ are idempotent.
 - [x] BR-3 "at least one of {photo, adequate description}" (T2.1 — ⚠️ `media_count` is a parameter
       until T2.4 associates real media)
 - [x] report submitted → `202` immediately, triage enqueued (T2.2 — ⚠️ `transaction.on_commit`;
-      ⚠️ unthrottled until T2.9; the *photo* half of this gate line is T2.4/T2.5)
+      ⚠️ throttled as of T2.9; the *photo* half of this gate line is T2.4/T2.5)
 - [x] duplicate submits are idempotent (T2.3 — ⚠️ `cache.add()` atomicity is the concurrency claim;
       ⚠️ failed requests do not consume their key)
-- [ ] photo stored with EXIF stripped (T2.5 — ❓Q6)
-- [ ] citizen can retrieve own reports (T2.7)
+- [x] photo stored with EXIF stripped (T2.4/T2.5 — ✅ ❓Q6 RESOLVED 2026-08-08: strip all EXIF always;
+      ⚠️ the strip is **synchronous**, before the first `storage.save()` — only the derivatives are
+      deferred; ⚠️ transpose *then* strip)
+- [x] photos attach to a report and satisfy BR-3 (T2.6 — ⚠️ two-step resolve-then-bind;
+      ⚠️ `report__isnull=True` is what makes attachment single-use)
+- [x] citizen can retrieve own reports (T2.7 — ⚠️ visibility resolved in the selector *before* any
+      filter; ⚠️ the detail read is public while the collection is session-scoped; ⚠️ moderated
+      content is `410` for every role, Admin included)
+- [x] a report can be corrected (T2.8 — FR-11; ⚠️ two rights through one endpoint, and a human
+      correction must not stamp `classified_at`; ⚠️ BR-3 re-checked against *visible* photos)
+- [x] submission is rate limited (T2.9 — FR-33; ⚠️ covers `POST /media` too; ⚠️ the per-source bucket
+      is shared by both endpoints; ⚠️ a rejection and a replay each consume budget)
+
+**M2 gate status: all lines met.** The remaining P2 task IDs in `05-project-plan.md` are covered by the
+two batch records above; nothing in this gate is outstanding. **P3 (classification) is blocked on
+❓Q9** — T3.1's ABC and T3.3's keyword fallback can be built against it, but T3.2's adapter cannot be
+finished without a provider.
 
 ## C4. P3 Classification
 - T3.1: `ClassificationService` is a plain Python ABC with no Django imports. This is what makes it

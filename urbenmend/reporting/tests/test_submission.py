@@ -40,6 +40,8 @@ from urbenmend.classification.models import Category
 from urbenmend.geo.tests.factories import OUTSIDE_POINT
 from urbenmend.identity.models import Language
 from urbenmend.identity.tests.factories import AuthorityFactory, UserFactory
+from urbenmend.media.models import Media, MediaState
+from urbenmend.media.tests.factories import MediaFactory
 from urbenmend.reporting import services
 from urbenmend.reporting.models import (
     ClassificationSource,
@@ -435,8 +437,8 @@ def test_derived_fields_are_rejected_not_silently_dropped() -> None:
     assert Report.objects.count() == 0
 
 
-def test_media_ids_are_refused_while_upload_is_unbuilt() -> None:
-    """⚠️ Refused, not ignored (T2.4/T2.6 own media).
+def test_an_unresolvable_media_id_is_refused_not_dropped() -> None:
+    """⚠️ Refused, not ignored — the T2.2 decision, now enforced by T2.6's resolve step.
 
     Dropping the key would let a photo-only submission fail BR-3 with "describe the problem" — an
     error about `description` when the client did attach a photo, and no way to act on it.
@@ -448,6 +450,154 @@ def test_media_ids_are_refused_while_upload_is_unbuilt() -> None:
 
     assert response.status_code == 400
     assert "mediaIds" in {detail["field"] for detail in response.json()["error"]["details"]}
+    assert Report.objects.count() == 0
+
+
+def test_a_photo_alone_satisfies_br3_with_no_description() -> None:
+    """BR-3 is "photo **or** adequate description", and T2.6 is what makes the first half reachable.
+
+    ⚠️ The whole point of `resolve_media_for_attachment()` running *before* `create_report()`: the
+    count has to exist before the content rule is evaluated, and the row it will attach to does not
+    exist yet.
+    """
+    client, citizen = _signed_in_citizen()
+    media = MediaFactory.create(owner=citizen)
+
+    with patch(DELAY):
+        response = client.post(
+            _url(),
+            data=_body(description="", mediaIds=[str(media.pk)]),
+            content_type="application/json",
+        )
+
+    assert response.status_code == 202
+    media.refresh_from_db()
+    assert media.report_id is not None
+    assert str(media.report_id) == response.json()["reportId"]
+
+
+def test_another_citizens_photo_cannot_be_attached() -> None:
+    """Ownership is the check that makes `mediaIds` safe to accept from a client at all."""
+    client, _ = _signed_in_citizen()
+    stranger_media = MediaFactory.create()
+
+    response = client.post(
+        _url(),
+        data=_body(mediaIds=[str(stranger_media.pk)]),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    stranger_media.refresh_from_db()
+    assert stranger_media.report_id is None
+
+
+def test_a_photo_already_attached_to_a_report_cannot_be_reused() -> None:
+    """⚠️ Attachment is single-use, and FR-16 is why.
+
+    Without the `report__isnull=True` filter one photo could be mounted on ten reports, which the
+    corroboration count would then read as ten independent citizens reporting one pothole.
+    """
+    client, citizen = _signed_in_citizen()
+    media = MediaFactory.create(owner=citizen)
+
+    with patch(DELAY):
+        first = client.post(
+            _url(), data=_body(mediaIds=[str(media.pk)]), content_type="application/json"
+        )
+    assert first.status_code == 202
+
+    second = client.post(
+        _url(), data=_body(mediaIds=[str(media.pk)]), content_type="application/json"
+    )
+
+    assert second.status_code == 400
+    media.refresh_from_db()
+    assert str(media.report_id) == first.json()["reportId"]
+
+
+def test_more_photos_than_the_cap_are_refused() -> None:
+    client, citizen = _signed_in_citizen()
+    media = [MediaFactory.create(owner=citizen) for _ in range(settings.MEDIA_MAX_PER_REPORT + 1)]
+
+    response = client.post(
+        _url(),
+        data=_body(mediaIds=[str(item.pk) for item in media]),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    assert all(item.report_id is None for item in Media.objects.filter(owner=citizen)) is True
+
+
+def test_a_moderated_photo_cannot_be_attached() -> None:
+    """A removed photo is not evidence — attaching one would put moderated content back on a report."""
+    client, citizen = _signed_in_citizen()
+    media = MediaFactory.create(owner=citizen, state=MediaState.REMOVED)
+
+    response = client.post(
+        _url(), data=_body(mediaIds=[str(media.pk)]), content_type="application/json"
+    )
+
+    assert response.status_code == 400
+
+
+def test_a_still_processing_photo_is_attachable() -> None:
+    """⚠️ Arch §4.1: a Report can be usable before its Media is `Ready`.
+
+    Requiring `READY` would make BR-3 depend on worker latency — a citizen who submits a second
+    after uploading would be told their own photo does not exist.
+    """
+    client, citizen = _signed_in_citizen()
+    media = MediaFactory.create(owner=citizen, state=MediaState.PROCESSING)
+
+    with patch(DELAY):
+        response = client.post(
+            _url(),
+            data=_body(description="", mediaIds=[str(media.pk)]),
+            content_type="application/json",
+        )
+
+    assert response.status_code == 202
+
+
+def test_a_rejected_submission_leaves_the_photos_unattached() -> None:
+    """The attach rides `submit_report()`'s transaction — an out-of-city `422` must undo it.
+
+    ⚠️ `attach_media()` deliberately carries no `@transaction.atomic` of its own, which is what
+    makes this true. A savepoint there would commit independently of the report write and leave
+    photos bound to a report that never existed.
+    """
+    client, citizen = _signed_in_citizen()
+    media = MediaFactory.create(owner=citizen)
+
+    response = client.post(
+        _url(),
+        data=_body(
+            location={"lng": OUTSIDE_POINT.x, "lat": OUTSIDE_POINT.y},
+            mediaIds=[str(media.pk)],
+        ),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 422
+    media.refresh_from_db()
+    assert media.report_id is None
+
+
+def test_a_duplicated_media_id_counts_once_and_is_not_an_error() -> None:
+    """A buggy client, not an abusive one — but `["a", "a"]` must not read as two photos."""
+    client, citizen = _signed_in_citizen()
+    media = MediaFactory.create(owner=citizen)
+
+    with patch(DELAY):
+        response = client.post(
+            _url(),
+            data=_body(description="", mediaIds=[str(media.pk), str(media.pk)]),
+            content_type="application/json",
+        )
+
+    assert response.status_code == 202
 
 
 def test_an_empty_media_ids_list_is_accepted() -> None:
@@ -564,11 +714,19 @@ def test_a_registered_but_unverified_citizen_may_submit() -> None:
     assert response.status_code == 202
 
 
-def test_get_reports_is_405_until_t27() -> None:
-    """The route exists for `POST` only. `405` is the honest answer; `404` would deny the resource."""
+@pytest.mark.parametrize("method", ["put", "delete"])
+def test_the_collection_refuses_a_method_it_does_not_implement(method: str) -> None:
+    """`405` is the honest answer for an unimplemented verb; `404` would deny the resource exists.
+
+    ⚠️ **This replaced `test_get_reports_is_405_until_t27`, which T2.7 turned false** — `GET /reports`
+    is now the collection read and answers `200` (`tests/test_list.py` owns that contract). The
+    surviving claim is the one that was worth asserting: adding a verb to `ReportCollectionView` is a
+    deliberate act, and `PUT` in particular must stay refused — api-conventions.md reserves it for
+    full replacement, so a client sending one has misread the API rather than hit a missing feature.
+    """
     client, _ = _signed_in_citizen()
 
-    assert client.get(_url()).status_code == 405
+    assert getattr(client, method)(_url()).status_code == 405
 
 
 # ---------------------------------------------------------------------------------------

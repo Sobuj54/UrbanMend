@@ -1,700 +1,293 @@
 # UrbanMend — Claude Code Project Memory
 
-Civic issue-reporting platform for a single city (initial deployment: Bangladesh). Citizens submit
-geolocated photo reports of infrastructure problems; a hosted-LLM triage layer assigns category and
-severity (Critical/High/Medium/Low), and nearby reports cluster into Issues that Authorities act on.
-Three actors: **Citizen**, **Authority**, **Admin**. This repo is **backend only** (API + Worker).
+Civic issue-reporting backend for a single city (initial deployment: Bangladesh). Citizens submit
+geolocated photo reports; a hosted-LLM triage layer assigns category and severity
+(Critical/High/Medium/Low); nearby reports cluster into Issues that Authorities act on. Actors:
+**Citizen**, **Authority**, **Admin**. **Backend only** (API + Worker).
 
-**Two domain terms that are not synonyms** (PRD §6.1): a **Report** is one citizen submission;
-an **Issue** is a cluster of one or more Reports = one real-world problem. Severity, status, and
-assignment live on the **Issue**, never on the Report.
-
-**Naming:** the product is "UrbanMend"; the code/package/image identifier is `urbenmend`
-(`urbenmend.asgi:application`, `celery -A urbenmend`, `urbenmend/api`).
+**Report ≠ Issue** (PRD §6.1): a **Report** is one citizen submission; an **Issue** is a cluster of one
+or more Reports = one real-world problem. Severity, status and assignment live on the **Issue**, never
+on the Report. **Naming:** the product is "UrbanMend", the package/image identifier is `urbenmend`
+(`urbenmend.asgi:application`, `celery -A urbenmend`).
 
 ## Stack (committed — 02-architecture.md §2.3, ADR-001 Accepted)
 
-| Layer | Choice |
-|---|---|
-| Language / framework | Python + Django + Django REST Framework |
-| Datastore | PostgreSQL + PostGIS |
-| Geospatial | GeoDjango (`django.contrib.gis`) + `djangorestframework-gis` |
-| Migrations | Django migrations |
-| App server | ASGI (uvicorn) |
-| Worker / queue | Celery (Redis broker) + Celery beat |
-| Cache / rate-limit store | Redis |
-| Object storage | S3-compatible (S3 or MinIO) via `django-storages` |
-| Lint / types | `ruff`, `mypy` |
-| Tests | `pytest-django` + `factory_boy` |
+Python + Django + DRF · PostgreSQL + PostGIS · GeoDjango + `djangorestframework-gis` · Django
+migrations · ASGI (uvicorn) · Celery (Redis broker) + beat · Redis for cache/rate-limit/idempotency ·
+S3-compatible storage via `django-storages` · `ruff` + `mypy` · `pytest-django` + `factory_boy`.
 
-✅ Pinned in T0.1 (2026-08-03): **Python 3.13**, **Django 5.2.16 LTS**, **DRF 3.17.1**, deps via
-**pip-compile** (`requirements/{base,dev}.in` → `.txt`, `--generate-hashes`; `dev.txt` also needs
-`--allow-unsafe`). Base image `python:3.13-slim` (verified: GEOS 3.13.1, GDAL 3.10.3). Python 3.13
-is a ceiling, not a preference — `djangorestframework-gis` 1.2.1 caps at 3.13.
-
-✅ Pinned in A9/T0.5 (2026-08-05): **CI vendor is GitHub Actions** — chosen by the user, recorded
-here because no planning doc named one. The seven-stage order is doc-mandated (DevOps §4.1) and
-vendor-independent; only the runner syntax is Actions-specific.
-
-Still not pinned anywhere: cloud host, LLM provider (Q9).
-**Do not invent these — raise them instead.**
+- ✅ T0.1: **Python 3.13** (a **ceiling**, not a preference — `djangorestframework-gis` 1.2.1 caps
+  there), **Django 5.2.16 LTS**, **DRF 3.17.1**, `python:3.13-slim`; deps via **pip-compile**
+  (`requirements/{base,dev}.in` → `.txt`, `--generate-hashes`; `dev.txt` needs `--allow-unsafe`).
+- ✅ A9/T0.5: **CI vendor is GitHub Actions** (user's choice; no doc named one). The seven-stage order
+  is doc-mandated (DevOps §4.1) and vendor-independent.
+- **Unpinned: cloud host, LLM provider (❓Q9). Do not invent these — raise them.**
 
 ## Context: planning docs
 
-`@docs/08-coding-workflow.md`
-
-The rest are large; **read on demand** rather than loading every session:
-
-| Path | Read when |
-|---|---|
-| `docs/01-prd.md` | Requirements, FR-/NFR-/BR- IDs, non-goals, edge cases |
-| `docs/02-architecture.md` | Module boundaries, layering, module→Django-app map, sessions, outbox |
-| `docs/03-data-model.md` | Domain entities and relationships (**domain only — no schema/SQL**) |
-| `docs/04-api-specification.md` | Endpoint contracts — **authoritative over the implementation** |
-| `docs/05-project-plan.md` | Phases and task IDs (T0.1, T1.5, …) |
-| `docs/06-devops-guide.md` | Containers, CI stages, migration policy, K8s, observability |
-| `docs/07-adr-001-app-framework.md` | Why Django/DRF; why FastAPI and NestJS were rejected |
-| `docs/09-operations.md` | **DC-1** — local setup, env vars, runbook skeleton, migration guide |
+`@docs/08-coding-workflow.md` — **the build records in §C1–C2 carry the full reasoning behind every ⚠️
+line below. Read the relevant record before changing anything marked ⚠️.** This file is the index; that
+file is the argument. The rest are large; **read on demand**: `01-prd.md` (FR-/NFR-/BR- IDs, non-goals,
+edge cases) · `02-architecture.md` (module boundaries, layering, sessions, outbox) · `03-data-model.md`
+(domain entities — **no schema/SQL**) · `04-api-specification.md` (endpoint contracts —
+**authoritative over the implementation**) · `05-project-plan.md` (phases, task IDs) ·
+`06-devops-guide.md` (containers, CI, migrations, K8s, observability) · `07-adr-001-app-framework.md`
+(why Django/DRF) · `09-operations.md` (**DC-1** — local setup, env vars, runbook, migration guide).
 
 ## Repo structure
-
-✅ Built in A4–A5 (2026-08-03). Actual layout:
 
 ```
 manage.py  pyproject.toml  Dockerfile  docker-compose.yml  requirements/
 urbenmend/
   settings/{base,dev,prod,build}.py  urls.py  asgi.py  wsgi.py
-  identity/  reporting/  media/  classification/  issues/  geo/
+  api/  identity/  reporting/  media/  classification/  issues/  geo/
   notifications/  moderation/  audit/  export/  platform/
 ```
 
-⚠️ Apps are **nested under `urbenmend/`** and import as `urbenmend.<label>` — a root-level
-`platform` package shadows the stdlib module Django imports. App labels are unchanged.
+- ⚠️ Apps **nest under `urbenmend/`** and import as `urbenmend.<label>` — a root-level `platform`
+  package shadows the stdlib module Django imports (app *labels* are unchanged). Each app carries
+  `apps.py`, `models.py`, **`services.py` (writes + authorization)**, **`selectors.py` (reads)**,
+  `admin.py`, `migrations/`, `tests/` from day one; DRF views stay thin.
+  `urbenmend/platform/tests/test_app_skeleton.py` enforces this — add the same file set or it fails.
+- Settings split is **`base`/`dev`/`prod`** (+ `build`); DevOps §3.2's `settings.local` was amended to
+  `settings.dev` — **do not reintroduce it**. ⚠️ **`DJANGO_SECRET_KEY` and `DATABASE_URL` are required
+  with no fallback** in `base`/`prod`: `build.py` injects throwaways so build-time `collectstatic`
+  needs no secrets, `dev.py` has local-only fallbacks. **Never add a fallback to `prod.py`.**
 
-Each app carries `apps.py`, `models.py`, **`services.py` (writes + authorization)**,
-**`selectors.py` (reads)**, `admin.py`, `migrations/` and `tests/` from day one. DRF views stay thin.
-`urbenmend/platform/tests/test_app_skeleton.py` enforces this structurally — add the same file set
-when adding an app, or it fails.
+## Build state
 
-✅ Resolved (A1): the settings split is **`base`/`dev`/`prod`** (plan T0.3 naming). DevOps §3.2's
-`urbenmend.settings.local` was amended to `urbenmend.settings.dev`. Do not reintroduce `settings.local`.
+**Done:** A1/A4–A7 (settings split, skeleton, `AUTH_USER_MODEL`, baseline migration) · T0.6 (camelCase
+layer + `{data, page, meta}` envelope + error handler) · T0.10 (`Category`, seven-node taxonomy, ✅ ❓Q1
+resolved) · T1.2–T1.9 (registration/verification, sessions, CSRF, RBAC, provisioning, 2FA, throttling,
+`/users/me`) · T2.1–T2.3 (`Report` + `geo` app, `POST /reports`, `Idempotency-Key`).
 
-✅ Built in A4 (2026-08-03): `urbenmend/settings/{base,dev,prod,build}.py`, `urbenmend/{urls,asgi,wsgi}.py`,
-`pyproject.toml` (ruff/mypy/pytest config). Verified: `check --deploy` clean on prod, `mypy --strict` clean,
-uvicorn boots. Three A4 decisions that bind later work:
+Suite after T2.3 (2026-08-08): **529 passed / 1 xfailed**, mypy 131 files / ruff 139 files clean, no
+drift, `check --deploy` clean. **Next: T2.4** (media upload).
 
-- **Apps nest under `urbenmend.`** (`urbenmend/platform/`, not `platform/`) — a root-level `platform`
-  package shadows the stdlib module Django imports. App *names* are unchanged.
-- **`DJANGO_SECRET_KEY` and `DATABASE_URL` are required with no fallback** in `base`/`prod`. `build.py`
-  injects throwaway values before importing base so build-time `collectstatic` needs no secrets;
-  `dev.py` has local-only fallbacks so a fresh clone can lint and test. Never add one to `prod.py`.
-- **`DEFAULT_PAGINATION_CLASS` is unset**, `rest_framework.W001` silenced. No DRF built-in emits the
-  `{data, page, meta}` envelope; T0.6 adds the custom class and removes the silencer.
+**Unowned / blocked — do not silently absorb into another task:** `/auth/password/forgot`·`/reset`
+(blocked on ❓Q5; **a provisioned Authority still has no way to set a first password**, so T1.6 accounts
+cannot log in) · `GET /users` and `PATCH /users/{id}` (Admin, API §6.2 — need a task ID; that `PATCH` is
+the documented route for Authority deprovisioning *and* Admin-side email changes, so **two T1.9
+decisions have no implemented alternative path**) · `POST /reports` is **unthrottled** until **T2.9**
+(FR-33) — idempotency bounds accidental duplication, not abuse.
 
-✅ Built in A6 (2026-08-04): `AUTH_USER_MODEL = "identity.User"` — **the irreversible step is done.**
-`urbenmend/identity/models.py` holds `User` (UUID PK), `UserManager`, and the `Role` / `UserStatus` /
-`Language` enums; `admin.py` and 28 tests accompany it. Decisions that bind later work:
+## ⚠️ Traps that bind future work
 
-- **`email` and `phone` are both nullable + UNIQUE**, at-least-one enforced by the
-  `identity_user_has_contact_or_anonymized` CheckConstraint. Absence is **`NULL`, never `""`** —
-  Postgres allows many NULLs under UNIQUE but only one `""`. The constraint has a `status=deleted`
-  escape hatch; without it the C-14/BR-33 anonymization would be impossible. Don't tighten it.
-- **`is_active` is a derived read-only property**, not a column — assignment raises `AttributeError`
-  by design; move `status` instead. `registered`/`verified`/`active` are the authenticating states.
-- **Verification is timestamps** (`email_verified_at`, `phone_verified_at`), not booleans. The API's
-  `verified: {email, phone}` is derived from them.
-- **Contact normalization lives in `save()`**, not just `clean()` — DRF never calls `full_clean()`.
-- ⚠️ **`PermissionsMixin` is inherited for Django-admin plumbing only.** Domain RBAC is `role` +
-  category scope in `services.py`. Never put it in `groups`/`user_permissions`.
-- **Still deliberately absent:** the Authority↔Category M2M (waits for Category, T0.10 — an ordinary
-  additive migration later) and the T1/T2 trust signal (derivable; a stored score would invent a
-  weighting, and FR-21 removed the one tunable score).
-- Tooling: `django_otp.*` is `ignore_missing_imports` in mypy (no `py.typed`; pulled in by the
-  django-stubs plugin, not by our imports); `**/tests/*.py` is exempt from ruff `S105`/`S106`.
+Each is a rule someone would plausibly "simplify" away; the matching record in
+`docs/08-coding-workflow.md` says what breaks.
 
-✅ Built in A7 (2026-08-05): `urbenmend/identity/migrations/0001_initial.py` — **the baseline
-migration.** Leads with `CreateExtension("postgis")`, then creates `User`. Closes both A6 red
-signals: `pytest` is **96 passed**, `makemigrations --check --dry-run` exits **0**.
+### Migrations & data
 
-- ⚠️ **`CreateExtension("postgis")` must stay the first operation of the first migration.** It lives
-  in `identity` — not `geo`/`reporting`, which will own the geometry — because Django orders by the
-  dependency graph, not app name, and `identity.0001` is the earliest project-owned node
-  (`AUTH_USER_MODEL` points at it). A geometry-bearing app must still name it in `dependencies` if
-  it has no other path to it.
-- ⚠️ **`postgis/postgis` pre-creates the extension, so `migrate` against the compose DB cannot fail
-  and proves nothing.** `sqlmigrate` shows the operation as `-- (no-op)` there. Verified instead
-  against a fresh `CREATE DATABASE` holding only `plpgsql`; a `geography(Point,4326)` column then
-  worked. Re-verify only on an empty database.
-- ⚠️ **`identity/0001` is frozen** — it has been applied. It was hand-edited before that (the
-  documented posture: a generated migration is a draft, DevOps §7). Reversing it DROPs the
-  extension; deployment is forward-only via a pre-deploy Job.
+- ⚠️ **`CreateExtension("postgis")` stays the first operation of `identity/0001`** (the earliest
+  project-owned node); a geometry app must name it in `dependencies`. **`identity/0001` is frozen.**
+- ⚠️ **`postgis/postgis` pre-creates the extension, so the compose DB proves nothing** — verify on a
+  fresh `CREATE DATABASE`. "No migrations to apply" is not reversibility; `[X]` → `[ ]` → `[X]` is.
+- ⚠️ **`RunPython` needs a real reverse deleting only what it seeded**, never `Model.objects.all()`.
+  Taxonomy/boundary are seeded data (NFR-11): `apps.get_model()`, GEOS imported *inside* the function.
+- **Nullable → backfill → tighten**, never `AddField(unique=True)` against populated rows.
 
-✅ Built in T1.2 (2026-08-05): registration + channel verification. `VerificationCode` + `Channel`
-in `identity/models.py`, migration `0002`, `register_citizen`/`send_verification_code`/`verify_code`
-services, `identity/serializers.py`, `identity/views.py`, `POST /auth/register` + `POST /auth/verify`,
-read-only `VerificationCodeAdmin`, 22 tests. `pytest` **205 passed / 1 xfailed**, mypy/ruff clean.
+### Identity & auth
 
-- ⚠️ **Code delivery is NOT wired up — ❓Q5 is open.** Codes are issued and verifiable; nothing
-  transmits them. The `transaction.on_commit(...)` enqueue sits as a comment at the exact line it
-  belongs on in `send_verification_code()`. Q5's resolution is an insertion, not a redesign.
-- ⚠️ **`verify_code()` must never be decorated `@transaction.atomic`.** The attempt increment has to
-  commit *before* the comparison that may reject it, or a wrong code rolls the counter back,
-  `MAX_ATTEMPTS` never fires, and a 6-digit code gets unlimited guesses. Two separate `atomic()`
-  blocks, `select_for_update()` on the first.
-- **The verification code is Argon2-hashed like a password**, and the plaintext is returned as the
-  second tuple element rather than an attribute, so passing the row to a serializer or log cannot
-  leak it. Never log it, never put it in a response body.
-- **`CODE_LENGTH=6`, `TTL=10min`, `MAX_ATTEMPTS=5` are our policy, not spec-derived** — API §6.1
-  fixes only the shape and the expired-code `422`.
-- **Pre-session `/auth/verify` returns one generic message for every failure** (no enumeration
-  oracle); an authenticated caller gets the specific reason. A test asserts the unknown-address and
-  wrong-code replies are identical.
-- **`VerificationCodeAdmin` is fully read-only and never surfaces `code_hash`** — a writable
-  `attempts` or `consumed_at` would defeat the service's controls.
-- **Verification failure is always an exception, never a `False` return** — a bool invites
-  `if verify_code(...)` with no `else`, which fails open.
+- ⚠️ **`email`/`phone` are nullable + UNIQUE; absence is `NULL`, never `""`.** The
+  `identity_user_has_contact_or_anonymized` constraint's `status=deleted` branch is what makes C-14
+  anonymization possible — **don't tighten it.**
+- **`is_active` is a derived read-only property** (move `status`) · verification is **timestamps**, not
+  booleans · **normalization lives in `save()`** (DRF skips `full_clean()`) · ⚠️ **`PermissionsMixin` is
+  admin plumbing only** — RBAC is `role` + scope in `services.py`, never `groups`/`user_permissions`.
+- ⚠️ **`verify_code()` must never be `@transaction.atomic`** — the attempt increment must commit before
+  the comparison that may reject it, or `MAX_ATTEMPTS` never fires. Two blocks, `select_for_update()`.
+  **Codes are Argon2-hashed**, plaintext returned as a tuple element; **failure raises, never returns
+  `False`** (a bool invites `if verify_code(...)` with no `else` — fails open). **Pre-session
+  `/auth/verify` gives one generic message for every failure.**
+- ⚠️ **Revoke via `SessionStore(session_key=...).delete()`, never `Session.objects.filter().delete()`**
+  — on `cached_db` the cached copy keeps authenticating (BR-25, BR-33). **`start_session()` wraps
+  `django.contrib.auth.login()`** for `cycle_key()`, `backend=` explicit; **`start_partial_session()`
+  calls `cycle_key()` itself.**
+- ⚠️ **Password is checked BEFORE status**; `AccountLockedError` subclasses `AuthenticationError` and
+  the view's `except` clauses are **locked-first** — reversed, every `403 ACCOUNT_LOCKED` becomes `401`.
+  **An unknown identifier still hashes a throwaway password** (timing oracle). **`LoginSerializer`
+  validates shape only** — no `EmailField`, no `min_length`, `trim_whitespace=False`.
+- ⚠️ **DRF's `NotAuthenticated` → `403` rewrite is undone once, globally** (§4.2 requires `401`); no
+  per-view `handle_exception`, and login failures use a plain `APIException`. ⚠️ **CSRF is enforced only
+  on authenticated requests** — any view with `authentication_classes = []` drops it silently;
+  `identity/tests/test_csrf.py` is the catch.
 
-✅ Built in T1.3 (2026-08-07): sessions, login, logout, revocation. `authenticate_user` /
-`start_session` / `end_session` / `revoke_all_sessions` in `identity/services.py`;
-`Login`/`LoginResponse` serializers; `LoginView` + `LogoutView`; `POST /auth/login` +
-`POST /auth/logout`; `InvalidCredentials` + `AccountLocked` in `api/exceptions.py`; 28 tests.
-**No migration.** `pytest` **233 passed / 1 xfailed**, mypy (109 files) / ruff clean.
+### Two-factor (T1.7)
 
-- ⚠️ **Revoke through `SessionStore(session_key=...).delete()` — never
-  `Session.objects.filter(...).delete()`.** On `cached_db` a raw row delete leaves the cached copy
-  live and the session keeps authenticating until the cache expires. The ORM call looks correct and
-  the row really does vanish, which is what makes it a silent hole. Applies to every future caller:
-  BR-25 suspension and BR-33 deprovisioning both revoke this way.
-- **`start_session()` wraps `django.contrib.auth.login()`** for its `cycle_key()` — the
-  session-fixation defence. A hand-rolled `request.session[SESSION_KEY] = ...` sets the same keys
-  and looks equivalent while leaving a planted pre-login token valid. `backend=` must be passed
-  explicitly since the user comes from a service, not `authenticate()`.
-- ⚠️ **Password is checked BEFORE account status**, and `AccountLockedError` subclasses
-  `AuthenticationError` (fail-closed for `except AuthenticationError`). The view's `except` clauses
-  are ordered locked-first — reversing them silently turns every `403 ACCOUNT_LOCKED` into a `401`.
-- **`authenticate_user()` hashes a throwaway password when the identifier is unknown**, or response
-  timing becomes the enumeration oracle the identical error messages exist to prevent.
-- ⚠️ **DRF's `NotAuthenticated` → `403` rewrite is undone in `urbenmend_exception_handler`.**
-  `SessionAuthentication` offers no `WWW-Authenticate` header, so DRF rewrote every unauthenticated
-  reply to `403`; API §4.2 requires `401 UNAUTHENTICATED`. Fixed once globally — do not re-add
-  per-view `handle_exception` overrides. For the same reason login failures use a plain
-  `APIException` (`InvalidCredentials`), not `NotAuthenticated`/`AuthenticationFailed`, which
-  `handle_exception` special-cases.
-- **`LoginSerializer` validates shape only** — no `EmailField`, no password `min_length`. Both would
-  answer a question the caller has not earned: that their guess was not even a valid address, or
-  what the password policy is. `trim_whitespace=False` — a leading space is part of the secret.
-- ✅ **`requires2fa` shipped hardcoded `False`; T1.7 made it a real check** and stopped `LoginView`
-  issuing a full session in the same change, as this note required. See the T1.7 record below.
+- ⚠️ **The partial session works by NOT calling `django_login()`** — `SESSION_KEY` stays unset, so every
+  authenticated endpoint `401`s automatically. **django-otp's `otp_required` was rejected**: it logs the
+  user in fully then gates views one at a time, so a view added later fails open. ⚠️ **The two 2FA
+  routes are the only ones accepting a non-authenticated session.**
+- ⚠️ **`device.key` is hex, `config_url` is base32** — returning `device.key` as `secret` makes QR work
+  and manual entry silently wrong forever. ⚠️ **Don't reimplement `verify_token()`**: it stores
+  `last_t`, the only replay protection inside a code's own 30-second window.
+- **A confirmed device is checked before an unconfirmed one**; a flagged account with **no** device
+  reads `requires_two_factor() == True`, escaped by `/auth/2fa/enroll` accepting a partial session (an
+  unconfirmed device does not opt an account in). **`resolve_partial_session_user()` re-fetches and
+  re-checks `is_active`.** **The `user` object is omitted while `requires2fa` is true** — `null` leaks
+  the same distinction by shape.
 
-✅ Verified in T1.4 (2026-08-07): CSRF protection for state-changing requests. **No new code** —
-`CsrfViewMiddleware` + `SessionAuthentication` were already configured from A4/T0.3. The task was
-proving the mechanism works, not building it. 5 tests in `identity/tests/test_csrf.py`; full suite
-**238 passed / 1 xfailed**, mypy (110 files) / ruff clean.
+### RBAC & provisioning (T1.5/T1.6)
 
-- **CSRF enforcement is scoped to authenticated requests.** `SessionAuthentication` enforces it only
-  when it resolved the user. Pre-session endpoints (`/auth/register`, `/auth/login`) set
-  `authentication_classes = []` and are exempt by design — a first-time visitor has no token to
-  present. Login CSRF (tricking a victim into authenticating as the *attacker's* account) is a
-  residual risk this scoping accepts; it is lower severity than the authenticated-request threat.
-- **The CSRF token rotates on login**, separately from the session key. `CSRF_USE_SESSIONS = False`
-  means the token rides in its own cookie, so T1.3's session-key rotation does not cover it.
-  `django.contrib.auth.login()` calls `rotate_token()` — a planted token does not stay valid.
-- ⚠️ **Any future view that sets `authentication_classes = []` drops CSRF enforcement with no
-  warning.** The test suite catching that is the whole point of T1.4 — "DRF handles it" is an
-  assumption until a test fails when it stops being true.
+- ⚠️ **An empty `category_scope` grants nothing** — never read empty as "unrestricted". **Admins bypass
+  scope**: `scoped_category_ids()` returns `None` = no filter (a row-per-category Admin loses access the
+  moment a migration adds a node). ⚠️ **`has_role()` checks `status` too** — a suspended Authority still
+  reads `role == "authority"`.
+- ⚠️ **`403` to act, `404` to see** — a `403` on a scoped read confirms the id exists elsewhere.
+  **Denial messages name neither role nor resource.** ⚠️ **Test scope with `.filter(pk=...).exists()`,
+  never `category in scope.all()`** (which caches). **`AuthorizationError` subclasses Django's
+  `PermissionDenied`, not DRF's.**
+- ⚠️ **BR-25's audit is a structured log line, not a record — knowingly.** The immutable table is
+  **T8.1** (append-only via revoked `UPDATE`/`DELETE`). Everything funnels through
+  `_audit_privileged_action()`; **T8.1 replaces its body — never add a second call path beside it.**
+  (Admin's scope editor bypasses it: break-glass for FR-30/31.)
+- **New authorities start `registered`** (BR-30) · **retired categories are rejected `422`, never
+  dropped** · **this `409` is specific, registration's is generic** — don't unify · **`role`/`status` in
+  the body are ignored.** ⚠️ **`set_category_scope()` replaces, never merges** (`[]` legitimately
+  revokes all), and **checks the `role` column, not `has_role()`**, or a suspended Authority is
+  reinstatable only with the wrong scope.
+- ⚠️ **No `IsAdminUser`** — DRF's checks `is_staff`, not the domain `role`; `require_role()` in the
+  service is the enforcement point (FR-3). ⚠️ **`users/authorities` and `users/me` must stay routed
+  before any `users/<id>` pattern.**
 
-✅ **❓Q1 RESOLVED (2026-08-07) — the category taxonomy is confirmed**, and T0.10's `Category` is
-built: `urbenmend/classification/models.py` (`Category`, `CategoryStatus`), migration `0001_initial`
-seeding seven nodes, read-only-ish `CategoryAdmin`, 7 tests. `pytest` **245 passed / 1 xfailed**,
-mypy/ruff clean, no drift, migration verified reversible. PRD §6.2/§15 and ops §4 amended to record
-the resolution.
+### Categories (T0.10)
 
-- **The taxonomy is the PRD §6.2 draft, confirmed as-is** — seven flat nodes: `Roads & Transport`,
-  `Street Lighting`, `Water & Drainage`, `Sanitation & Waste`, `Electrical Hazards`,
-  `Public Structures`, `Other / Uncategorized`. Flat, not hierarchical (§6.2 lists peers;
-  data-model §5 gives Category no parent).
-- ⚠️ **`Other / Uncategorized` is a required sink, not filler** (PRD §331): when LLM triage returns
-  a category outside the allowed set, it coerces to `Other`. Deleting or retiring it breaks the
-  fallback. A test asserts it exists and is active.
-- **`slug` is the stable machine key; labels are display-only.** Code, the LLM adapter, and future
-  authority-scope rows reference `slug` — renaming an English label must not break classification.
-- **Bilingual labels are non-null** (`name_en`, `name_bn`, NFR-8). A test asserts `name_bn` is not a
-  copy of `name_en` — a placeholder-Bangla seed would satisfy a not-null check and still ship an
-  untranslated UI.
-- **Lifecycle is `Active → Retired`, never deleted** (data-model §5). `CategoryAdmin` disables add
-  and delete: additions come from migrations (taxonomy is reviewed data, NFR-11), and retiring
-  preserves historical Report references.
-- ⚠️ **The seed `RunPython` has a real reverse callable** — it deletes only the seven seeded slugs,
-  never `Category.objects.all()`. Verified with a full `migrate classification zero` → `migrate`
-  cycle, not by inspection; `database.md` gates reversibility and an unreversible data migration
-  passes review and fails CI.
-- **Still deliberately absent: the Authority↔Category M2M for BR-26 scoping.** Category now exists,
-  so it is unblocked — it lands with T1.5/T1.6 as an additive migration. ✅ **Done in T1.5.**
+- ⚠️ **`Other / Uncategorized` is a required sink** — off-taxonomy LLM output coerces to it, so deleting
+  or retiring it breaks the fallback. **`slug` is the machine key** (`roads`, `water_drainage`,
+  `electrical` are quoted in §6.2 and are therefore contract); **bilingual labels are non-null**
+  (NFR-8); **lifecycle is `Active → Retired`, never deleted.**
 
-✅ Built in T1.5 (2026-08-07): the RBAC enforcement layer. `User.category_scope` M2M, migrations
-`classification/0002_category_slug` + `identity/0003_category_scope`, `AuthorizationError` and the
-primitives `has_role`/`require_role`, `has_category_scope`/`require_category_scope`/
-`require_scoped_visibility`, `scoped_category_ids` in `identity/services.py`, `category_scope_for`
-in `identity/selectors.py`, 26 tests in `identity/tests/test_rbac.py`. `pytest` **271 passed /
-1 xfailed**, mypy (112 files) / ruff clean, no drift, both migrations verified reversible.
+### Rate limiting (T1.8)
 
-- ⚠️ **T0.10's record claimed `Category.slug` existed; it did not.** `0001` shipped `name_en` as
-  the only identifier, but API §6.2 emits `"categoryScope": ["roads","water_drainage"]` and §6.10
-  addresses `PATCH /categories/{key}`. `classification/0002` adds it **nullable → backfill →
-  tighten**, never one `AddField(unique=True)` against populated rows. `roads`, `water_drainage`,
-  `electrical` are quoted in the spec and are therefore contract, not convention.
-- ⚠️ **An empty `category_scope` grants nothing.** A provisioned-but-unscoped Authority can act on
-  nothing until an Admin scopes them (BR-25). Never read empty as "unrestricted".
-- ⚠️ **Admins bypass scope rather than holding every row.** `scoped_category_ids()` returns `None`
-  = "apply no filter"; a row-per-category Admin loses access the moment a migration adds a node.
-- ⚠️ **`has_role()` checks `status` as well as `role`** — a suspended Authority still reads
-  `role == "authority"`, and honouring that would outlive the suspension until session expiry.
-- ⚠️ **`403` to act (`require_category_scope`), `404` to see (`require_scoped_visibility`).** API
-  §4.2 defines `404` as "absent **or hidden from this caller**"; a `403` on a scoped read confirms
-  the id is a real Issue elsewhere and lets an Authority map another department's workload.
-- ⚠️ **Scope is tested with `.filter(pk=...).exists()`, never `category in scope.all()`** — the
-  latter caches on the instance, so a just-revoked scope keeps passing.
-- **`AuthorizationError` subclasses Django's `PermissionDenied`, not DRF's** — `services.py` takes
-  no DRF import, and `urbenmend_exception_handler` already maps it to `403 FORBIDDEN`.
-- **Denial messages name neither the role nor the resource** — repeated across endpoints, a
-  specific message maps the whole §4.2 matrix from outside.
-- ⚠️ **`classification/0002`'s RunPython reverse is `noop`.** Clearing the column first
-  (`update(slug="")`) fails the down migration — seven rows sharing `""` break the UNIQUE index.
+- ⚠️ **Lockout is throttle-only backoff — no per-account lock state** (persistent lockout is a targeted
+  DoS). **`403 ACCOUNT_LOCKED` stays a `status` denial**; never reuse it, never reuse `SUSPENDED`.
+- ⚠️ **DRF's `parse_rate` reads only `period[0]` — `"5/15m"` silently means 5 per *minute*.**
+  `ScopedWindowRateThrottle` overrides it. ⚠️ **Rates are read at instantiation, not bound as a class
+  attribute**, or `override_settings` cannot reach them. **`DEFAULT_THROTTLE_CLASSES` stays unset.**
+- ⚠️ **DRF emits no `RateLimit-*` headers** (§4.5 requires three) — `RateLimitHeadersMixin` overrides
+  **`get_throttles()`**; invented `request.throttle_*` attributes emit nothing, silently. The advertised
+  bucket is the one with least **headroom**.
+- ⚠️ **`AuthIdentityRateThrottle` keys on the SHA-256 of the normalized identifier, never raw**
+  (NFR-12); parse failures return `None`, never raise. ⚠️ **`clear_identity_throttle()` is success-path
+  only** — in a `finally` it removes the counter and every happy-path test still passes. **Throttle runs
+  before the credential check**, and **2FA guessing lands in `auth_anon`** — that is the bucket to
+  tighten for OTP. ⚠️ **Throttle and idempotency state live in Redis and are NOT rolled back between
+  tests** — the root `conftest.py` clears the cache autouse around every test.
 
-✅ Built in T1.6 (2026-08-07): Authority provisioning. `provision_authority` /
-`set_category_scope` / `_resolve_category_scope` / `_audit_privileged_action` and
-`ProvisioningError` in `identity/services.py`, `ProvisionAuthoritySerializer` +
-`UserSerializer.categoryScope`, `ProvisionAuthorityView`, `POST /users/authorities`, migration
-`0004_authority_two_factor`, admin scope editing, 38 tests. `pytest` **309 passed / 1 xfailed**,
-mypy (113 files) / ruff clean, no drift, `0004` verified reversible.
+### Profile & deletion (T1.9)
 
-- ⚠️ **BR-25's audit is a structured log line, not an audit record — knowingly.** The immutable
-  table is **T8.1 (P8)**, where append-only is enforced by revoking `UPDATE`/`DELETE` from the
-  application role; shipping the table now without that revoke would manufacture exactly the false
-  assurance NFR-10 exists to prevent. Every privileged action goes through the single funnel
-  `_audit_privileged_action()`. **T8.1 replaces its body — never add a second call path beside it.**
-- ⚠️ **A provisioned Authority cannot log in until T1.7.** No password is set (`create_user(
-  password=None)` → unusable). The spec's body has no password field, and the alternatives are an
-  Admin picking someone else's credential or a generated secret in the response body.
-- ⚠️ **New authorities start `registered`, not `active`** — the work address is unproven, and BR-30
-  bars notification to an unverified channel. An Admin typo must not create a live account its owner
-  never hears about.
-- ⚠️ **Retired categories are rejected `422`, never silently dropped.** A Retired node matches no
-  Issue, so the grant would read as success and confer nothing.
-- ⚠️ **This endpoint's `409` is specific; registration's is generic.** Opposite disclosure rules —
-  registration is public, provisioning is Admin-only and the Admin needs to be told. Don't unify them.
-- ⚠️ **Duplicate-contact check normalizes with `.lower()`, not `normalize_email`** (which lowercases
-  only the domain), or the collision arrives as a `500` instead of the documented `409`. The
-  `IntegrityError` catch still stays — it covers two Admins racing on one address.
-- ⚠️ **`set_category_scope()` replaces, never merges** — the spec sends the whole array, so merging
-  makes revocation impossible and turns narrowing into widening. `[]` legitimately revokes all.
-- **Scope changes check the target's `role` column, not `has_role()`** — a suspended Authority's
-  scope must stay editable, or it can only be reinstated with the wrong scope.
-- ⚠️ **No `IsAdminUser` on the view** — DRF's checks `is_staff` (admin plumbing), not the domain
-  `role`. `require_role(actor, Role.ADMIN)` in the service is the enforcement point (FR-3).
-- **`role`/`status` in the request body are ignored** — the serializer has no such fields, so
-  `POST /users/authorities` cannot be used to mint an Admin or skip verification.
-- **`require_two_factor` is stored now, enforced in T1.7** — API §6.2 sends it, so discarding it
-  would tell an Admin the account requires 2FA while nothing recorded it.
-- ⚠️ **Admin's scope editor bypasses the service and the audit funnel** — break-glass for FR-30/31.
-- ⚠️ **`users/authorities` must stay routed before any `users/<id>` pattern** — T1.9's `<str:pk>`
-  would swallow it.
-- ❓ **`categoryScope` reads `[]` for an Admin**, which is stored truth but not effective permission.
-  API §6.2 documents only an Authority body. **Amend the spec before T1.9's `GET /users/me`** —
-  not invented here.
+- ⚠️ **An Admin's `categoryScope: []` and an unscoped Authority's `[]` are identical JSON with opposite
+  meanings**; `role` is the only disambiguator. ⚠️ **`DELETE /users/me` is Citizen-only** — the
+  alternative, `PATCH /users/{id} {"status":"deprovisioned"}`, is **unbuilt (above)**.
+- ⚠️ **Anonymization nulls PII in the *same* `save()` as the status flip** — two UPDATEs leave a crash
+  window with a `deleted` row carrying a live email. **The row is retained, never deleted** (C-14;
+  `test_anonymization_retains_the_row`). **`VerificationCode`/`TOTPDevice` deletes are explicit** (no
+  cascade fires) and **sessions are revoked inside the transaction.**
+- ⚠️ **`PATCH /users/me` rejects unknown fields rather than dropping them** (DRF's default makes
+  `{"role":"admin"}` a `200`); allowed keys derived in **both spellings**. ⚠️ **`ProfileUpdateSerializer`
+  is a plain `Serializer`, never a `ModelSerializer` over `User`**, and **`email` is not updatable
+  here** — the test asserts the *signature*.
+- ⚠️ **Any submitted `phone` clears `phone_verified_at`, even unchanged** (BR-30) · **`""` clears it,
+  `null` is refused** · **clearing the last channel is `422`** · **the `409` uses `.exclude(pk=user.pk)`.**
 
-✅ Built in T1.7 (2026-08-07): two-factor authentication (FR-4). `requires_two_factor` /
-`start_partial_session` / `resolve_partial_session_user` / `enroll_totp_device` / `verify_totp` and
-`TwoFactorError` + `TwoFactorEnrollmentError` in `identity/services.py`; three serializers;
-`TwoFactorEnrollView` / `TwoFactorVerifyView` + `_resolve_caller`; `POST /auth/2fa/enroll` +
-`POST /auth/2fa/verify`; 29 tests. **No migration** — `TOTPDevice` is django-otp's model.
-`pytest` **338 passed / 1 xfailed**, mypy (114 files) / ruff clean, no drift.
+### Reporting & geo (T2.1)
 
-- ⚠️ **API §6.1 was amended first** (the rule, followed): it specified `/auth/2fa/verify` with no way
-  to obtain a device, and did not list that under its own "Missing endpoints — considered and
-  resolved". `requireTwoFactor: true` was therefore a permanent lockout. `POST /auth/2fa/enroll` was
-  added and `/auth/2fa/verify` documented as also confirming an enrolment — **one endpoint, because
-  the first valid code *is* the proof of enrolment**; a separate `/confirm` would take the same input
-  and reach the same conclusion.
-- ⚠️ **The partial session works by NOT calling `django_login()`.** `SESSION_KEY` (`_auth_user_id`)
-  stays unset, so `request.user` is `AnonymousUser` and every authenticated endpoint returns `401`
-  automatically. **django-otp's `otp_required` decorator was rejected**: it logs the user in fully
-  then gates views one at a time, so a view added later without it is reachable with one factor —
-  fails open. This fails closed with no per-view gate to forget. `OTPMiddleware` stays in the stack
-  but is not the enforcement point.
-- ⚠️ **`start_partial_session()` calls `cycle_key()` explicitly** — `start_session()` gets rotation
-  free from `django_login()`, this path does not, and without it a planted pre-login token carries
-  the partial credential.
-- ⚠️ **`resolve_partial_session_user()` re-fetches the user and re-checks `is_active`** — the password
-  step was an earlier request, and BR-25 suspension must stop a login already in flight.
-- ⚠️ **`device.key` is hex, `config_url` is base32.** Returning `device.key` as the `secret` gives a
-  response whose `secret` and `otpauthUri` disagree — QR works, manual entry silently yields wrong
-  codes forever. The service returns `(device, secret, otpauth_uri)`, both derived from `bin_key`.
-- ⚠️ **`verify_token()` must not be reimplemented** — it stores `last_t`, the only thing stopping a
-  code being replayed inside its own 30-second window. A hand-rolled comparison looks equivalent and
-  has no replay protection.
-- ⚠️ **A confirmed device is checked before an unconfirmed one**, or someone with a live session could
-  enrol their own device and authenticate against it, sidestepping the `409`.
-- ⚠️ **A flagged account with no device reads `requires_two_factor() == True`** — reading it as "not
-  required" would let an Admin believe an account is protected while a password alone opens it. The
-  escape is that `/auth/2fa/enroll` **accepts a partial session**. An *unconfirmed* device does not
-  opt an account in — an abandoned setup must not lock anyone out.
-- **`LoginView` stopped issuing a full session in the same change that made `requires2fa` real** (the
-  trap T1.3 recorded). Both it and the serializer call the same service function, so the cookie and
-  the body cannot disagree. **The `user` object is omitted while `requires2fa` is true** — the role is
-  what a password-only holder should not learn; `null` leaks the same distinction by shape.
-- **`enroll_totp_device()` has no role check** — a citizen protecting their own account is not
-  escalation; authorization is "self" and structural.
-- ⚠️ **The two 2FA routes are the only ones accepting a non-authenticated session.** Anything else
-  added under `auth/2fa/` needs that decision made deliberately.
-- ❓ **`/auth/password/forgot`·`/reset` is unbuilt and now explicitly unowned.** `api/urls.py` used to
-  route it to T1.7; the plan's T1.7 row is 2FA-only and reset traces to FR-1 (T1.2), where it was
-  never built. Delivery is blocked on ❓Q5. **A provisioned Authority still has no way to set a first
-  password** — T1.6 creates them with an unusable one.
+- ⚠️ **Intake fails closed with no boundary**: `active_city_boundary()` **raises rather than returning
+  `None`**, so nobody can write `if boundary and not contains(...)` — which accepts every location on
+  Earth once the table empties. Raises on zero *and* two active rows; replacement is **add-and-retire**.
+- ⚠️ **`GistIndex`, never `models.Index`, on `location`** (with `spatial_index=False`) — a B-tree cannot
+  serve `ST_Within`/`ST_DWithin`, so spatial queries become sequential scans while the migration reads
+  as indexed. BR-35, T4.4 clustering and the T7.4 map bbox rest on it.
+- ⚠️ **`OutOfCity` (`422`) is its own type, not a `ReportValidationError` (`400`)** — collapsed, a
+  client cannot tell "fix your JSON" from "we do not serve your city". ⚠️ **Order is authorization →
+  location → content, and it is observable.**
+- ⚠️ **`ReportStatus` holds no Issue-workflow value, asserted by name** — adding one gives two rows one
+  answer to "is this fixed?". ⚠️ **`SeveritySignal` lives in `reporting`, shared with `issues`; four
+  bands**; `SEVERITY_RANK` exists **only** so BR-11's "highest" is computable — not a score (FR-21), not
+  tunable, not exposed, never combined with corroboration or proximity (C-10).
+- ⚠️ **`is_classified` keys on `classified_at`, not `category`** — a citizen *hint* fills `category`, so
+  keying on it makes T3.5's worker skip the report forever. **A hint is not a classification**: an
+  unknown *or retired* slug is refused **`400`**, never coerced to `Other` (BR-7 is for LLM output).
+- ⚠️ **`# noqa: DJ001` on `severity_signal`/`classification_source` is deliberate** — `""` is an
+  undeclared fifth band that validates only because Django skips blanks, and `SEVERITY_RANK[""]` raises
+  inside T4.6's `max()`. (DJ001 exempts `unique=True`, so it never fired on `email`/`phone`.)
+- ⚠️ **`author` is `PROTECT`** (a hard delete must fail loudly, not erase FR-16's corroboration count) ·
+  ⚠️ **the Issue FK is absent until T4.1**, asserted, so whoever adds it meets BR-6 · **unverified
+  citizens may submit** (BR-30 gates notification, not intake) · ⚠️ **`create_report()` takes no
+  `status` parameter and the test asserts the *signature*.**
+- ⚠️ **`ReportFactory` bypasses `create_report()` and builds *unclassified*** (fixtures routed through
+  the service make one validation bug fail unrelated suites); **`CityBoundaryFactory` defaults
+  `is_active = False`**, unlike the model. ⚠️ **Use `F.create()`/`F.build()`, never `F()`** —
+  `FactoryMetaClass.__call__` is unannotated, so `UserFactory()` types as the *factory*.
 
-✅ Built in T1.8 (2026-08-07): login/OTP rate limiting + lockout backoff (FR-4, API §4.5). New
-`urbenmend/api/throttling.py` — `ScopedWindowRateThrottle`, `AuthAnonRateThrottle`,
-`AuthIdentityRateThrottle`, `AuthUserRateThrottle`, `RateLimitHeadersMixin`,
-`clear_identity_throttle`; `AUTH_THROTTLE_RATES` in `settings/base.py`; throttles on all five auth
-views; **new root `conftest.py`**; 21 tests in `identity/tests/test_rate_limiting.py`.
-**No migration.** `pytest` **359 passed / 1 xfailed**, mypy (116 files) / ruff clean, no drift,
-`check --deploy` clean.
+### `POST /reports` (T2.2)
 
-- ⚠️ **Lockout is throttle-only backoff — no per-account lock state, deliberately.** FR-4 says
-  "lockout/backoff" without defining it. Persistent lockout is a targeted DoS: anyone knowing an
-  Authority's email could hold them out on demand. Failed logins consume a bucket, success clears
-  it. **`403 ACCOUNT_LOCKED` remains a `status` denial only** (T1.3) — never reuse it for throttling,
-  and never reuse `UserStatus.SUSPENDED`, which is a BR-25 moderation action.
-- ⚠️ **The rates are our policy, not spec-derived** (`api-conventions.md` lists numeric limits under
-  "do not invent"). `auth_anon` `10/15m` per IP, `auth_identity` `5/15m` per identifier, `auth_user`
-  `20/15m` per session — in settings, env-overridable (NFR-11). T1.2's precedent.
-- ⚠️ **DRF's `parse_rate` reads only `period[0]` — `"5/15m"` silently means 5 per *minute*.** 15×
-  tighter than written, nothing indicates it. `ScopedWindowRateThrottle` overrides it; a plain
-  `"10/hour"` still behaves as DRF does. Verified against installed source.
-- ⚠️ **DRF emits no `RateLimit-Limit`/`-Remaining`/`-Reset`** — API §4.5 requires all three on every
-  limited endpoint (DRF sets only `Retry-After`, only on 429). `check_throttles()` stores nothing on
-  the request, so `RateLimitHeadersMixin` overrides **`get_throttles()`** to capture the instances
-  DRF actually uses. Reading invented `request.throttle_*` attributes emits nothing, silently.
-  The advertised bucket is the one with least **headroom**, not the smallest limit.
-- ⚠️ **`AuthIdentityRateThrottle` keys on the submitted `identifier`, SHA-256'd, never raw** — cache
-  keys surface in `redis-cli KEYS` and dumps, and an email there is PII (NFR-12). Keying on
-  `request.user` would throttle only *after* a successful password check, i.e. never during the
-  attack. Normalized first or casing multiplies the allowance. Parse failures return `None` rather
-  than raising — an exception aborts `check_throttles()` and the per-IP bucket never counts.
-- ⚠️ **`clear_identity_throttle()` is success-path only and clears the identifier bucket alone.**
-  Calling it earlier or in a `finally` removes the counter entirely and every happy-path test still
-  passes. The per-IP bucket survives success on purpose.
-- ⚠️ **Throttle runs before the credential check** — a correct password while throttled is refused.
-- ⚠️ **A partial post-password session is unauthenticated (T1.7), so 2FA code-guessing lands in
-  `auth_anon`, not `auth_user`.** That is the bucket to tighten for OTP. `verify_totp()` has no
-  per-account attempt counter of its own — `verify_token()` blocks replay, not a keyspace walk.
-- ⚠️ **Rates read at instantiation, not bound as a class attribute** — DRF binds `THROTTLE_RATES` at
-  import, where `override_settings` cannot reach, making the 429 path untestable.
-- ⚠️ **`DEFAULT_THROTTLE_CLASSES` stays unset** — a global default would throttle the public map and
-  issue list, which §4.5 does not ask for and Q7 makes unauthenticated. Opt in per view.
-- ⚠️ **Throttle state is NOT rolled back between tests** — it lives in Redis, not the DB. The new
-  root `conftest.py` clears the cache autouse around every test; without it, adding throttles turned
-  **27 existing tests red** with order-dependent 429s. Any future throttled endpoint depends on it.
-  Safe only because sessions are `cached_db`.
-- **No spec amendment owed** — §4.5 and §6.1's `429`s already specify this; only the numbers are open.
+- ⚠️ **`transaction.on_commit` is the task, asserted from the failing side** — an inline `.delay()` lets
+  an idle worker `SELECT` the report pre-commit, read nothing, and never triage it (load-dependent, so
+  it survives every local run). ⚠️ **Never configure `task_always_eager`**: eager runs the body inside
+  the caller's uncommitted transaction, so **the suite passes with the broken inline `.delay()`.** Patch
+  `.delay` at the **use** site; drive callbacks with `captureOnCommitCallbacks(execute=True)`.
+- ⚠️ **Only the id crosses the broker, as a `str`, bound to a local before the closure** — capturing
+  `report` puts PII in Redis (NFR-12) and lets the worker act on a pre-commit snapshot. ⚠️ **`PROCESSING`
+  is a second UPDATE in the same transaction**, and `update_fields` **must list `updated_at`**.
+- ⚠️ **The Celery task has an explicit `name=`** — otherwise it follows the module path and moving the
+  module orphans queued messages (`NotRegistered`, post-deploy); `test_tasks.py` asserts it because mypy
+  cannot. **The stub logs and returns `None`** (T3.5 fills it, ❓Q9).
+- ⚠️ **`LocationSerializer.to_point` is a `staticmethod` over a mapping** — a nested serializer has no
+  `validated_data`. The `(lng, lat)` order lives in one place; transposed, every real submission reads
+  as out-of-city. Degree bounds are why `lat: 200` is `400`, not a misleading `422`.
+- ⚠️ **`mediaIds` is declared and refused (`400`), never dropped** — DRF discards unknown keys, so a
+  photo-only submission would fail BR-3 complaining about `description`. **`ReportSubmitSerializer` is a
+  plain `Serializer`** · **the response reads `status` off the row** · **`202`, no `Location`** · **no
+  role class on the view, no local `except`.**
+- ⚠️ **The camelCase layer wraps `run_validation`, not `to_internal_value`** — the narrower method
+  leaves object-level errors untranslated, a half-fix that passes every field-level test. **Leaves stay
+  `ErrorDetail`**; as `str` they lose `.code` and every envelope `issue` degrades to `INVALID`.
 
-✅ Built in T1.9 (2026-08-07): `/users/me` — profile read/update + account deletion → PII
-anonymization (P6, BR-33, C-14). `update_profile` / `anonymize_account` + `ProfileUpdateError` /
-`AccountDeletionError` in `identity/services.py`; `ProfileUpdateSerializer`; `MeView`
-(GET/PATCH/DELETE); `GET`·`PATCH`·`DELETE /users/me`; 36 tests in `identity/tests/test_profile.py`.
-**No migration.** `pytest` **395 passed / 1 xfailed**, mypy (117 files) / ruff clean, no drift,
-`check --deploy` clean.
+### Idempotency (T2.3)
 
-- ⚠️ **API §6.2 was amended first, in three places** (the rule, followed): one response shape for all
-  three roles; a table for what `categoryScope: []` means per role; and Citizen-only `DELETE`.
-  ✅ **This closes the T1.6 ❓** — that record said "amend the spec before T1.9's `GET /users/me`".
-- ⚠️ **An Admin's `categoryScope: []` and an unscoped Authority's `[]` are identical JSON with
-  opposite meanings** — unrestricted vs. permitted-nothing. `role` is the only disambiguator. Emitted
-  for every role anyway so the shape stays stable; a client must not read capability from it alone.
-- ⚠️ **`DELETE /users/me` is Citizen-only**, and that came from the data-model, not §6.2: the
-  ownership matrix grants an Authority `RU`, not `D`. An Authority erasing an audited grant (FR-2,
-  BR-25) or an Admin removing the last provisioner are both `403`. The alternative path is
-  `PATCH /users/{id} {"status":"deprovisioned"}` — now named in the spec.
-- ⚠️ **Anonymization nulls PII in the *same* `save()` as the status flip.** Two UPDATEs leave a
-  window where a crash yields a `deleted` row still carrying a live email — and the constraint's
-  DELETED branch accepts it. `status=DELETED` is that escape hatch (A6); **do not tighten it.**
-- ⚠️ **The row is retained, never deleted** (C-14). `test_anonymization_retains_the_row` is what fails
-  if this is "simplified" to `user.delete()` — every PII assertion would still pass.
-- ⚠️ **The `VerificationCode`/`TOTPDevice` deletes are explicit because no cascade fires** — nothing
-  is deleted here, the user row survives. Implicit would leave a live TOTP secret on a dead account.
-- ⚠️ **Sessions are revoked inside the transaction; `is_active` is not a substitute.**
-  `status=DELETED` stops *new* authentications at commit, but a live session runs to expiry (Arch §8).
-- ⚠️ **`202` is written to a caller that can no longer authenticate.** It reflects that
-  retained-record anonymization may extend past the response (P2/P3), not that the account works.
-- ⚠️ **`PATCH /users/me` rejects unknown fields rather than dropping them.** DRF's default makes
-  `PATCH {"role":"admin"}` a `200` with an unchanged body — indistinguishable from success. Allowed
-  keys are derived from the declared fields in both spellings: the camelCase mixin rewrites keys
-  before `validate()` runs, while `initial_data` keeps the client's original.
-- ⚠️ **`ProfileUpdateSerializer` is a plain `Serializer`, never a `ModelSerializer` over `User`** —
-  otherwise `role`/`status`/`is_staff`/`require_two_factor` are one `fields` edit from being
-  self-assignable. Escalation must require adding a field, not forgetting to exclude one.
-- ⚠️ **`email` is not updatable here** — it is the password-reset address, so a self-service change
-  turns one borrowed session into permanent takeover. `update_profile` has no such parameter; the
-  test asserts the *signature*, because the guarantee is structural.
-- ⚠️ **Any submitted `phone` clears `phone_verified_at`, even when unchanged** (BR-30, fail closed).
-  Skipping on equality keeps a stale proof alive for a number that changed hands and came back.
-- ⚠️ **`""` clears the phone; `null` is refused** — aliasing them sends `null` into the E.164
-  validator as a `500`. `save()` normalizes `""` to the NULL the UNIQUE index needs.
-- ⚠️ **Clearing the last contact channel is `422`, not `400`** — a business rule, not a bad body.
-- ⚠️ **The `409` check uses `.exclude(pk=user.pk)`**, or an unchanged resubmission conflicts with
-  itself. The `IntegrityError` catch still stays — it closes the check-to-UPDATE race.
-- **`403` is Django's `PermissionDenied`, not a bespoke code** — §6.2 names none for this endpoint,
-  so it renders as the generic `FORBIDDEN`. Contrast `ACCOUNT_LOCKED`, which §6.1 does name.
-- **`MeView` carries `auth_user` only** — `auth_anon` is sized for pre-session attempts, and applying
-  it here would let one user's profile edits exhaust the login allowance for everyone behind a NAT.
-- ⚠️ **`users/me` must stay routed before any `users/<str:pk>`** — same trap as `users/authorities`.
-- ❓ **`GET /users` and `PATCH /users/{id}` (both Admin, API §6.2) are unbuilt and now explicitly
-  unowned.** `api/urls.py` used to point them at T1.9; T1.9 scoped to `/users/me` only. They need a
-  task ID — the same treatment `/auth/password/forgot`·`/reset` got. Note `PATCH /users/{id}` is the
-  documented route for Authority deprovisioning and for Admin-side email changes, so **two T1.9
-  decisions currently have no implemented alternative path.**
-
-✅ Built in T2.1 (2026-08-07): **the `Report` entity + its validation primitives** — and the `geo`
-app that makes a location checkable. `geo/models.py` (`CityBoundary`), `geo/selectors.py`
-(`active_city_boundary` / `is_within_city` / `BoundaryUnavailable`), `reporting/models.py` (`Report`,
-`ReportStatus`, `SeveritySignal`, `SEVERITY_RANK`, `ClassificationSource`), `reporting/services.py`
-(`create_report` / `validate_location` / `validate_report_content` / `ReportValidationError`),
-`OutOfCity` in `api/exceptions.py`, `geo/admin.py` + `reporting/admin.py`, migrations
-`geo/0001_initial` + `geo/0002_seed_city_boundary` + `reporting/0001_initial`,
-`docs/city-boundary/dhaka-demo.geojson`, four `factory_boy` factory modules, 59 tests.
-**No endpoint** — `POST /reports` is T2.2. `pytest` **454 passed / 1 xfailed**, mypy (124 files) /
-ruff (132 files) clean, no drift, `check --deploy` clean, both apps verified reversible.
-
-- ⚠️ **Intake fails closed when no boundary is configured — Arch §409's degradation is declined.**
-  §409 sanctions skipping a check whose dependency is missing; C-11 says an out-of-city location "is
-  not accepted". `active_city_boundary()` **raises rather than returning `None`**, so no caller can
-  write `if boundary and not contains(...)` — which accepts every location on Earth the moment the
-  table empties. An empty boundary table rejects everything loudly instead.
-- ⚠️ **`GistIndex`, never `models.Index`, on `location`.** `models.Index` emits a B-tree, which
-  cannot serve `ST_Within`/`ST_DWithin` — spatial queries silently become sequential scans while the
-  migration reads as indexed. Paired with `spatial_index=False` to avoid a duplicate auto-named
-  index. BR-35, T4.4 clustering, and the T7.4 map bbox all rest on this line.
-- ⚠️ **`OutOfCity` (`422`) is its own type, not a `ReportValidationError` (`400`).** A well-formed
-  coordinate outside the city is a business-rule violation, not a malformed body; collapsing them
-  leaves a client unable to tell "fix your JSON" from "we do not serve your city".
-- ⚠️ **Order is authorization → location → content, and it is observable.** A submission that is both
-  out-of-city and under-described gets the `422`: reporting the description first sends a citizen off
-  to write prose about a place UrbanMend does not serve. A non-Citizen gets `403` and learns nothing
-  about which other rules they broke.
-- ⚠️ **The boundary is seeded data, not code** (NFR-11). `geo/0002` loads the GeoJSON via
-  `apps.get_model()` with a **real reverse** deleting only `Dhaka (development stand-in)`. GEOS is
-  imported *inside* the function so `makemigrations --check` runs without the library. Replacement is
-  **add-and-retire, never edit-in-place** — `CityBoundaryAdmin` makes `area` read-only on change,
-  writable on add, delete denied. Exactly one row must be active: the selector raises on zero *and*
-  on two, so a half-finished swap errors instead of validating against whichever row sorted first.
-- ⚠️ **`ReportStatus` holds no Issue-workflow value, asserted by name.** `Acknowledged`/`In Progress`/
-  `Resolved`/`Closed` are Issue statuses (PRD §6.3) — adding one gives two rows one answer to "is this
-  fixed?". `Draft` is omitted too (FR-8 SHOULD; a PWA concern).
-- ⚠️ **`SeveritySignal` lives in `reporting` and is shared with `issues`; four bands, not three.** Two
-  independently declared enums would let one gain a band the other lacks, making BR-11's `max()`
-  undefined. `SEVERITY_RANK` exists **only** so "highest" is computable — not a score (FR-21), not
-  tunable, not exposed, never combined with corroboration or proximity (C-10, display-only).
-- ⚠️ **`is_classified` keys on `classified_at`, not `category`.** A citizen's category *hint* fills
-  `category` at intake, so keying on it would mark an unclassified report classified and T3.5's
-  worker would skip it forever, silently.
-- ⚠️ **A hint is recorded with `classification_source = citizen` and is not a classification.** An
-  unknown *or retired* slug is refused (**`400`** — see the T2.2 record; this bullet originally said
-  `422`), never coerced to `Other` — that coercion (BR-7) is for LLM output, where an off-taxonomy
-  value means an unusable answer. A human on a retired node is running a stale client; filing under
-  `Other` would lose information they could have fixed.
-- ⚠️ **`# noqa: DJ001` on `severity_signal`/`classification_source` is deliberate.** `""` is not a
-  member of `SeveritySignal` — an undeclared fifth band that validates only because Django skips
-  blanks, and `SEVERITY_RANK[""]` raises `KeyError` inside T4.6's `max()` at runtime. `confidence` is
-  a `FloatField` that must be NULL, so mixing conventions in one block makes T3.5's queue query
-  depend on knowing which applies per column. (DJ001 never fired on `identity.email`/`phone` because
-  it exempts `unique=True` — know that before "fixing" it.)
-- ⚠️ **`author` is `PROTECT`** (C-14): BR-33 deletion is anonymization, so the cascade should never
-  fire; `PROTECT` makes a hard delete fail loudly instead of erasing the reports that give an Issue
-  its corroboration count (FR-16). **The Issue FK is deliberately absent until T4.1** — a test
-  asserts the absence so whoever adds it meets BR-6's at-most-one rule, not a loose UUID column.
-- ⚠️ **A registered-but-unverified citizen may submit.** BR-30 gates *notification* on verification,
-  not intake, and the unverified capability set is explicitly unspecified — don't narrow it here.
-- ⚠️ **`create_report()` takes no `status` parameter, and the test asserts the *signature*** — the
-  guarantee is that the parameter cannot exist, or a caller marks a report `triaged` and skips the
-  pipeline. Same technique as T1.9's `update_profile`/`email`.
-- ⚠️ **`ReportFactory` bypasses `create_report()` and builds *unclassified*.** Routing fixtures
-  through the service would make one validation bug fail unrelated suites and force every test to
-  seed a boundary. Unclassified because BR-9 — a pre-filled factory makes the async path untestable
-  from its real starting state. **`CityBoundaryFactory` defaults `is_active = False`, unlike the
-  model**, since the migration already seeds one active row and the selector raises on two.
-- ⚠️ **Two narrowly-scoped mypy settings for `factory_boy`** (Celery-decorator precedent):
-  `untyped_calls_exclude = ["factory"]` (its declaration helpers are unannotated despite `py.typed`)
-  and `implicit_reexport` for `factory.*` (no `__all__` — verified, not assumed). **Neither excuses
-  the `F()` shorthand**: `FactoryMetaClass.__call__` is unannotated, so `UserFactory()` types as the
-  *factory* and defeats checking on every fixture. Use `F.create()` / `F.build()`, annotated `-> T`.
-- ⚠️ **Green output can prove nothing.** The first reversibility run reported "No migrations to
-  apply" because they had never been applied; the real test is `[X]` → `[ ]` → `[X]`. Same lesson as
-  A7's `CreateExtension` no-op against the compose DB.
-
-✅ Built in T2.2 (2026-08-08): **`POST /reports`** — the synchronous fast write plus the deferred
-triage enqueue. `classification/tasks.py` (`CLASSIFY_REPORT_TASK`, `classify_report` stub),
-`submit_report()` in `reporting/services.py`, `reporting/serializers.py` (`LocationSerializer`,
-`ReportSubmitSerializer`, `ReportSubmitResponseSerializer`), `ReportSubmitView`,
-`path("reports", ...)`, and a fix to the T0.6 camelCase layer (`run_validation` +
-`_camelize_error_detail` in `api/serializers.py`); 46 tests. **No migration.** `pytest`
-**491 passed / 2 xfailed**, mypy (129 files) / ruff clean, no drift, `check --deploy` clean.
-
-- ⚠️ **`transaction.on_commit` is the task, and it is asserted from the failing side.** An inline
-  `.delay()` lets an idle worker `SELECT` the report before the transaction commits — it reads
-  nothing and the report is never triaged. Load-dependent, so it survives every local run.
-  `test_the_task_is_not_published_before_the_transaction_commits` goes red the moment the wrapper is
-  dropped; its pair stops `on_commit(lambda: None)` satisfying it.
-- ⚠️ **Never configure `task_always_eager` for tests.** Eager runs the task body inside the caller's
-  uncommitted transaction, so the suite would **pass with the broken inline `.delay()`** — the bug
-  this task exists to prevent becomes a green test. Patch `.delay` at the **use** site
-  (`urbenmend.reporting.services.classify_report.delay`); the service holds a module-level reference,
-  so patching the definition site reads zero calls. Drive callbacks with
-  `TestCase.captureOnCommitCallbacks(execute=True)`.
-- ⚠️ **Only the id crosses the broker, as a `str`, bound to a local before the closure.** Capturing
-  `report` puts author id, free text and coordinates into Redis (NFR-12) and lets the worker act on a
-  pre-commit snapshot. A `UUID` arrives as a `str` anyway, making the task's annotation a lie.
-- ⚠️ **`PROCESSING` is a second UPDATE in the same transaction, not a `create_report(status=...)`
-  argument** — T2.1 refuses that parameter precisely so no caller can mark a report `triaged` and skip
-  the pipeline. `update_fields` **must list `updated_at`** (`auto_now` + `update_fields` writes only
-  the named columns, so omitting it leaves the row reading as never-modified).
-- ⚠️ **The Celery task has an explicit `name=`** — otherwise the name follows the module path and
-  moving the module silently orphans queued messages (`NotRegistered`, in the worker, post-deploy).
-  `@shared_task` is untyped so `.delay()` is `Any`: `test_tasks.py` asserts the name, that it is *not*
-  the module path, and the first parameter name, because mypy structurally cannot.
-- ⚠️ **The stub logs and returns `None`** — raising turns "not implemented" into retry/alert noise on
-  every submission, a truthy return invites treating it as a real classification, and a silent pass is
-  indistinguishable from a broken broker. T3.5 fills the body.
-- ⚠️ **`LocationSerializer.to_point` is a `staticmethod` over a mapping** — a nested serializer never
-  has `validated_data` populated, so `self.validated_data` there raises `AssertionError` at run time.
-  The `(lng, lat)` order lives in one place; transposed, it rejects every real submission as
-  out-of-city. Degree bounds on `lat`/`lng` are why `lat: 200` is `400` and not a misleading `422`.
-- ⚠️ **`mediaIds` is declared and refused (`400`), never dropped.** DRF's default discards the key, so
-  a photo-only submission would fail BR-3 with an error about `description` — a field the client left
-  empty deliberately. T2.6 wires the real count; `media_count=0` is truthful until then.
-- ⚠️ **`ReportSubmitSerializer` is a plain `Serializer`, never a `ModelSerializer` over `Report`** —
-  otherwise `status`/`severity_signal`/`confidence`/`classification_source`/`classified_at` are one
-  `fields` edit from client-settable. Unknown fields are rejected, in both spellings.
-- ⚠️ **The response reads `status` off the row, never a hardcoded `"processing"`**, which would keep
-  reporting success after the transition is moved or removed.
-- ⚠️ **`202` with no `Location` header** — the row is durable but the resource is incomplete until the
-  worker finishes (Arch §4), and `GET /reports/{id}` (T2.7) would `404`.
-- ⚠️ **No role class on the view and no local `except`** — Citizen-only is `create_report()`'s check
-  (FR-3), and `urbenmend_exception_handler` already renders `ReportValidationError` `400` and
-  `OutOfCity` `422`. A local catch is only a chance to collapse that distinction.
-- ⚠️ **T0.6 bug found and fixed: rejected field names came back `snake_case`.** DRF raises with its
-  own field names, so a rejected `mediaIds` was reported as `media_ids` — a field the client never
-  sent. Wrapped at **`run_validation`**, not `to_internal_value`: DRF runs field checks *and*
-  `validate()` inside it, so the narrower method leaves object-level errors untranslated — a half-fix
-  that passes every field-level test. **Leaves stay `ErrorDetail`**; rebuilding them as `str` drops
-  `.code` and every envelope `issue` degrades to the `INVALID` fallback.
-- ⚠️ **Ships unthrottled, deliberately — FR-33 limits are T2.9.** T1.8's buckets are the wrong shape:
-  `auth_user` at 20/15m cuts off a citizen filing several potholes on one walk, and reusing it lets
-  submissions exhaust the login allowance.
-- ⚠️ **An unknown or retired category slug is `400 VALIDATION_FAILED`, not `422`** — correcting the
-  T2.1 record above. §6.3 lists the taxonomy check among its validation rules and reserves `422` for
-  `OUT_OF_CITY`; this matches `preferredLanguage: "fr"` on `/users/me`. Behaviour (refused, never
-  coerced to `Other`) was always right; the documented code was wrong.
-- **Idempotency (BR-5) is T2.3**, with an `xfail(strict=True)` test in `test_submission.py` as its
-  target (A10 precedent). Today two identical submissions create two Reports, which cluster into one
-  Issue and inflate the corroboration count FR-16 reads as "how many people are affected".
-- **No spec amendment owed** — §6.3 already fixes the `202`, the header, the hint semantics and the
-  error set.
-
-✅ Built in T2.3 (2026-08-08): **`Idempotency-Key` on `POST /reports`** (BR-5, API §4.6). New
-`urbenmend/api/idempotency.py` (`normalize_key` / `fingerprint` / `reserve` / `complete` / `release`,
-`Reservation` / `Replay`); `IdempotencyKeyReused` + `IdempotencyInProgress` in `api/exceptions.py`;
-`IDEMPOTENCY_RETENTION_SECONDS` / `_IN_PROGRESS_SECONDS` / `_KEY_MAX_LENGTH` in `settings/base.py`;
-`SubmissionAcknowledgement`, `IDEMPOTENCY_SCOPE`, `_acknowledge`, `_require_citizen`,
-`_submission_fingerprint` in `reporting/services.py` with `submit_report()` rewritten around them;
-`ReportSubmitResponseSerializer` re-pointed at the dataclass; header read + `Idempotency-Replayed` in
-`views.py`; 23 tests in new `api/tests/test_idempotency.py`, 15 added to `test_submission.py` (its
-`xfail` marker deleted). **No migration.** `pytest` **529 passed / 1 xfailed**, mypy (131 files) /
-ruff (139 files) clean, no drift, `check --deploy` clean.
-
-- ⚠️ **API §4.6 was amended first** (the rule, followed). §4.2's `409` row said "idempotency replay",
-  which reads as *replay is an error*. **A replay is not an error** — it re-serves the original `202`
-  and body verbatim. `409` now covers only same-key-different-payload (`IDEMPOTENCY_KEY_REUSED`) and
-  an unfinished original (`IDEMPOTENCY_IN_PROGRESS`). Workflow §C3's stale "returns the original
-  `201`" was corrected too.
 - ⚠️ **`cache.add()`, never `get()` then `set()` — that one line is the entire concurrency claim.**
-  `add()` is Redis `SETNX`; a read-then-write pair reads as equivalent and lets *both* callers through,
-  so BR-5's double-tap ships as two Reports. R-2's mandated test fires 8 threads through a
-  `threading.Barrier` and asserts exactly one reservation. **The barrier is what makes it a race** —
-  without it the threads serialize and the test passes against the broken version.
-- ⚠️ **That test uses real Redis and touches no ORM, deliberately.** locmem would assert an atomicity
-  guarantee the deployed system does not get from the same code path, and two threads sharing a
-  `pytest-django` transaction deadlock before reaching the interesting line. Endpoint-level
-  concurrency is proved deterministically instead, via `captureOnCommitCallbacks` placement.
-- ⚠️ **`complete()` runs from `transaction.on_commit`, never inline.** A completed record promises the
-  row exists; written pre-commit, a rollback leaves a record replaying the `reportId` of a row that
-  never persisted — for the whole retention window. The consequence is that a concurrent double-tap
-  gets `409 IDEMPOTENCY_IN_PROGRESS` instead of a premature replay. **That is the guarantee, not an
-  artifact.**
-- ⚠️ **A failed request does not consume its key** (§4.6) — `release()` from a broad
-  `except Exception`, so `400`, `422` and DB errors all free it. The client's next move is a corrected
-  body, i.e. a *different* fingerprint; a consumed key would answer that correction `409` with no way
-  forward. Tested with a corrected body so a `release()` that merely downgraded the record still fails.
-- ⚠️ **`submit_report()` returns `SubmissionAcknowledgement`, not `Report`** — that is what makes
-  §6.3's "verbatim" true by construction. A replay has no live row, only the acceptance record.
-  Rendering a `Report` on one path and a stored dict on the other puts the two bodies in two pieces of
-  code, free to drift, and a retry starts looking like a *different* submission.
-- ⚠️ **`issueId` / `classification.state` / `status` moved out of `SerializerMethodField`s into
-  `_acknowledge()`** because they must be evaluated **at acceptance time**. By the time a replay
-  arrives triage may have finished; re-deriving would answer a `202` with post-acceptance state that
-  §6.3 sends clients to `GET /reports/{id}` for.
-- ⚠️ **The fingerprint is checked before the state, and both states agree.** Different content is
-  `KEY_REUSED` whether or not the original finished — the remedy (new key) is the same, and
-  `IN_PROGRESS` would tell the client to retry something that can never be honoured under that key.
-- ⚠️ **Nothing identifying reaches Redis** (NFR-12): the key is
-  `idempotency:<scope>:<sha256(scope|user|key)[:40]>`. A client's key is a bearer token for a stored
-  response — anyone reading it from `redis-cli KEYS` can replay it (the `AuthIdentityRateThrottle`
-  reasoning). Scope stays readable so ops can `SCAN` one endpoint. Stored: fingerprint + response
-  payload only, never the submission.
-- ⚠️ **Comparison is on normalized values, not raw bytes** (§4.6) — post-validation service arguments,
-  `description`/`address` stripped as `create_report()` strips them, the point reduced to two floats.
-  Byte-level comparison would `409` an ordinary reordered-JSON retry and turn the safety net into a
-  fault.
-- ⚠️ **Two TTLs, and the shorter one is not tuning.** `IDEMPOTENCY_IN_PROGRESS_SECONDS` (60) is the
-  only backstop for a process killed between `reserve()` and `complete()`/`release()`, and for a
-  caller-wrapped transaction that rolls back *after* `submit_report()` returns. At retention length
-  (86 400) one crash locks a citizen's key for a day.
-- ⚠️ **The retention window is deployment config, not contract** — `api-conventions.md` lists it under
-  "do not invent". Numbers live in settings with the T1.2/T1.8 banner; §4.6 tells clients not to
-  depend on a duration. **A cache flush drops every held key**, so replays become fresh submissions —
-  `default` is the same Redis the throttles use.
-- ⚠️ **A vanished or unreadable record reads as a fresh claim, not `409`** — nobody holds that key, and
-  a shape change across deploys would otherwise `500` every retrying client until the window drained.
-  The re-claim goes through `set()`, not a bare pass, or a concurrent duplicate also finds an empty slot.
-- ⚠️ **Authorization runs before the key is examined** (extends T2.1's observable ordering) — a
-  non-Citizen gets `403` and learns nothing about whether that key is held.
-- ⚠️ **Absent or blank key = no de-duplication; `""` must never become a key** — clients that send an
-  empty header for an unset value would all share one bucket. **Inferring a key from the body was
-  rejected**: two identical reports from one citizen are two corroborating voices (FR-16), and only
-  the client knows whether a resend is a retry or a second pothole.
-- ⚠️ **An over-long key raises rather than truncating** (truncation aliases two keys onto one record).
-  Django's `ValidationError` → `400 VALIDATION_FAILED` with no DRF import here; the bound is read at
-  call time, or `override_settings` cannot reach it (the T1.8 trap).
-- ⚠️ **`IDEMPOTENCY_SCOPE = "reports.submit"` is a stored cache-key component** — renaming it frees
-  every held key. The store lives in `api/` because §4.6 covers "other duplicate-sensitive creates"
-  (T5.x confirmations, assignment) and will reserve through the same module.
-- **`Idempotency-Replayed: true` is set only on a replay**, and `replayed` is deliberately undeclared
-  on the response serializer — a leaked fifth key would make the header redundant and "verbatim" false.
-- **No idempotency table, deliberately** — it would need its own retention sweep and turn `add()`'s
-  free atomicity into a `SELECT FOR UPDATE` in the submission hot path.
-- ⚠️ **Idempotency bounds accidental duplication, not abuse** — FR-33 submission throttling is still
-  **T2.9**. Do not read this as a rate limit.
+  `add()` is `SETNX`; a read-then-write pair reads as equivalent and lets *both* callers through. R-2's
+  test fires 8 threads through a `threading.Barrier` — **the barrier is what makes it a race** — against
+  real Redis, no ORM (locmem asserts a guarantee the deployed path does not get).
+- ⚠️ **`complete()` runs from `transaction.on_commit`, never inline** — a completed record promises the
+  row exists, so written pre-commit a rollback leaves it replaying a `reportId` that never persisted.
+  The consequence (a concurrent double-tap gets `409 IDEMPOTENCY_IN_PROGRESS`) **is the guarantee.**
+- ⚠️ **A failed request does not consume its key** — `release()` from a broad `except Exception`; the
+  client's next move is a corrected body, i.e. a *different* fingerprint. ⚠️ **`submit_report()` returns
+  `SubmissionAcknowledgement`, not `Report`** — what makes §6.3's "verbatim" true by construction;
+  `issueId`/`classification.state`/`status` live in `_acknowledge()`, evaluated **at acceptance time**.
+- ⚠️ **The fingerprint is checked before the state, and both states agree.** **Comparison is on
+  normalized values, not raw bytes**, or a reordered-JSON retry `409`s. ⚠️ **Nothing identifying reaches
+  Redis**: `idempotency:<scope>:<sha256(scope|user|key)[:40]>` — the key is a bearer token for a stored
+  response; scope stays readable so ops can `SCAN`.
+- ⚠️ **Two TTLs, and the shorter is not tuning** — 60s is the only backstop for a process killed
+  mid-write; at retention length one crash locks a key for a day. ⚠️ **A vanished or unreadable record
+  reads as a fresh claim** — via `set()`, not a bare pass, or a concurrent duplicate finds it empty too.
+- ⚠️ **Authorization runs before the key is examined** · **blank key = no de-duplication**, `""` must
+  never become a key · **body-inferred keys were rejected** (two identical reports are two corroborating
+  voices) · **over-long keys raise, never truncate** · ⚠️ **`IDEMPOTENCY_SCOPE` is a stored cache-key
+  component** · **`Idempotency-Replayed` only on a replay**, `replayed` undeclared on the serializer ·
+  **no idempotency table.**
+
+### Numbers we chose (not spec-derived — `api-conventions.md` lists these under "do not invent")
+
+All in `settings/base.py`, env-overridable (NFR-11), reason inline: verification `CODE_LENGTH=6` /
+`TTL=10min` / `MAX_ATTEMPTS=5`; `AUTH_THROTTLE_RATES` (`auth_anon` 10/15m per IP, `auth_identity` 5/15m
+per identifier, `auth_user` 20/15m per session); `IDEMPOTENCY_RETENTION_SECONDS` 86 400 /
+`_IN_PROGRESS_SECONDS` 60 / `_KEY_MAX_LENGTH` 255. **A cache flush drops every held idempotency key and
+every throttle counter** — `default` is one Redis.
 
 ## Commands
 
-Sourced from `docs/06-devops-guide.md` §4.1 and its Dockerfile example. **No manifest or task
-runner exists yet, so none of these are machine-verified.**
+All gates run **inside the api container**: `docker compose exec -T api sh -c "…"`.
 
 ```bash
 ruff check && ruff format --check          # lint
 mypy                                       # type-check
 pytest                                     # unit + integration
 python manage.py makemigrations --check --dry-run   # model drift
-python manage.py check --deploy            # security config
+python manage.py check --deploy            # security config (needs a long SECRET_KEY, or W009 fires)
 python manage.py migrate                   # apply migrations
 python manage.py collectstatic --noinput   # build-time only
 uvicorn urbenmend.asgi:application --host 0.0.0.0 --port 8080   # api
@@ -702,39 +295,34 @@ celery -A urbenmend worker -B --loglevel=info                   # worker + beat
 docker build .                             # image
 ```
 
-## Conventions (detail in `.claude/rules/`)
+## Conventions
 
-- URI versioning `/api/v1`; plural lowercase resource nouns; `camelCase` JSON bodies; ISO-8601 UTC
+Detail in `.claude/rules/`, which loads by file pattern: `api-conventions.md`, `auth.md`,
+`database.md`, `async-worker.md`, `testing.md`.
+
+- URI versioning `/api/v1`; plural lowercase nouns; `camelCase` JSON; ISO-8601 UTC; opaque IDs in URLs,
+  never sequential or guessable
 - Collections return `{ data, page, meta }` with **cursor** pagination (mandatory, limit 20/max 100);
-  single resources return the bare object
-- Errors return `{ error: { code, message, details, traceId } }`
+  single resources return the bare object. Errors: `{ error: { code, message, details, traceId } }`
 - Auth is **server-validated sessions** in a `Secure`/`HttpOnly`/`SameSite` cookie + CSRF — not JWT
 - Authorization is enforced in the **service layer**, on every mutating and sensitive-read action —
   call the T1.5 primitives in `identity/services.py`; do not reimplement a role or scope check
-- Opaque server-generated IDs in URLs; never sequential or guessable
 
 ## Do not
 
-- **Do not use JWT.** Sessions are required for immediate revocation (Arch §8).
-- **Do not add `POST /issues`.** Issues form only via async clustering.
-- **Do not add write endpoints for status-events or audit-events** — append-only (C-9, BR-31).
-- **Do not hard-delete** users, categories, POIs, or Issues. Retire; user deletion anonymizes (C-14).
-- **Do not let POI/proximity data affect severity or ordering** — display-only (C-10).
-- **Do not add outbound webhooks or government-system integration** — PRD §2.2 non-goal.
-- **Do not add a numeric priority score or tunable weights** — explicitly removed (FR-21).
-- **Do not use `django.contrib.auth` Groups/Permissions for RBAC** — cannot express BR-26 scoping.
-- **Do not run `migrate`** in the Dockerfile or container entrypoint.
-- **Do not deploy `latest`** — always a SHA-tagged image.
-- **Do not expose `/metrics`** publicly or on the Ingress.
-- **Do not set `readOnlyRootFilesystem: true`** without an `emptyDir` at `/tmp` — breaks uploads.
-- **Do not leave `DEBUG` enabled** in any deployed environment.
-- **Do not commit secrets.** `.env.local` is ignored; `.env.example` holds placeholders only.
-- **Do not add frontend code.** Plan and DevOps guide both scope this repo to backend only.
+- **Do not use JWT** — sessions are required for immediate revocation (Arch §8). **Do not use
+  `django.contrib.auth` Groups/Permissions for RBAC** — cannot express BR-26 scoping.
+- **Do not add `POST /issues`** (Issues form only via async clustering), **write endpoints for status-
+  or audit-events** (append-only, C-9/BR-31), **outbound webhooks or government-system integration**
+  (PRD §2.2 non-goal), or **frontend code** (backend-only repo).
+- **Do not hard-delete** users, categories, POIs or Issues — retire; user deletion anonymizes (C-14).
+- **Do not add a numeric priority score or tunable weights** (removed, FR-21), and **do not let
+  POI/proximity data affect severity or ordering** — display-only (C-10).
+- **Do not run `migrate`** in the Dockerfile or entrypoint. **Do not deploy `latest`** — SHA-tagged
+  only. **Do not expose `/metrics`** publicly. **Do not set `readOnlyRootFilesystem: true`** without an
+  `emptyDir` at `/tmp`. **Do not leave `DEBUG` enabled** anywhere deployed.
+- **Do not commit secrets** — `.env.local` is ignored, `.env.example` holds placeholders only.
 - **Do not let the code diverge from `docs/04-api-specification.md`** — amend the spec first.
-- **Do not invent answers to open questions** Q3 (POI source), Q5 (notification channels), Q6 (EXIF
-  default), Q10 (accuracy bar). Flag them.
-
-## Path-scoped rules
-
-`.claude/rules/` loads automatically by file pattern: `api-conventions.md`, `auth.md`,
-`database.md`, `async-worker.md`, `testing.md`.
+- **Do not invent answers to open questions:** ❓Q3 (POI source), ❓Q5 (notification channels — blocks
+  code delivery *and* password reset), ❓Q6 (EXIF default), ❓Q9 (LLM provider), ❓Q10 (accuracy bar).
+  Flag them.
