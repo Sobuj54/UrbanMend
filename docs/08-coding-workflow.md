@@ -2223,6 +2223,18 @@ members; corroboration count is derived and read-only; proximity context is disp
   severity is recomputed as max. Both operations require a reason. Split requires each side to keep
   ≥1 report.
 
+- **T5.1 implementation record (2026-08-14):** complete. The Issues service now owns the
+  authoritative lifecycle transition table: `submitted → triaged → acknowledged → in_progress →
+  resolved → closed`, with the documented `rejected`, `duplicate`, and `insufficient_info` branches
+  from `triaged`. Same-state writes, skipped edges, terminal returns, moderation-state changes and
+  unknown statuses fail as `409 INVALID_TRANSITION`. Branches and `reopen` require a non-blank,
+  trimmed reason and fail as `422` when absent. Reopen is represented as an explicit validated
+  create-new-Issue plan only from `resolved`/`closed`; it is not a persisted status and never
+  reactivates the historical Issue (DM-Q8). T5.2 will consume this plan for the atomic PATCH
+  mutation and linked-Issue creation, while T5.3 adds the immutable Status Event. Validation: 1095
+  passed with no xfails; ruff, format, strict mypy, model drift and the production deploy check
+  clean. No migration was required. Next: T5.2 status mutation endpoint.
+
 **M5 gate:** full lifecycle works; illegal transitions rejected; every transition writes an immutable
 event; override preserves computed value; merge/split re-attributes correctly.
 

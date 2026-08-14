@@ -1,4 +1,4 @@
-"""Issue clustering, member-derived severity and citizen confirmations (T4.4-T4.7)."""
+"""Issue clustering, severity, confirmations and lifecycle rules (T4.4-T5.1)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from django.core.exceptions import ValidationError
 from django.db import connection, transaction
 from django.http import Http404
 
-from urbenmend.api.exceptions import Conflict
+from urbenmend.api.exceptions import Conflict, UnprocessableEntity
 from urbenmend.identity.models import Role, User
 from urbenmend.identity.services import require_role
 from urbenmend.issues.models import Confirmation, Issue, IssueStatus
@@ -36,6 +36,99 @@ OPEN_ISSUE_STATUSES = frozenset(
         IssueStatus.INSUFFICIENT_INFO,
     }
 )
+
+# The authoritative PRD section 6.3 graph. Moderation states are intentionally absent: hiding
+# and removal are Admin moderation actions, not authority workflow transitions. Reopen is also
+# absent because it creates a new linked Issue instead of changing the original row's status.
+ISSUE_STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
+    IssueStatus.SUBMITTED: frozenset({IssueStatus.TRIAGED}),
+    IssueStatus.TRIAGED: frozenset(
+        {
+            IssueStatus.ACKNOWLEDGED,
+            IssueStatus.REJECTED,
+            IssueStatus.DUPLICATE,
+            IssueStatus.INSUFFICIENT_INFO,
+        }
+    ),
+    IssueStatus.ACKNOWLEDGED: frozenset({IssueStatus.IN_PROGRESS}),
+    IssueStatus.IN_PROGRESS: frozenset({IssueStatus.RESOLVED}),
+    IssueStatus.RESOLVED: frozenset({IssueStatus.CLOSED}),
+    IssueStatus.CLOSED: frozenset(),
+    IssueStatus.REJECTED: frozenset(),
+    IssueStatus.DUPLICATE: frozenset(),
+    IssueStatus.INSUFFICIENT_INFO: frozenset(),
+    IssueStatus.HIDDEN: frozenset(),
+    IssueStatus.REMOVED: frozenset(),
+}
+
+REOPEN_ACTION = "reopen"
+REOPENABLE_ISSUE_STATUSES = frozenset({IssueStatus.RESOLVED, IssueStatus.CLOSED})
+REASON_REQUIRED_TRANSITIONS = frozenset(
+    {
+        IssueStatus.REJECTED,
+        IssueStatus.DUPLICATE,
+        IssueStatus.INSUFFICIENT_INFO,
+        REOPEN_ACTION,
+    }
+)
+
+
+@dataclass(frozen=True)
+class IssueTransitionPlan:
+    """Validated lifecycle intent consumed by the T5.2 mutation service.
+
+    `creates_new_issue` is true only for `reopen`. That action never writes `"reopen"` into the
+    status column and never reactivates the original Issue (DM-Q8).
+    """
+
+    from_status: str
+    to_status: str
+    reason: str | None
+    creates_new_issue: bool
+
+
+def validate_issue_transition(
+    *,
+    from_status: str,
+    to_status: str,
+    reason: str | None = None,
+) -> IssueTransitionPlan:
+    """Validate one Issue lifecycle intent against BR-16/C-7.
+
+    Illegal edges (including same-state writes and moderation-state changes) are `409
+    INVALID_TRANSITION`. Rejected, duplicate, insufficient-info and reopen require a non-blank
+    reason and fail as `422` business-rule violations when it is absent. Reopen is valid only
+    from resolved/closed and is returned as a create-new-Issue plan; callers must leave the
+    original row untouched.
+    """
+    normalized_reason = reason.strip() if reason is not None else None
+    if not normalized_reason:
+        normalized_reason = None
+
+    is_reopen = to_status == REOPEN_ACTION
+    if is_reopen:
+        valid = from_status in REOPENABLE_ISSUE_STATUSES
+    else:
+        valid = to_status in ISSUE_STATUS_TRANSITIONS.get(from_status, frozenset())
+
+    if not valid:
+        raise Conflict(
+            f"Issue cannot transition from {from_status!r} to {to_status!r}.",
+            code="INVALID_TRANSITION",
+        )
+
+    if to_status in REASON_REQUIRED_TRANSITIONS and normalized_reason is None:
+        raise UnprocessableEntity(
+            f"A reason is required when transitioning to {to_status!r}.",
+            code="VALIDATION_FAILED",
+        )
+
+    return IssueTransitionPlan(
+        from_status=from_status,
+        to_status=to_status,
+        reason=normalized_reason,
+        creates_new_issue=is_reopen,
+    )
 
 
 class ClusteringError(RuntimeError):
