@@ -1,4 +1,4 @@
-"""Thin HTTP endpoints for revocable Issue confirmations (T4.7)."""
+"""Thin HTTP endpoints for Issue status and confirmations (T4.7-T5.2)."""
 
 from typing import cast
 
@@ -13,7 +13,28 @@ from urbenmend.issues import services
 from urbenmend.issues.serializers import (
     ConfirmationCreateSerializer,
     ConfirmationResponseSerializer,
+    IssueStatusResponseSerializer,
+    IssueStatusTransitionSerializer,
 )
+
+
+class IssueStatusView(APIView):
+    """`PATCH /issues/{id}/status` (API section 6.5, T5.2)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request: Request, issue_id: str) -> Response:
+        serializer = IssueStatusTransitionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        result = services.transition_issue_status(
+            actor=cast("User", request.user),
+            issue_id=issue_id,
+            to_status=data["to_status"],
+            reason=data.get("reason"),
+            duplicate_of_issue_id=data.get("duplicate_of_issue_id"),
+        )
+        return Response(IssueStatusResponseSerializer(result).data, status=status.HTTP_200_OK)
 
 
 class IssueConfirmationCreateView(APIView):

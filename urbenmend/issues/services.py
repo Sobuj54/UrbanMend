@@ -15,7 +15,7 @@ from django.http import Http404
 
 from urbenmend.api.exceptions import Conflict, UnprocessableEntity
 from urbenmend.identity.models import Role, User
-from urbenmend.identity.services import require_role
+from urbenmend.identity.services import require_category_scope, require_role
 from urbenmend.issues.models import Confirmation, Issue, IssueStatus
 from urbenmend.issues.selectors import active_clustering_rule, matching_open_issues
 from urbenmend.reporting.models import SEVERITY_RANK, Report, ReportStatus
@@ -87,6 +87,16 @@ class IssueTransitionPlan:
     creates_new_issue: bool
 
 
+@dataclass(frozen=True)
+class IssueStatusResult:
+    """The Issue resource identity returned by the T5.2 status endpoint."""
+
+    issue_id: UUID
+    status: str
+    duplicate_of_issue_id: UUID | None
+    reopened_from_issue_id: UUID | None
+
+
 def validate_issue_transition(
     *,
     from_status: str,
@@ -129,6 +139,88 @@ def validate_issue_transition(
         reason=normalized_reason,
         creates_new_issue=is_reopen,
     )
+
+
+def _status_result(issue: Issue) -> IssueStatusResult:
+    return IssueStatusResult(
+        issue_id=issue.pk,
+        status=issue.status,
+        duplicate_of_issue_id=issue.duplicate_of_id,
+        reopened_from_issue_id=issue.reopened_from_id,
+    )
+
+
+def _locked_issue(issue_id: UUID | str) -> Issue:
+    try:
+        return Issue.objects.select_for_update().select_related("primary_category").get(pk=issue_id)
+    except (Issue.DoesNotExist, ValidationError, ValueError, TypeError) as exc:
+        raise Http404("Issue not found.") from exc
+
+
+@transaction.atomic
+def transition_issue_status(
+    *,
+    actor: User,
+    issue_id: UUID | str,
+    to_status: str,
+    reason: str | None = None,
+    duplicate_of_issue_id: UUID | str | None = None,
+) -> IssueStatusResult:
+    """Atomically apply one scoped authority lifecycle action (T5.2, BR-15/16/19/26).
+
+    Reopen creates a fresh triaged Issue linked through `reopened_from`; the historical row and
+    its member Reports remain untouched. Status Event persistence joins this transaction in T5.3.
+    """
+    require_role(actor, Role.AUTHORITY, Role.ADMIN)
+    issue = _locked_issue(issue_id)
+    require_category_scope(actor, issue.primary_category)
+    plan = validate_issue_transition(
+        from_status=issue.status,
+        to_status=to_status,
+        reason=reason,
+    )
+
+    if to_status == IssueStatus.DUPLICATE:
+        if duplicate_of_issue_id is None:
+            raise ValidationError({"duplicate_of_issue_id": "This field is required."})
+        surviving = _locked_issue(duplicate_of_issue_id)
+        require_category_scope(actor, surviving.primary_category)
+        if surviving.pk == issue.pk or surviving.status in {
+            IssueStatus.DUPLICATE,
+            IssueStatus.HIDDEN,
+            IssueStatus.REMOVED,
+        }:
+            raise Conflict(
+                "The selected Issue cannot be the surviving duplicate target.",
+                code="INVALID_TRANSITION",
+            )
+        issue.status = IssueStatus.DUPLICATE
+        issue.duplicate_of = surviving
+        issue.save(update_fields=["status", "duplicate_of", "updated_at"])
+        return _status_result(issue)
+
+    if duplicate_of_issue_id is not None:
+        raise ValidationError(
+            {"duplicate_of_issue_id": "This field is accepted only for duplicate transitions."}
+        )
+
+    if plan.creates_new_issue:
+        if Issue.objects.filter(reopened_from=issue).exists():
+            raise Conflict("This Issue has already been reopened.", code="INVALID_TRANSITION")
+        reopened = Issue.objects.create(
+            primary_category=issue.primary_category,
+            representative_location=issue.representative_location,
+            computed_severity=issue.computed_severity,
+            computed_severity_rationale=issue.computed_severity_rationale,
+            status=IssueStatus.TRIAGED,
+            reopened_from=issue,
+        )
+        return _status_result(reopened)
+
+    issue.status = plan.to_status
+    issue.duplicate_of = None
+    issue.save(update_fields=["status", "duplicate_of", "updated_at"])
+    return _status_result(issue)
 
 
 class ClusteringError(RuntimeError):

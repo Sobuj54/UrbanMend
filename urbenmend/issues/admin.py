@@ -63,6 +63,7 @@ class IssueAdmin(_IssueAdminBase):
         "severity_overridden_by",
         "assignee",
         "duplicate_of",
+        "reopened_from",
     ]
     date_hierarchy = "opened_at"
 

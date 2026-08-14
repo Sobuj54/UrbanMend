@@ -2235,6 +2235,22 @@ members; corroboration count is derived and read-only; proximity context is disp
   passed with no xfails; ruff, format, strict mypy, model drift and the production deploy check
   clean. No migration was required. Next: T5.2 status mutation endpoint.
 
+- **T5.2 implementation record (2026-08-14):** complete. `PATCH /api/v1/issues/{id}/status`
+  is session-authenticated, CSRF-protected and thin over the atomic Issues service. The service
+  enforces Authority/Admin role plus BR-26 category scope beneath the HTTP layer, locks the target
+  row, consumes T5.1's validated transition plan, and returns `409 INVALID_TRANSITION` for illegal
+  edges. Duplicate transitions require a reason and a viable surviving Issue, persist
+  `duplicate_of`, reject self/moderated/duplicate targets and scope-check both sides. Reopen from
+  resolved/closed creates one fresh triaged successor while leaving the historical Issue and its
+  member Reports untouched; the dedicated one-to-one `reopened_from` lineage prevents repeat or
+  concurrent successors and does not overload duplicate semantics. The response exposes the
+  affected/new Issue id, status and lineage links until T7.3 supplies the full Issue resource.
+  Reason/public-note history remains assigned to T5.3/T5.8 rather than being stored as mutable
+  fields on Issue. Validation: 1111 passed with no xfails; ruff, format, strict mypy, model drift
+  and the production deploy check clean. Migration `issues.0005_issue_reopened_from` passed
+  forward/reverse/forward on a fresh PostGIS database and is applied to development. Next: T5.3
+  immutable Status Event emission in the same transaction.
+
 **M5 gate:** full lifecycle works; illegal transitions rejected; every transition writes an immutable
 event; override preserves computed value; merge/split re-attributes correctly.
 

@@ -1,4 +1,4 @@
-"""Issues, clustering and confirmation persistence (T4.1-T4.7).
+"""Issues, clustering, confirmation and lifecycle persistence (T4.1-T5.2).
 
 An Issue is the authority-facing unit of work: one real-world problem represented by one or more
 citizen Reports. Report processing state stays on Report; severity, municipal workflow and
@@ -157,6 +157,14 @@ class Issue(models.Model):
         related_name="duplicates",
         null=True,
         blank=True,
+    )
+    reopened_from = models.OneToOneField(
+        "self",
+        on_delete=models.PROTECT,
+        related_name="reopened_as",
+        null=True,
+        blank=True,
+        help_text=_("The historical resolved/closed Issue this recurrence reopens."),
     )
     opened_at = models.DateTimeField(default=timezone.now, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)

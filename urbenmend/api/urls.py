@@ -88,6 +88,11 @@ urlpatterns = [
     # API §6.6 — nested-only, revocable "me-too" confirmations. The collection accepts POST;
     # `/me` accepts DELETE, so separate views prevent either verb from leaking onto the other path.
     path(
+        "issues/<uuid:issue_id>/status",
+        issue_views.IssueStatusView.as_view(),
+        name="issues-status",
+    ),
+    path(
         "issues/<uuid:issue_id>/confirmations",
         issue_views.IssueConfirmationCreateView.as_view(),
         name="issues-confirmations",
@@ -125,6 +130,7 @@ urlpatterns = [
 #                                      moderation DELETE stay unthrottled — FR-33 is about
 #                                      submission, and both are covered by role checks instead
 #   /issues/{id}/confirmations       → T4.7 ✅ built
+#   PATCH /issues/{id}/status        → T5.2 ✅ built; T5.3 adds immutable event emission
 #   other /issues, /map, /comments   → later P4/P5 tasks
 #   /meta/enums                      → P1 (taxonomy confirmed — Q1 resolved 2026-08-07)
 # ⚠️ No `POST /issues` ever: Issues form only via async clustering [doc: API §3, CLAUDE.md].
