@@ -307,6 +307,91 @@ MEDIA_MAX_PER_REPORT = env.int("MEDIA_MAX_PER_REPORT", default=5)
 REPORT_SEARCH_MAX_RADIUS_M = env.int("REPORT_SEARCH_MAX_RADIUS_M", default=50_000)
 
 # --------------------------------------------------------------------------------------
+# Classification (T3.1–T3.3, FR-9/FR-10/FR-13a, NFR-13, Arch §6)
+# --------------------------------------------------------------------------------------
+# ⚠️ **Our numbers, not spec-derived.** NFR-13 requires a per-request token cap, a call rate limit, a
+# response cache and a spend ceiling but names no values; Arch §6 requires "timeout + bounded retry
+# with backoff" without fixing either. These are defensible defaults kept in config (NFR-11), like
+# the media and search limits above.
+
+# ⚠️ **❓Q9 is resolved as *deferred*: no provider is pinned, and this default is what makes that
+# honest.** `UnconfiguredLLMProvider` raises `ClassificationUnavailable`, so a deployment with
+# nothing set here classifies through FR-13a's keyword fallback rather than failing — which means
+# the fallback is the *default* code path, not an emergency one that first runs during an incident
+# (NFR-4, RISK-5). Setting this to a real provider is a deliberate act with a privacy decision
+# attached (P7: no training on submitted data).
+#
+# A dotted path rather than a vendor name enum: adding a provider must not require editing this
+# file, and `docs/07-adr-001` style says the seam is the deliverable, not the vendor.
+CLASSIFICATION_LLM_PROVIDER = env(
+    "CLASSIFICATION_LLM_PROVIDER",
+    default="urbenmend.classification.llm.UnconfiguredLLMProvider",
+)
+
+# NFR-13's "cap tokens per request". The reply is four short fields (category, severity, confidence,
+# one rationale sentence), so a large ceiling buys nothing but cost and a slower timeout when a model
+# decides to explain itself at length.
+CLASSIFICATION_LLM_MAX_OUTPUT_TOKENS = env.int("CLASSIFICATION_LLM_MAX_OUTPUT_TOKENS", default=300)
+
+# Per-attempt deadline. ⚠️ Well under `CELERY_TASK_SOFT_TIME_LIMIT` on purpose — with the retry
+# below, the worst case is roughly two of these plus backoff, and O-2 requires triage never to block
+# the queue. A provider that has not answered in ten seconds is indistinguishable from one that is
+# down, and the keyword fallback is already sitting there.
+CLASSIFICATION_LLM_TIMEOUT_SECONDS = env.float("CLASSIFICATION_LLM_TIMEOUT_SECONDS", default=10.0)
+
+# Total attempts including the first, i.e. one retry. ⚠️ **Low deliberately: the alternative to
+# retrying is not failure, it is the keyword fallback** (FR-13a), so a long retry chain spends money
+# and queue time to avoid an outcome that is already acceptable. `1` disables retrying.
+CLASSIFICATION_LLM_MAX_ATTEMPTS = env.int("CLASSIFICATION_LLM_MAX_ATTEMPTS", default=2)
+CLASSIFICATION_LLM_BACKOFF_SECONDS = env.float("CLASSIFICATION_LLM_BACKOFF_SECONDS", default=0.5)
+
+# Confidence the keyword fallback reports (FR-10 stores it; ❓Q10 — the accuracy bar and therefore
+# the low-confidence review threshold — is **open**, so nothing here is tuned against a threshold
+# that does not exist yet).
+#
+# ⚠️ 0.5 is the midpoint on purpose: any Q10 threshold above it sends every fallback classification
+# to human review (T3.7), which is the conservative default while the LLM is the thing that is down.
+CLASSIFICATION_FALLBACK_MATCHED_CONFIDENCE = env.float(
+    "CLASSIFICATION_FALLBACK_MATCHED_CONFIDENCE", default=0.5
+)
+CLASSIFICATION_FALLBACK_UNMATCHED_CONFIDENCE = env.float(
+    "CLASSIFICATION_FALLBACK_UNMATCHED_CONFIDENCE", default=0.1
+)
+
+# Redis-backed LLM controls (T3.4/T3.6). These are deployment policy rather than API contract.
+# Cached responses do not consume a call or budget unit. Cache keys contain only SHA-256 digests;
+# report text and user identifiers never appear in Redis keys.
+CLASSIFICATION_LLM_CACHE_SECONDS = env.int("CLASSIFICATION_LLM_CACHE_SECONDS", default=86_400)
+CLASSIFICATION_LLM_USER_RATE_LIMIT = env.int("CLASSIFICATION_LLM_USER_RATE_LIMIT", default=20)
+CLASSIFICATION_LLM_GLOBAL_RATE_LIMIT = env.int("CLASSIFICATION_LLM_GLOBAL_RATE_LIMIT", default=500)
+CLASSIFICATION_LLM_RATE_WINDOW_SECONDS = env.int(
+    "CLASSIFICATION_LLM_RATE_WINDOW_SECONDS", default=3_600
+)
+# Provider-neutral spend guard. The worker reserves an estimated prompt+output token cost before
+# calling the provider; the normal per-request output cap remains the hard bound for each call.
+CLASSIFICATION_LLM_DAILY_TOKEN_BUDGET = env.int(
+    "CLASSIFICATION_LLM_DAILY_TOKEN_BUDGET", default=1_000_000
+)
+CLASSIFICATION_LLM_CIRCUIT_FAILURE_THRESHOLD = env.int(
+    "CLASSIFICATION_LLM_CIRCUIT_FAILURE_THRESHOLD", default=3
+)
+CLASSIFICATION_LLM_CIRCUIT_RECOVERY_SECONDS = env.int(
+    "CLASSIFICATION_LLM_CIRCUIT_RECOVERY_SECONDS", default=60
+)
+
+# Q10 is still open, so no threshold is invented. Set a value in [0, 1] to activate T3.7's
+# persisted review flag; an unset value records confidence without making a review decision.
+CLASSIFICATION_LOW_CONFIDENCE_THRESHOLD = env.float(
+    "CLASSIFICATION_LOW_CONFIDENCE_THRESHOLD", default=None
+)
+
+# ⚠️ **The fallback's default severity band is deliberately NOT configurable.** It is a policy
+# judgement argued out in `classification/keywords.py` (`DEFAULT_SEVERITY` = Medium: an unmatched
+# report is unknown, not unimportant), and an env var here would invite an operator to set it to
+# `critical` during an outage — putting every unrecognised report in the band FR-14/Q2 reserve for
+# life-safety, which is how a Critical queue becomes noise nobody reads.
+
+# --------------------------------------------------------------------------------------
 # Django REST Framework
 # --------------------------------------------------------------------------------------
 # API conventions (API §1.2, T0.6).

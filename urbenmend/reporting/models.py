@@ -213,6 +213,10 @@ class Report(models.Model):
     classification_model = models.CharField(max_length=100, blank=True)
     classification_rationale = models.TextField(blank=True)
     classified_at = models.DateTimeField(null=True, blank=True)
+    # T3.7 - an internal queueing signal for later human review. Q10 has not fixed the
+    # confidence threshold, so the worker leaves this false unless a deployment explicitly
+    # configures one. It is intentionally not exposed by the v1 Report serializer yet.
+    classification_needs_review = models.BooleanField(default=False, db_index=True)
 
     # BR-6 / C-5 — at most one Issue at a time, null until clustering attaches it (T4.5).
     # ⚠️ Deliberately absent until `issues.Issue` exists (T4.1): a FK to a non-existent model

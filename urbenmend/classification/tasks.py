@@ -56,8 +56,14 @@ def classify_report(report_id: str, **_options: Any) -> None:
     At-least-once delivery means this can run twice for one report, and the report may have been
     moderated (`hidden`/`removed`) between enqueue and execution.
     """
-    logger.warning(
-        "classification.not_implemented",
-        report_id=report_id,
-        detail="Report enqueued for triage; the classifier lands with T3.5.",
-    )
+    from urbenmend.classification.services import classify_report_record
+
+    outcome = classify_report_record(report_id)
+    if outcome == "stale":
+        # The citizen edited the report while an external call was in flight. Requeue the committed
+        # latest version instead of persisting a classification for stale text.
+        classify_report.delay(report_id)
+        logger.info("classification.report_requeued", report_id=report_id, reason="stale_input")
+        return
+
+    logger.info("classification.report_finished", report_id=report_id, outcome=outcome)

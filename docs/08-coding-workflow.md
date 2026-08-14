@@ -2097,6 +2097,16 @@ finished without a provider.
 **M3 gate:** submitted report is classified asynchronously; LLM unavailable → keyword fallback
 produces a result; classification source is recorded; failures degrade, not crash.
 
+**P3 implementation record (2026-08-14):** T3.1-T3.7 are complete. The worker now classifies and
+persists category, severity signal, confidence, source, model and rationale; unavailable, malformed,
+rate-limited, over-budget and circuit-open LLM paths degrade to the bilingual keyword fallback.
+Identical-text LLM results use a privacy-safe Redis cache, provider failures drive a circuit breaker,
+and at-least-once task delivery is idempotent. Authority/Admin category corrections are preserved,
+while stale text edited during an external call is requeued instead of overwritten. Confidence is
+stored for every result; the internal review flag remains disabled until Q10 supplies a threshold.
+Validation: 949 passed / 1 xfailed; ruff, format, mypy, model drift and production deploy checks
+clean; P3 migrations verified forward/reverse/forward on a fresh database. Next: P4 / T4.1.
+
 ## C5. P4 Clustering & Issues
 - T4.4 is the hardest task in the project. The concurrency-safe find-or-create must use a
   **Postgres transaction-scoped advisory lock** keyed on `(geohash_cell, category_id)` inside
@@ -2280,4 +2290,3 @@ From [05-project-plan.md](05-project-plan.md) §11.
 - [ ] Open-question resolution log complete (DC-7)
 - [ ] Demo scenario rehearsed for capstone defence
 - [ ] Handover package: source, migrations, env setup, planning docs 01–07
-
