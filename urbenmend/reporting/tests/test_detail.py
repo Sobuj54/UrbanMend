@@ -203,13 +203,21 @@ def test_an_empty_string_severity_band_is_emitted_as_null() -> None:
     assert classification["source"] is None
 
 
-def test_issue_id_is_null_until_clustering_exists() -> None:
-    """⚠️ Declared and null rather than omitted — the Issue FK lands in T4.1, and §6.3 shows the
-    key on every Report. Whoever adds the FK replaces one method here; a client written today
-    already handles the null."""
+def test_issue_id_is_null_until_clustering_attaches_the_report() -> None:
+    """The stable §6.3 key stays nullable while async classification/clustering is pending."""
     report = ReportFactory.create()
 
     assert Client().get(_url(report.pk)).json()["issueId"] is None
+
+
+def test_issue_id_identifies_the_attached_issue() -> None:
+    """T4.1 exposes the Report→Issue relationship without loading the related row."""
+    from urbenmend.issues.tests.factories import IssueFactory
+
+    issue = IssueFactory.create()
+    report = ReportFactory.create(issue=issue)
+
+    assert Client().get(_url(report.pk)).json()["issueId"] == str(issue.pk)
 
 
 # --------------------------------------------------------------------------------------

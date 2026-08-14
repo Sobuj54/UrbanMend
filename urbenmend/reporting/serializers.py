@@ -284,14 +284,13 @@ class ReportDetailSerializer(CamelCaseSerializer):
         }
 
     def get_issue_id(self, report: Report) -> str | None:
-        """Always `null` — the Issue FK does not exist yet.
+        """The opaque Issue id once clustering attaches this Report, otherwise `null`.
 
         ⚠️ **Declared now rather than added later, because §6.3 lists it** and a client that has to
         start handling a new key after clustering ships is a breaking change dressed as an additive
-        one. T4.5 attaches the Issue (BR-6) and this method becomes a read of that FK; the field name
-        and its nullability do not change then.
+        one. Reading the raw `issue_id` avoids loading the related Issue just to serialize its key.
         """
-        return None
+        return str(report.issue_id) if report.issue_id else None
 
 
 class ReportListQuerySerializer(CamelCaseSerializer):

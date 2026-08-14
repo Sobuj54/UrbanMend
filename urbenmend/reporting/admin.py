@@ -49,21 +49,22 @@ class ReportAdmin(_ReportAdminBase):
         "status",
         "severity_signal",
         "classification_source",
+        "issue",
         "created_at",
     ]
     list_filter = ["status", "severity_signal", "classification_source", "language", "category"]
     search_fields = ["id", "description", "address"]
     # `author` and `category` are FKs to tables that grow without bound; the raw-id widget avoids
     # a select box that loads every user on every page render.
-    raw_id_fields = ["author", "category"]
+    raw_id_fields = ["author", "category", "issue"]
     date_hierarchy = "created_at"
 
     def get_readonly_fields(self, request: HttpRequest, obj: Report | None = None) -> list[str]:
         """Every concrete field, derived rather than listed.
 
         A hand-written list silently stops covering a column the day one is added — and the
-        columns still to come here are the classification result (T3.5) and the Issue FK (T4.5),
-        exactly the ones an admin must not hand-edit.
+        classification and Issue membership fields are exactly the ones an admin must not
+        hand-edit.
         """
         return [field.name for field in self.model._meta.fields]
 

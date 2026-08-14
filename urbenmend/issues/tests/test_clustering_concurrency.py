@@ -1,8 +1,8 @@
 """
 P4 clustering-concurrency test — R-2's acceptance criterion, written in P0 (A10, T4.4).
 
-⚠️ THIS TEST IS RED ON PURPOSE. Nothing it calls exists yet: `Issue` (T4.2) and
-`cluster_report()` (T4.4) are P4 work. It is written now as a forcing function
+⚠️ THIS TEST IS RED ON PURPOSE. The Issue aggregate now exists (T4.1), but
+`cluster_report()` remains T4.4 work. It is written as a forcing function
 [doc: Plan §8.1, P0 checkpoint]: R-2 ("duplicate Issues under concurrent submission", Plan §risks)
 is the single most expensive defect to discover late, so the acceptance criteria are locked into
 the suite *before* the schedule pressure that would otherwise trim them.
@@ -58,7 +58,7 @@ CONCURRENT_SUBMISSIONS = 2
 
 @pytest.mark.xfail(
     strict=True,
-    reason="T4.4 not implemented: Issue model (T4.2) and cluster_report() (T4.4) are P4. "
+    reason="T4.4 not implemented: cluster_report() and its advisory lock are still absent. "
     "Written red in P0 on purpose — see module docstring. Remove this marker in T4.4.",
 )
 @pytest.mark.django_db(transaction=True)
@@ -73,11 +73,11 @@ def test_concurrent_reports_of_one_real_world_issue_create_exactly_one_issue() -
     `INSERT` — a lost-update race. No error surfaces; the damage is two Issues for one pothole,
     which splits the report count authorities triage on and double-notifies subscribers.
     """
-    # ⚠️ `type: ignore[attr-defined]` because neither name exists yet, and it is the same
-    # self-cleaning device as `xfail(strict=True)`: `strict = true` implies
+    # ⚠️ `type: ignore[attr-defined]` remains only for the service that does not exist yet. It is
+    # the same self-cleaning device as `xfail(strict=True)`: `strict = true` implies
     # `warn_unused_ignores`, so mypy errors on these very lines ("unused ignore") the moment
     # T4.4 defines them. The scaffolding cannot rot silently.
-    from urbenmend.issues.models import Issue  # type: ignore[attr-defined]
+    from urbenmend.issues.models import Issue
     from urbenmend.issues.services import cluster_report  # type: ignore[attr-defined]
 
     category = _seed_category()
@@ -121,8 +121,7 @@ def test_concurrent_reports_of_one_real_world_issue_create_exactly_one_issue() -
 # `warn_unused_ignores`: the `type: ignore[attr-defined]` on the old `Report` import became an
 # error the moment T2.1 defined the model.
 #
-# ⚠️ `Issue` and `cluster_report` are still absent (T4.2/T4.4), so this test still xfails — at
-# the two imports inside the test body, which is exactly where it should.
+# ⚠️ `cluster_report` is still absent (T4.4), so this test still xfails at its service import.
 # ------------------------------------------------------------------------------------------
 def _seed_citizen(index: int) -> User:
     """One citizen account. Distinct submitters, because two reports from one account at one

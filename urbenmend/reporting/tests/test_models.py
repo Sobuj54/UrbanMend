@@ -59,16 +59,13 @@ def test_report_has_no_severity_or_assignment_column() -> None:
     assert "resolution" not in field_names
 
 
-def test_report_has_no_issue_fk_yet() -> None:
-    """⚠️ Deliberately absent until T4.1 creates `issues.Issue` (BR-6, C-5).
+def test_report_issue_membership_is_nullable_and_single_valued() -> None:
+    """BR-6/C-5: clustering may be pending, and a Report belongs to at most one Issue."""
+    field = Report._meta.get_field("issue")
 
-    Asserted so the absence reads as a decision rather than an oversight — and so that whoever
-    adds it is pointed at BR-6's at-most-one-Issue rule instead of adding a loose UUID column.
-    """
-    field_names = {field.name for field in Report._meta.get_fields()}
-
-    assert "issue" not in field_names
-    assert "issue_id" not in field_names
+    assert field.null is True
+    assert field.many_to_one is True
+    assert field.many_to_many is False
 
 
 # ---------------------------------------------------------------------------------------

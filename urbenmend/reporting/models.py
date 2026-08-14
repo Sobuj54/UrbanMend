@@ -219,8 +219,15 @@ class Report(models.Model):
     classification_needs_review = models.BooleanField(default=False, db_index=True)
 
     # BR-6 / C-5 — at most one Issue at a time, null until clustering attaches it (T4.5).
-    # ⚠️ Deliberately absent until `issues.Issue` exists (T4.1): a FK to a non-existent model
-    # cannot be declared, and a placeholder UUID column would accept unvalidated values.
+    # `PROTECT` keeps citizen evidence and authority work history intact: Issues are moderated or
+    # merged, never hard-deleted (database.md "No hard deletes").
+    issue = models.ForeignKey(
+        "issues.Issue",
+        on_delete=models.PROTECT,
+        related_name="reports",
+        null=True,
+        blank=True,
+    )
 
     # Server-authoritative timestamp (FR-5) — never client-supplied, or a client could
     # backdate a report to win an age-based sort (FR-19).

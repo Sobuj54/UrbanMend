@@ -1400,9 +1400,9 @@ drift, `check --deploy` clean on `prod`, both new apps verified reversible in bo
 - ⚠️ **`author` is `PROTECT`, not `CASCADE`** (C-14): BR-33 implements deletion as anonymization, so
   the cascade should never fire, and `PROTECT` makes a hard-delete attempt fail loudly instead of
   quietly erasing the reports that give an Issue its corroboration count (FR-16).
-- ⚠️ **The Issue FK is deliberately absent until T4.1.** A test asserts the absence so it reads as a
-  decision rather than an oversight, and points whoever adds it at BR-6's at-most-one-Issue rule
-  instead of a loose UUID column.
+- ✅ **T4.1 replaced the deliberately absent Issue placeholder with a nullable, protected FK.**
+  It enforces BR-6's at-most-one-Issue rule without inventing a loose UUID column, while preserving
+  the valid pre-clustering state and preventing a hard delete from erasing citizen evidence.
 - ⚠️ **A registered-but-unverified citizen may submit.** BR-30 gates *notification* on verification,
   not intake, and the limited capability set for unverified accounts is explicitly unspecified
   ("don't invent it"). Someone who just registered can still report a live hazard.
@@ -2108,6 +2108,15 @@ Validation: 949 passed / 1 xfailed; ruff, format, mypy, model drift and producti
 clean; P3 migrations verified forward/reverse/forward on a fresh database. Next: P4 / T4.1.
 
 ## C5. P4 Clustering & Issues
+- **T4.1 implementation record (2026-08-14):** complete. `Issue` now owns its controlled primary
+  category, representative WGS84 geography point, computed severity and rationale, non-destructive
+  authority override metadata, workflow status, optional assignee, duplicate link, and open/update
+  timestamps. `Report.issue` is nullable until clustering and `PROTECT`ed, with the reverse member
+  set and report count derived from the relationship rather than a counter column. Both admin
+  surfaces are read-only for Issue-owned state, and Report reads now expose the attached opaque
+  `issueId`. Validation: 959 passed / 1 xfailed; ruff, format, strict mypy, model drift and production
+  deploy checks clean; migrations verified forward/reverse/forward on a fresh database and applied
+  to development. Next: T4.2 geospatial indexing/setup.
 - T4.4 is the hardest task in the project. The concurrency-safe find-or-create must use a
   **Postgres transaction-scoped advisory lock** keyed on `(geohash_cell, category_id)` inside
   `atomic()`. Test it with two concurrent requests — assert exactly one Issue is created.
