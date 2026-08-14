@@ -2179,6 +2179,22 @@ clean; P3 migrations verified forward/reverse/forward on a fresh database. Next:
   No migration was required. The development Celery worker was restarted, registered
   `classification.classify_report`, and reached ready state. Next: T4.7 one Confirmation per citizen
   per Issue and derived corroboration count.
+- **T4.7 implementation record (2026-08-14):** complete. `Confirmation` is a revocable,
+  UUID-addressed relationship from one Citizen to one Issue, protected from hard deletion and
+  guarded by the database-level `issues_confirmation_one_per_citizen` uniqueness constraint. The
+  service locks the target Issue so concurrent repeats produce exactly one row and one
+  `409 ALREADY_CONFIRMED`; moderated Issues remain non-disclosing `404`s. API §6.6's nested
+  `POST /issues/{id}/confirmations` and `DELETE /issues/{id}/confirmations/me` are live,
+  session-authenticated, Citizen-only and CSRF-protected. `corroboration_count` is a read-only
+  derivation over distinct active Report authors plus confirmers, so repeated Reports and a
+  Report-plus-Confirmation from the same account count once, inactive accounts count zero, and
+  withdrawal can decrease the result. Verification/age weighting remains deliberately absent:
+  those inputs exist, but the product specifies no threshold or weight, and inventing one would
+  recreate the numeric scoring FR-21 removed. Corroboration remains display-only and never enters
+  severity. Validation: 1029 passed with no xfails; ruff, format, strict mypy, model drift and the
+  production deploy check clean. Migration `issues.0004_confirmation` passed
+  forward/reverse/forward on a fresh PostGIS database and is applied to development. Next: T4.8
+  display-only proximity context.
 - T4.8: proximity context (POIs near the issue) is **display-only**. It must never influence
   severity, ordering, or any business rule (C-10). Compute it for the response; do not store it as
   a field that could be misread as authoritative.

@@ -1,8 +1,9 @@
-"""Concurrency-safe Issue clustering and member-derived severity (T4.4, T4.6)."""
+"""Issue clustering, member-derived severity and citizen confirmations (T4.4-T4.7)."""
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -10,8 +11,12 @@ from uuid import UUID
 import structlog
 from django.core.exceptions import ValidationError
 from django.db import connection, transaction
+from django.http import Http404
 
-from urbenmend.issues.models import Issue, IssueStatus
+from urbenmend.api.exceptions import Conflict
+from urbenmend.identity.models import Role, User
+from urbenmend.identity.services import require_role
+from urbenmend.issues.models import Confirmation, Issue, IssueStatus
 from urbenmend.issues.selectors import active_clustering_rule, matching_open_issues
 from urbenmend.reporting.models import SEVERITY_RANK, Report, ReportStatus
 
@@ -43,6 +48,50 @@ class ReportNotFound(ClusteringError):
 
 class ReportNotReady(ClusteringError):
     """Classification has not produced all inputs required by clustering."""
+
+
+@dataclass(frozen=True)
+class ConfirmationResult:
+    """The confirmation write result rendered by API §6.6."""
+
+    issue_id: UUID
+    corroboration_count: int
+
+
+def _confirmation_target(issue_id: UUID | str, *, for_update: bool) -> Issue:
+    """Resolve a public, non-moderated Issue without leaking hidden rows."""
+    queryset = Issue.objects.exclude(status__in={IssueStatus.HIDDEN, IssueStatus.REMOVED})
+    if for_update:
+        queryset = queryset.select_for_update()
+    try:
+        return queryset.get(pk=issue_id)
+    except (Issue.DoesNotExist, ValidationError, ValueError, TypeError) as exc:
+        raise Http404("Issue not found.") from exc
+
+
+@transaction.atomic
+def confirm_issue(*, actor: User, issue_id: UUID | str) -> ConfirmationResult:
+    """Create the actor's one revocable confirmation and return the derived count (BR-22/23)."""
+    require_role(actor, Role.CITIZEN)
+    issue = _confirmation_target(issue_id, for_update=True)
+    if Confirmation.objects.filter(issue=issue, citizen=actor).exists():
+        raise Conflict("You have already confirmed this issue.", code="ALREADY_CONFIRMED")
+
+    Confirmation.objects.create(issue=issue, citizen=actor)
+    return ConfirmationResult(
+        issue_id=issue.pk,
+        corroboration_count=issue.corroboration_count,
+    )
+
+
+@transaction.atomic
+def withdraw_confirmation(*, actor: User, issue_id: UUID | str) -> None:
+    """Revoke the actor's confirmation; absence is a non-disclosing `404` (DM-Q5)."""
+    require_role(actor, Role.CITIZEN)
+    issue = _confirmation_target(issue_id, for_update=True)
+    deleted, _ = Confirmation.objects.filter(issue=issue, citizen=actor).delete()
+    if deleted == 0:
+        raise Http404("Confirmation not found.")
 
 
 def _severity_rank(report: Report) -> int:

@@ -1,12 +1,12 @@
-"""Issues & Clustering persistence (T4.1).
+"""Issues, clustering and confirmation persistence (T4.1-T4.7).
 
 An Issue is the authority-facing unit of work: one real-world problem represented by one or more
 citizen Reports. Report processing state stays on Report; severity, municipal workflow and
 assignment live here and nowhere else.
 
-T4.1 establishes the aggregate and its relationships. T4.2-T4.6 add the spatial index, clustering
-rules, concurrency-safe attachment and member-derived severity; lifecycle transitions remain T5
-work.
+T4.1 establishes the aggregate and its relationships. T4.2-T4.7 add the spatial index, clustering
+rules, concurrency-safe attachment, member-derived severity and citizen confirmations; lifecycle
+transitions remain T5 work.
 
 [doc: data-model section 3; Arch sections 4.2-4.4; plan T4.1]
 """
@@ -24,6 +24,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
+from urbenmend.identity.models import User, UserStatus
 from urbenmend.reporting.models import SeveritySignal
 
 
@@ -190,3 +191,51 @@ class Issue(models.Model):
     def report_count(self) -> int:
         """Member count is derived from Reports, never a mutable counter column."""
         return self.reports.count()
+
+    @property
+    def corroboration_count(self) -> int:
+        """Distinct active people who reported or confirmed this Issue (FR-16, BR-22)."""
+        # Verification/age weighting is deliberately absent: the trust inputs exist, but the
+        # product defines no threshold or weight. Inventing one would turn this display-only count
+        # into the undeclared numeric scoring system FR-21 removed.
+        active_statuses = (UserStatus.REGISTERED, UserStatus.VERIFIED, UserStatus.ACTIVE)
+        return (
+            User.objects.filter(
+                Q(reports__issue=self) | Q(confirmations__issue=self),
+                status__in=active_statuses,
+            )
+            .distinct()
+            .count()
+        )
+
+
+class Confirmation(models.Model):
+    """One revocable citizen assertion that an Issue affects them too (FR-16, BR-23)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    issue = models.ForeignKey(
+        Issue,
+        on_delete=models.PROTECT,
+        related_name="confirmations",
+    )
+    citizen = models.ForeignKey(
+        "identity.User",
+        on_delete=models.PROTECT,
+        related_name="confirmations",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "issues_confirmation"
+        verbose_name = _("confirmation")
+        verbose_name_plural = _("confirmations")
+        ordering = ["created_at", "id"]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=["issue", "citizen"],
+                name="issues_confirmation_one_per_citizen",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.citizen} confirmed {self.issue}"

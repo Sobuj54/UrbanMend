@@ -14,6 +14,7 @@ from __future__ import annotations
 from django.urls import path
 
 from urbenmend.identity import views as identity_views
+from urbenmend.issues import views as issue_views
 from urbenmend.media import views as media_views
 from urbenmend.platform import views as platform_views
 from urbenmend.reporting import views as reporting_views
@@ -84,6 +85,18 @@ urlpatterns = [
         reporting_views.ReportDetailView.as_view(),
         name="reports-detail",
     ),
+    # API §6.6 — nested-only, revocable "me-too" confirmations. The collection accepts POST;
+    # `/me` accepts DELETE, so separate views prevent either verb from leaking onto the other path.
+    path(
+        "issues/<uuid:issue_id>/confirmations",
+        issue_views.IssueConfirmationCreateView.as_view(),
+        name="issues-confirmations",
+    ),
+    path(
+        "issues/<uuid:issue_id>/confirmations/me",
+        issue_views.IssueConfirmationDeleteView.as_view(),
+        name="issues-confirmations-me",
+    ),
     # API §6.4 — media. T2.4 adds upload + read + moderation-remove; T2.5 is the worker that
     # builds the derivatives, so a fresh upload answers `state: "processing"` and a null
     # `thumbnailUrl` until it runs.
@@ -111,6 +124,7 @@ urlpatterns = [
 #                                      EXIF always); T2.9 ✅ POST throttled. ⚠️ The reads and the
 #                                      moderation DELETE stay unthrottled — FR-33 is about
 #                                      submission, and both are covered by role checks instead
-#   /issues, /map, /comments         → P2/P4
+#   /issues/{id}/confirmations       → T4.7 ✅ built
+#   other /issues, /map, /comments   → later P4/P5 tasks
 #   /meta/enums                      → P1 (taxonomy confirmed — Q1 resolved 2026-08-07)
 # ⚠️ No `POST /issues` ever: Issues form only via async clustering [doc: API §3, CLAUDE.md].

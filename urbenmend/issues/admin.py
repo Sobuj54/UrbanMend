@@ -1,18 +1,20 @@
-"""Read-only Django admin inspection for Issues (T4.1)."""
+"""Django admin for clustering rules and read-only Issue/Confirmation inspection."""
 
 from typing import TYPE_CHECKING
 
 from django.contrib import admin
 from django.http import HttpRequest
 
-from urbenmend.issues.models import ClusteringRule, Issue
+from urbenmend.issues.models import ClusteringRule, Confirmation, Issue
 
 if TYPE_CHECKING:
     _IssueAdminBase = admin.ModelAdmin[Issue]
     _ClusteringRuleAdminBase = admin.ModelAdmin[ClusteringRule]
+    _ConfirmationAdminBase = admin.ModelAdmin[Confirmation]
 else:
     _IssueAdminBase = admin.ModelAdmin
     _ClusteringRuleAdminBase = admin.ModelAdmin
+    _ConfirmationAdminBase = admin.ModelAdmin
 
 
 @admin.register(ClusteringRule)
@@ -51,6 +53,7 @@ class IssueAdmin(_IssueAdminBase):
         "status",
         "assignee",
         "member_report_count",
+        "corroborating_reporter_count",
         "opened_at",
     ]
     list_filter = ["status", "computed_severity", "overridden_severity", "primary_category"]
@@ -71,6 +74,10 @@ class IssueAdmin(_IssueAdminBase):
     def member_report_count(self, obj: Issue) -> int:
         return obj.report_count
 
+    @admin.display(description="Corroboration")
+    def corroborating_reporter_count(self, obj: Issue) -> int:
+        return obj.corroboration_count
+
     def get_readonly_fields(self, request: HttpRequest, obj: Issue | None = None) -> list[str]:
         """Issue mutations must go through later audited domain services, never admin forms."""
         return [field.name for field in self.model._meta.fields]
@@ -81,4 +88,21 @@ class IssueAdmin(_IssueAdminBase):
 
     def has_delete_permission(self, request: HttpRequest, obj: Issue | None = None) -> bool:
         """Issues are moderated or merged and retained as history, never hard-deleted."""
+        return False
+
+
+@admin.register(Confirmation)
+class ConfirmationAdmin(_ConfirmationAdminBase):
+    """Inspect confirmations without bypassing the citizen-owned revocation endpoint."""
+
+    list_display = ["id", "issue", "citizen", "created_at"]
+    search_fields = ["id", "issue__id", "citizen__email", "citizen__phone"]
+    raw_id_fields = ["issue", "citizen"]
+    readonly_fields = ["id", "issue", "citizen", "created_at"]
+    date_hierarchy = "created_at"
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj: Confirmation | None = None) -> bool:
         return False

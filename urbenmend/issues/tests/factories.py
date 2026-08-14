@@ -1,4 +1,4 @@
-"""`factory_boy` factories for the T4.1 Issue aggregate."""
+"""`factory_boy` factories for Issues, clustering rules and confirmations."""
 
 from __future__ import annotations
 
@@ -6,9 +6,11 @@ import factory
 from django.contrib.gis.geos import Point
 
 from urbenmend.classification.models import Category
+from urbenmend.identity.tests.factories import UserFactory
 from urbenmend.issues.models import (
     ClusteringRule,
     ClusteringRuleStatus,
+    Confirmation,
     Issue,
     IssueStatus,
 )
@@ -40,3 +42,13 @@ class IssueFactory(factory.django.DjangoModelFactory[Issue]):
     computed_severity = SeveritySignal.MEDIUM
     computed_severity_rationale = "Highest severity signal among the member Reports."
     status = IssueStatus.SUBMITTED
+
+
+class ConfirmationFactory(factory.django.DjangoModelFactory[Confirmation]):
+    """One citizen's revocable endorsement of an Issue."""
+
+    class Meta:
+        model = Confirmation
+
+    issue = factory.SubFactory(IssueFactory)
+    citizen = factory.SubFactory(UserFactory)
