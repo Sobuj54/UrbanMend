@@ -11,7 +11,7 @@ from __future__ import annotations
 import factory
 from django.contrib.gis.geos import MultiPolygon, Point, Polygon
 
-from urbenmend.geo.models import CityBoundary
+from urbenmend.geo.models import POI, CityBoundary, POIType
 
 # A small square around central Dhaka, well inside `docs/city-boundary/dhaka-demo.geojson`.
 # ⚠️ **Deliberately smaller than the seeded stand-in.** A factory-built boundary must not be
@@ -65,3 +65,16 @@ class CityBoundaryFactory(factory.django.DjangoModelFactory[CityBoundary]):
     name = factory.Sequence(lambda n: f"Test boundary {n}")
     area = factory.LazyFunction(square)
     is_active = False
+
+
+class POIFactory(factory.django.DjangoModelFactory[POI]):
+    """A display-only POI near central Dhaka."""
+
+    class Meta:
+        model = POI
+
+    name = factory.Sequence(lambda n: f"Test POI {n}")
+    poi_type = POIType.HOSPITAL
+    location = factory.LazyFunction(lambda: INSIDE_POINT.clone())
+    source = "test"
+    is_active = True

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from django.contrib import admin
 from django.http import HttpRequest
 
-from urbenmend.geo.models import CityBoundary
+from urbenmend.geo.models import POI, CityBoundary
 
 # django-stubs types ModelAdmin as generic in the model, but the runtime class is not
 # subscriptable — see the same alias in `identity/admin.py` for the full reasoning.
@@ -21,6 +21,11 @@ if TYPE_CHECKING:
     _CityBoundaryAdminBase = admin.ModelAdmin[CityBoundary]
 else:
     _CityBoundaryAdminBase = admin.ModelAdmin
+
+if TYPE_CHECKING:
+    _POIAdminBase = admin.ModelAdmin[POI]
+else:
+    _POIAdminBase = admin.ModelAdmin
 
 
 @admin.register(CityBoundary)
@@ -61,3 +66,22 @@ class CityBoundaryAdmin(_CityBoundaryAdminBase):
         if obj is None:
             return ["id", "created_at"]
         return ["id", "area", "created_at"]
+
+
+@admin.register(POI)
+class POIAdmin(_POIAdminBase):
+    """Manage and retire display-only POI reference data (FR-17, C-10)."""
+
+    list_display = ["name", "poi_type", "is_active", "source", "updated_at"]
+    list_filter = ["poi_type", "is_active"]
+    search_fields = ["name", "source"]
+
+    def has_delete_permission(self, request: HttpRequest, obj: POI | None = None) -> bool:
+        """No hard delete; historical reference rows are retired."""
+        return False
+
+    def get_readonly_fields(self, request: HttpRequest, obj: POI | None = None) -> list[str]:
+        """Keep a POI's identity and coordinates immutable after creation."""
+        if obj is None:
+            return ["id", "created_at", "updated_at"]
+        return ["id", "location", "created_at", "updated_at"]

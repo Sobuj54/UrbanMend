@@ -2195,9 +2195,19 @@ clean; P3 migrations verified forward/reverse/forward on a fresh database. Next:
   production deploy check clean. Migration `issues.0004_confirmation` passed
   forward/reverse/forward on a fresh PostGIS database and is applied to development. Next: T4.8
   display-only proximity context.
-- T4.8: proximity context (POIs near the issue) is **display-only**. It must never influence
-  severity, ordering, or any business rule (C-10). Compute it for the response; do not store it as
-  a field that could be misread as authoritative.
+- **T4.8 implementation record (2026-08-14):** complete. `geo.POI` now holds Admin-managed,
+  retire-only reference points with the controlled hospital/school/highway/market vocabulary, a
+  WGS84 geography location, a named GiST spatial index, source provenance and active state. The
+  reusable `nearby_pois()` read selector accepts an explicit metre radius and result limit, filters
+  inactive rows, applies index-assisted `ST_DWithin`, and orders nearest-first with a deterministic
+  UUID tie-break. No POI seed was added because the authoritative source/licence remains an open
+  data decision. There is deliberately no Issue field, Issue-to-POI relationship or stored
+  proximity value: the selector is the response-building primitive for the later Issue list/detail
+  surfaces, which do not exist yet, and POIs cannot influence severity, queue ordering, clustering
+  or any business rule (C-10). Validation: 1039 passed with no xfails; ruff, format, strict mypy,
+  model drift and the production deploy check clean. Migration `geo.0003_poi` passed
+  forward/reverse/forward on a fresh PostGIS database and is applied to development. Next: T5.1
+  Issue status enum and transition table.
 
 **M4 gate:** two concurrent same-category nearby reports → exactly one Issue; severity = max of
 members; corroboration count is derived and read-only; proximity context is display-only.

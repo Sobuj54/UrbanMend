@@ -1,9 +1,9 @@
 """
 Geospatial — persistence (T2.1).
 
-Spatial queries (radius, nearest-POI, density), reverse geocoding integration, POI reference
-data. This module currently holds only `CityBoundary`, the reference polygon BR-35/C-11 checks
-report locations against; POIs land with T4.8 and the boundary management endpoint with T8.4.
+Spatial queries (radius, nearest-POI, density), reverse geocoding integration, and POI reference
+data. `CityBoundary` supplies the polygon for BR-35/C-11; `POI` supplies display-only proximity
+context for Issues (T4.8).
 
 ⚠️ **This is the project's first geometry-bearing app.** `identity/0001` runs
 `CreateExtension("postgis")` as its first operation and `geo/0001` names it in `dependencies` —
@@ -91,6 +91,48 @@ class CityBoundary(models.Model):
             # migration. `spatial_index=False` on the field above is what stops Django adding a
             # second, auto-named GiST index alongside this one (database.md, NFR-1).
             GistIndex(fields=["area"], name="geo_city_boundary_area_gist"),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class POIType(models.TextChoices):
+    """Controlled point-of-interest vocabulary from the v1 API contract."""
+
+    HOSPITAL = "hospital", _("Hospital")
+    SCHOOL = "school", _("School")
+    HIGHWAY = "highway", _("Highway")
+    MARKET = "market", _("Market")
+
+
+class POI(models.Model):
+    """Admin-managed point of interest used only as display context (FR-17, C-10).
+
+    POIs are queried at read time. There is deliberately no Issue relationship or cached
+    proximity value: changing reference data must not rewrite Issues, and proximity must never
+    affect severity, queue ordering, clustering, or any other business decision.
+
+    Rows are retired with `is_active=False`, never hard-deleted.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=200)
+    poi_type = models.CharField(max_length=20, choices=POIType.choices)
+    location = gis_models.PointField(geography=True, srid=4326, spatial_index=False)
+    source = models.CharField(max_length=100)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "geo_poi"
+        verbose_name = _("point of interest")
+        verbose_name_plural = _("points of interest")
+        ordering = ["name", "pk"]
+        indexes: ClassVar[list[models.Index]] = [
+            GistIndex(fields=["location"], name="geo_poi_location_gist"),
+            models.Index(fields=["poi_type", "is_active"], name="geo_poi_type_active_idx"),
         ]
 
     def __str__(self) -> str:

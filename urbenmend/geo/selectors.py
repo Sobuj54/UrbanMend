@@ -19,9 +19,16 @@ here filters by actor. The `Report`-level visibility rules live in `reporting/se
 
 from __future__ import annotations
 
-from django.contrib.gis.geos import Point
+from typing import TYPE_CHECKING
 
-from urbenmend.geo.models import CityBoundary
+from django.contrib.gis.db.models.functions import GeometryDistance
+from django.contrib.gis.geos import Point
+from django.contrib.gis.measure import Distance
+
+from urbenmend.geo.models import POI, CityBoundary
+
+if TYPE_CHECKING:
+    from django.db.models import QuerySet
 
 
 class BoundaryUnavailable(RuntimeError):
@@ -67,3 +74,26 @@ def is_within_city(point: Point) -> bool:
     because reference data is missing.
     """
     return CityBoundary.objects.filter(is_active=True, area__contains=point).exists()
+
+
+def nearby_pois(*, point: Point, radius_m: float, limit: int = 5) -> QuerySet[POI]:
+    """Active POIs near `point`, nearest first, for display-only Issue context.
+
+    This selector must not feed severity, Issue ordering, clustering, or other business rules.
+    `radius_m` and `limit` stay explicit at the call site so presentation choices cannot become
+    hidden policy. The geography `ST_DWithin` predicate uses metres and the KNN ordering can use
+    `geo_poi_location_gist`.
+    """
+    if radius_m <= 0:
+        raise ValueError("radius_m must be positive.")
+    if limit <= 0:
+        raise ValueError("limit must be positive.")
+
+    return (
+        POI.objects.filter(
+            is_active=True,
+            location__dwithin=(point, Distance(m=radius_m)),
+        )
+        .annotate(knn_distance=GeometryDistance("location", point))
+        .order_by("knn_distance", "pk")[:limit]
+    )
