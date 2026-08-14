@@ -1,4 +1,4 @@
-"""Issues, clustering, confirmation and lifecycle persistence (T4.1-T5.2).
+"""Issues, clustering, confirmation, lifecycle and status history persistence (T4.1-T5.3).
 
 An Issue is the authority-facing unit of work: one real-world problem represented by one or more
 citizen Reports. Report processing state stays on Report; severity, municipal workflow and
@@ -14,7 +14,7 @@ transitions remain T5 work.
 from __future__ import annotations
 
 import uuid
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from django.contrib.gis.db import models as gis_models
 from django.contrib.postgres.indexes import GistIndex
@@ -215,6 +215,58 @@ class Issue(models.Model):
             .distinct()
             .count()
         )
+
+
+class StatusEvent(models.Model):
+    """Immutable record of one Issue workflow action (FR-24, BR-31).
+
+    `reopen` is an action rather than an Issue status. For that action, `issue` remains the
+    historical resolved/closed row and `related_issue` points to the fresh successor.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    issue = models.ForeignKey(
+        Issue,
+        on_delete=models.PROTECT,
+        related_name="status_events",
+    )
+    from_status = models.CharField(max_length=24, choices=IssueStatus.choices)
+    to_status = models.CharField(
+        max_length=24,
+        choices=[*IssueStatus.choices, ("reopen", "Reopen")],
+    )
+    actor = models.ForeignKey(
+        "identity.User",
+        on_delete=models.PROTECT,
+        related_name="status_events",
+    )
+    reason = models.TextField(blank=True)
+    public_note = models.TextField(blank=True)
+    related_issue = models.ForeignKey(
+        Issue,
+        on_delete=models.PROTECT,
+        related_name="related_status_events",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "issues_status_event"
+        verbose_name = _("status event")
+        verbose_name_plural = _("status events")
+        ordering = ["created_at", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.issue}: {self.from_status} -> {self.to_status}"
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if self._state.adding is False:
+            raise ValueError("Status events are immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args: Any, **kwargs: Any) -> tuple[int, dict[str, int]]:
+        raise ValueError("Status events are immutable.")
 
 
 class Confirmation(models.Model):

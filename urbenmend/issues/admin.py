@@ -5,16 +5,18 @@ from typing import TYPE_CHECKING
 from django.contrib import admin
 from django.http import HttpRequest
 
-from urbenmend.issues.models import ClusteringRule, Confirmation, Issue
+from urbenmend.issues.models import ClusteringRule, Confirmation, Issue, StatusEvent
 
 if TYPE_CHECKING:
     _IssueAdminBase = admin.ModelAdmin[Issue]
     _ClusteringRuleAdminBase = admin.ModelAdmin[ClusteringRule]
     _ConfirmationAdminBase = admin.ModelAdmin[Confirmation]
+    _StatusEventAdminBase = admin.ModelAdmin[StatusEvent]
 else:
     _IssueAdminBase = admin.ModelAdmin
     _ClusteringRuleAdminBase = admin.ModelAdmin
     _ConfirmationAdminBase = admin.ModelAdmin
+    _StatusEventAdminBase = admin.ModelAdmin
 
 
 @admin.register(ClusteringRule)
@@ -106,4 +108,25 @@ class ConfirmationAdmin(_ConfirmationAdminBase):
         return False
 
     def has_delete_permission(self, request: HttpRequest, obj: Confirmation | None = None) -> bool:
+        return False
+
+
+@admin.register(StatusEvent)
+class StatusEventAdmin(_StatusEventAdminBase):
+    """Read-only status history; events are never edited or deleted (BR-31)."""
+
+    list_display = ["issue", "from_status", "to_status", "actor", "created_at"]
+    list_filter = ["from_status", "to_status"]
+    search_fields = ["issue__id", "actor__email", "reason", "public_note"]
+    raw_id_fields = ["issue", "actor", "related_issue"]
+    readonly_fields = [field.name for field in StatusEvent._meta.fields]
+    date_hierarchy = "created_at"
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj: StatusEvent | None = None) -> bool:
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj: StatusEvent | None = None) -> bool:
         return False

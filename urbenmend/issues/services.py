@@ -1,4 +1,4 @@
-"""Issue clustering, severity, confirmations and lifecycle rules (T4.4-T5.1)."""
+"""Issue clustering, severity, confirmations, lifecycle and status history (T4.4-T5.3)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from django.http import Http404
 from urbenmend.api.exceptions import Conflict, UnprocessableEntity
 from urbenmend.identity.models import Role, User
 from urbenmend.identity.services import require_category_scope, require_role
-from urbenmend.issues.models import Confirmation, Issue, IssueStatus
+from urbenmend.issues.models import Confirmation, Issue, IssueStatus, StatusEvent
 from urbenmend.issues.selectors import active_clustering_rule, matching_open_issues
 from urbenmend.reporting.models import SEVERITY_RANK, Report, ReportStatus
 
@@ -164,12 +164,13 @@ def transition_issue_status(
     issue_id: UUID | str,
     to_status: str,
     reason: str | None = None,
+    public_note: str | None = None,
     duplicate_of_issue_id: UUID | str | None = None,
 ) -> IssueStatusResult:
     """Atomically apply one scoped authority lifecycle action (T5.2, BR-15/16/19/26).
 
     Reopen creates a fresh triaged Issue linked through `reopened_from`; the historical row and
-    its member Reports remain untouched. Status Event persistence joins this transaction in T5.3.
+    its member Reports remain untouched. The Status Event is written in this same transaction.
     """
     require_role(actor, Role.AUTHORITY, Role.ADMIN)
     issue = _locked_issue(issue_id)
@@ -179,6 +180,7 @@ def transition_issue_status(
         to_status=to_status,
         reason=reason,
     )
+    normalized_public_note = public_note.strip() if public_note is not None else ""
 
     if to_status == IssueStatus.DUPLICATE:
         if duplicate_of_issue_id is None:
@@ -197,6 +199,15 @@ def transition_issue_status(
         issue.status = IssueStatus.DUPLICATE
         issue.duplicate_of = surviving
         issue.save(update_fields=["status", "duplicate_of", "updated_at"])
+        StatusEvent.objects.create(
+            issue=issue,
+            from_status=plan.from_status,
+            to_status=plan.to_status,
+            actor=actor,
+            reason=plan.reason or "",
+            public_note=normalized_public_note,
+            related_issue=surviving,
+        )
         return _status_result(issue)
 
     if duplicate_of_issue_id is not None:
@@ -215,11 +226,28 @@ def transition_issue_status(
             status=IssueStatus.TRIAGED,
             reopened_from=issue,
         )
+        StatusEvent.objects.create(
+            issue=issue,
+            from_status=plan.from_status,
+            to_status=REOPEN_ACTION,
+            actor=actor,
+            reason=plan.reason or "",
+            public_note=normalized_public_note,
+            related_issue=reopened,
+        )
         return _status_result(reopened)
 
     issue.status = plan.to_status
     issue.duplicate_of = None
     issue.save(update_fields=["status", "duplicate_of", "updated_at"])
+    StatusEvent.objects.create(
+        issue=issue,
+        from_status=plan.from_status,
+        to_status=plan.to_status,
+        actor=actor,
+        reason=plan.reason or "",
+        public_note=normalized_public_note,
+    )
     return _status_result(issue)
 
 

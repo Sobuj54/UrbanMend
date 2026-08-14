@@ -32,6 +32,7 @@ class IssueStatusView(APIView):
             issue_id=issue_id,
             to_status=data["to_status"],
             reason=data.get("reason"),
+            public_note=data.get("public_note"),
             duplicate_of_issue_id=data.get("duplicate_of_issue_id"),
         )
         return Response(IssueStatusResponseSerializer(result).data, status=status.HTTP_200_OK)

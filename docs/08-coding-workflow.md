@@ -2245,11 +2245,24 @@ members; corroboration count is derived and read-only; proximity context is disp
   member Reports untouched; the dedicated one-to-one `reopened_from` lineage prevents repeat or
   concurrent successors and does not overload duplicate semantics. The response exposes the
   affected/new Issue id, status and lineage links until T7.3 supplies the full Issue resource.
-  Reason/public-note history remains assigned to T5.3/T5.8 rather than being stored as mutable
-  fields on Issue. Validation: 1111 passed with no xfails; ruff, format, strict mypy, model drift
+  Reason/public-note history is deliberately not stored as mutable fields on Issue; T5.3 supplies
+  the immutable event record. Validation: 1111 passed with no xfails; ruff, format, strict mypy, model drift
   and the production deploy check clean. Migration `issues.0005_issue_reopened_from` passed
   forward/reverse/forward on a fresh PostGIS database and is applied to development. Next: T5.3
   immutable Status Event emission in the same transaction.
+
+- **T5.3 implementation record (2026-08-14):** complete. Every successful T5.2 lifecycle action
+  now inserts an immutable `StatusEvent` in the same database transaction as the Issue mutation;
+  an event insertion failure rolls the status/link change back. Events retain the Issue, from/to
+  values, actor, normalized reason, optional public note and timestamp. Duplicate events point to
+  the surviving Issue. Reopen is recorded on the historical resolved/closed Issue as a `reopen`
+  action with the new successor in `related_issue`, preserving both histories without pretending
+  `reopen` is a persisted Issue status. Invalid transitions create no event. Immutability is
+  enforced at the model/admin surfaces and by a PostgreSQL trigger, so QuerySet/raw UPDATE or
+  DELETE attempts fail rather than bypassing Python. Validation: 1122 passed with no xfails; ruff,
+  format, strict mypy, model drift and the production deploy check clean. Migration
+  `issues.0006_statusevent` passed forward/reverse/forward on a fresh PostGIS database and is
+  applied to development. Next: T5.4 scoped Issue assignment.
 
 **M5 gate:** full lifecycle works; illegal transitions rejected; every transition writes an immutable
 event; override preserves computed value; merge/split re-attributes correctly.
