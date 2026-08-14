@@ -133,7 +133,7 @@ def test_repeated_delivery_is_idempotent() -> None:
 
 def test_two_nearby_worker_runs_cluster_into_one_issue() -> None:
     first = ReportFactory.create(description="A pothole has opened in the road.")
-    second = ReportFactory.create(description="Another pothole is blocking the road.")
+    second = ReportFactory.create(description="A pothole is endangering children in the road.")
 
     classify_report.run(str(first.pk))
     classify_report.run(str(second.pk))
@@ -143,6 +143,11 @@ def test_two_nearby_worker_runs_cluster_into_one_issue() -> None:
     assert first.issue_id is not None
     assert second.issue_id == first.issue_id
     assert first.status == second.status == ReportStatus.TRIAGED
+    assert first.severity_signal == SeveritySignal.MEDIUM
+    assert second.severity_signal == SeveritySignal.HIGH
+    assert first.issue is not None
+    assert first.issue.computed_severity == SeveritySignal.HIGH
+    assert first.issue.computed_severity_rationale == second.classification_rationale
 
 
 @override_settings(CLASSIFICATION_LLM_PROVIDER=f"{_HERE}.SuccessfulProvider")

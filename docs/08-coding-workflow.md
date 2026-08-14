@@ -2164,9 +2164,21 @@ clean; P3 migrations verified forward/reverse/forward on a fresh database. Next:
   was required. The development Celery worker was restarted, registered
   `classification.classify_report`, and reached ready state. Next: T4.6 Issue severity = max of
   member Report severity.
-- T4.6: Issue severity = max of member report severity signals. Recompute on every new member.
-  Enum is `{Critical, High, Medium, Low}` — four bands (Q2 resolved). The stale three-band
-  references in `03-data-model.md` §3 are superseded.
+- **T4.6 implementation record (2026-08-14):** complete. Every successful Report attachment now
+  recomputes the Issue's stored severity from the full persisted member set inside the same locked
+  clustering transaction. `SEVERITY_RANK` supplies only the fixed
+  `{Critical, High, Medium, Low}` ordering: corroboration and proximity remain excluded. The oldest
+  highest-severity Report (UUID as the final tie-breaker) deterministically supplies the
+  human-readable classification rationale, preventing equal-band retries from churning the
+  explanation. Computed severity continues to update beneath an authority override without changing
+  the override, its reason, or the displayed `current_severity` (BR-20/21). Tests cover severity
+  increases, lower members, full-set repair of stale computed data, stable equal-band rationale,
+  override preservation, the classification-to-clustering worker path, and two concurrent
+  mixed-severity Reports converging on one correctly ranked Issue. Validation: 1012 passed with no
+  xfails; ruff, format and strict mypy clean; model drift and the production deploy check are clean.
+  No migration was required. The development Celery worker was restarted, registered
+  `classification.classify_report`, and reached ready state. Next: T4.7 one Confirmation per citizen
+  per Issue and derived corroboration count.
 - T4.8: proximity context (POIs near the issue) is **display-only**. It must never influence
   severity, ordering, or any business rule (C-10). Compute it for the response; do not store it as
   a field that could be misread as authoritative.

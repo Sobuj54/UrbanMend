@@ -20,7 +20,7 @@ from urbenmend.issues.services import (
     cluster_report,
 )
 from urbenmend.issues.tests.factories import IssueFactory
-from urbenmend.reporting.models import ReportStatus
+from urbenmend.reporting.models import ReportStatus, SeveritySignal
 from urbenmend.reporting.tests.factories import ClassifiedReportFactory, ReportFactory
 
 pytestmark = pytest.mark.django_db
@@ -41,6 +41,125 @@ def test_matching_open_issue_is_reused_and_report_is_triaged() -> None:
     assert report.issue == issue
     assert report.status == ReportStatus.TRIAGED
     assert Issue.objects.count() == 1
+
+
+def test_higher_member_raises_computed_severity_and_rationale() -> None:
+    issue = IssueFactory.create(
+        representative_location=CENTRE,
+        computed_severity=SeveritySignal.LOW,
+        computed_severity_rationale="Earlier low-severity report.",
+    )
+    ClassifiedReportFactory.create(
+        issue=issue,
+        severity_signal=SeveritySignal.LOW,
+        classification_rationale="Earlier low-severity report.",
+    )
+    report = ClassifiedReportFactory.create(
+        location=WITHIN_RULE,
+        category=issue.primary_category,
+        severity_signal=SeveritySignal.CRITICAL,
+        classification_rationale="Exposed live wiring threatens pedestrians.",
+    )
+
+    cluster_report(report.pk)
+    issue.refresh_from_db()
+
+    assert issue.computed_severity == SeveritySignal.CRITICAL
+    assert issue.computed_severity_rationale == "Exposed live wiring threatens pedestrians."
+
+
+def test_lower_member_does_not_reduce_computed_severity() -> None:
+    issue = IssueFactory.create(
+        representative_location=CENTRE,
+        computed_severity=SeveritySignal.CRITICAL,
+        computed_severity_rationale="Existing critical hazard.",
+    )
+    ClassifiedReportFactory.create(
+        issue=issue,
+        severity_signal=SeveritySignal.CRITICAL,
+        classification_rationale="Existing critical hazard.",
+    )
+    report = ClassifiedReportFactory.create(
+        location=WITHIN_RULE,
+        category=issue.primary_category,
+        severity_signal=SeveritySignal.LOW,
+        classification_rationale="Minor surface damage.",
+    )
+
+    cluster_report(report.pk)
+    issue.refresh_from_db()
+
+    assert issue.computed_severity == SeveritySignal.CRITICAL
+    assert issue.computed_severity_rationale == "Existing critical hazard."
+
+
+def test_every_new_member_recomputes_from_the_full_member_set() -> None:
+    issue = IssueFactory.create(
+        representative_location=CENTRE,
+        computed_severity=SeveritySignal.LOW,
+        computed_severity_rationale="Stale stored severity.",
+    )
+    ClassifiedReportFactory.create(
+        issue=issue,
+        severity_signal=SeveritySignal.HIGH,
+        classification_rationale="Earlier member reports a dangerous obstruction.",
+    )
+    report = ClassifiedReportFactory.create(
+        location=WITHIN_RULE,
+        category=issue.primary_category,
+        severity_signal=SeveritySignal.MEDIUM,
+    )
+
+    cluster_report(report.pk)
+    issue.refresh_from_db()
+
+    assert issue.computed_severity == SeveritySignal.HIGH
+    assert issue.computed_severity_rationale == ("Earlier member reports a dangerous obstruction.")
+
+
+def test_recomputation_preserves_authority_override() -> None:
+    issue = IssueFactory.create(
+        representative_location=CENTRE,
+        computed_severity=SeveritySignal.LOW,
+        overridden_severity=SeveritySignal.MEDIUM,
+        severity_override_reason="Authority assessment after site inspection.",
+    )
+    ClassifiedReportFactory.create(issue=issue, severity_signal=SeveritySignal.LOW)
+    report = ClassifiedReportFactory.create(
+        location=WITHIN_RULE,
+        category=issue.primary_category,
+        severity_signal=SeveritySignal.CRITICAL,
+        classification_rationale="Immediate electrocution risk.",
+    )
+
+    cluster_report(report.pk)
+    issue.refresh_from_db()
+
+    assert issue.computed_severity == SeveritySignal.CRITICAL
+    assert issue.overridden_severity == SeveritySignal.MEDIUM
+    assert issue.severity_override_reason == "Authority assessment after site inspection."
+    assert issue.current_severity == SeveritySignal.MEDIUM
+
+
+def test_equal_highest_severity_keeps_the_oldest_member_rationale() -> None:
+    issue = IssueFactory.create(representative_location=CENTRE)
+    ClassifiedReportFactory.create(
+        issue=issue,
+        severity_signal=SeveritySignal.HIGH,
+        classification_rationale="First high-severity observation.",
+    )
+    report = ClassifiedReportFactory.create(
+        location=WITHIN_RULE,
+        category=issue.primary_category,
+        severity_signal=SeveritySignal.HIGH,
+        classification_rationale="Later high-severity observation.",
+    )
+
+    cluster_report(report.pk)
+    issue.refresh_from_db()
+
+    assert issue.computed_severity == SeveritySignal.HIGH
+    assert issue.computed_severity_rationale == "First high-severity observation."
 
 
 def test_no_match_creates_an_issue_from_the_report() -> None:

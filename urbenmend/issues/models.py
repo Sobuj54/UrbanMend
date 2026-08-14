@@ -4,9 +4,9 @@ An Issue is the authority-facing unit of work: one real-world problem represente
 citizen Reports. Report processing state stays on Report; severity, municipal workflow and
 assignment live here and nowhere else.
 
-T4.1 establishes the aggregate and its relationships. T4.2 adds the spatial index and query
-primitives; clustering rules, locks, severity recomputation and lifecycle transitions remain later
-T4-T5 work.
+T4.1 establishes the aggregate and its relationships. T4.2-T4.6 add the spatial index, clustering
+rules, concurrency-safe attachment and member-derived severity; lifecycle transitions remain T5
+work.
 
 [doc: data-model section 3; Arch sections 4.2-4.4; plan T4.1]
 """

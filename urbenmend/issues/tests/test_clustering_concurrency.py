@@ -29,6 +29,8 @@ import pytest
 from django.contrib.gis.geos import Point
 from django.db import close_old_connections, connection
 
+from urbenmend.reporting.models import SeveritySignal
+
 if TYPE_CHECKING:
     from urbenmend.classification.models import Category
     from urbenmend.identity.models import User
@@ -74,7 +76,12 @@ def test_concurrent_reports_of_one_real_world_issue_create_exactly_one_issue() -
 
     category = _seed_category()
     reports = [
-        _seed_report(category=category, location=LOCATION, submitter=_seed_citizen(index))
+        _seed_report(
+            category=category,
+            location=LOCATION,
+            submitter=_seed_citizen(index),
+            severity=(SeveritySignal.LOW, SeveritySignal.CRITICAL)[index],
+        )
         for index in range(CONCURRENT_SUBMISSIONS)
     ]
 
@@ -101,6 +108,7 @@ def test_concurrent_reports_of_one_real_world_issue_create_exactly_one_issue() -
     # report's attachment would satisfy "one Issue" while losing a citizen's submission.
     issue = Issue.objects.get()
     assert issue.reports.count() == CONCURRENT_SUBMISSIONS
+    assert issue.computed_severity == SeveritySignal.CRITICAL
 
 
 # ------------------------------------------------------------------------------------------
@@ -143,7 +151,13 @@ def _seed_category() -> Category:
     return Category.objects.get(slug="roads")
 
 
-def _seed_report(*, category: Category, location: Point, submitter: User) -> Report:
+def _seed_report(
+    *,
+    category: Category,
+    location: Point,
+    submitter: User,
+    severity: str,
+) -> Report:
     """A classified Report, ready to cluster.
 
     ⚠️ Pre-classified on purpose. Clustering matches on category, and category is produced by
@@ -156,4 +170,9 @@ def _seed_report(*, category: Category, location: Point, submitter: User) -> Rep
     """
     from urbenmend.reporting.tests.factories import ClassifiedReportFactory
 
-    return ClassifiedReportFactory.create(category=category, location=location, author=submitter)
+    return ClassifiedReportFactory.create(
+        category=category,
+        location=location,
+        author=submitter,
+        severity_signal=severity,
+    )

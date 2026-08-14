@@ -1,4 +1,4 @@
-"""Concurrency-safe Issue find-or-create clustering (T4.4)."""
+"""Concurrency-safe Issue clustering and member-derived severity (T4.4, T4.6)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from django.db import connection, transaction
 
 from urbenmend.issues.models import Issue, IssueStatus
 from urbenmend.issues.selectors import active_clustering_rule, matching_open_issues
-from urbenmend.reporting.models import Report, ReportStatus
+from urbenmend.reporting.models import SEVERITY_RANK, Report, ReportStatus
 
 if TYPE_CHECKING:
     from django.contrib.gis.geos import Point
@@ -43,6 +43,58 @@ class ReportNotFound(ClusteringError):
 
 class ReportNotReady(ClusteringError):
     """Classification has not produced all inputs required by clustering."""
+
+
+def _severity_rank(report: Report) -> int:
+    """Return BR-11's fixed ordering, rejecting an impossible unclassified member."""
+    severity = report.severity_signal
+    if severity is None:
+        raise ClusteringError(f"Issue member Report {report.pk} has no severity signal.")
+    try:
+        return SEVERITY_RANK[severity]
+    except KeyError as exc:
+        raise ClusteringError(
+            f"Issue member Report {report.pk} has unknown severity {severity!r}."
+        ) from exc
+
+
+def _severity_rationale(report: Report) -> str:
+    """Use the classifier explanation, with an identifiable fallback for legacy blank rows."""
+    return report.classification_rationale or f"Highest severity supplied by Report {report.pk}."
+
+
+def _recompute_issue_severity(issue: Issue) -> None:
+    """Persist the highest member severity without disturbing an authority override (BR-11/21)."""
+    members = list(
+        issue.reports.only(
+            "id",
+            "severity_signal",
+            "classification_rationale",
+            "created_at",
+        ).order_by("created_at", "id")
+    )
+    if not members:
+        raise ClusteringError(f"Issue {issue.pk} has no member Reports.")
+
+    # `max()` keeps the first item on a tie. Oldest Report then UUID gives a stable driver and
+    # prevents equal-severity arrivals from changing the displayed rationale on every retry.
+    driver = max(members, key=_severity_rank)
+    severity = driver.severity_signal
+    if severity is None:  # Narrowed by `_severity_rank`; retained for static type checking.
+        raise ClusteringError(f"Issue member Report {driver.pk} has no severity signal.")
+    rationale = _severity_rationale(driver)
+
+    if issue.computed_severity == severity and issue.computed_severity_rationale == rationale:
+        return
+    issue.computed_severity = severity
+    issue.computed_severity_rationale = rationale
+    issue.save(
+        update_fields=[
+            "computed_severity",
+            "computed_severity_rationale",
+            "updated_at",
+        ]
+    )
 
 
 def _encode_geohash(*, longitude: float, latitude: float, precision: int) -> str:
@@ -172,21 +224,20 @@ def cluster_report(report_id: UUID | str) -> UUID:
             primary_category_id=report.category_id,
             representative_location=report.location,
             computed_severity=report.severity_signal,
-            computed_severity_rationale=(
-                report.classification_rationale
-                or f"Initial severity supplied by Report {report.pk}."
-            ),
+            computed_severity_rationale=_severity_rationale(report),
             status=IssueStatus.TRIAGED,
         )
 
     report.issue = issue
     report.status = ReportStatus.TRIAGED
     report.save(update_fields=["issue", "status", "updated_at"])
+    _recompute_issue_severity(issue)
     logger.info(
         "issue.report_clustered",
         report_id=str(report.pk),
         issue_id=str(issue.pk),
         category_id=report.category_id,
         issue_created=created,
+        computed_severity=issue.computed_severity,
     )
     return issue.pk
