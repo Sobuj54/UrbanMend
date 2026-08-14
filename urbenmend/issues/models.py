@@ -18,11 +18,70 @@ from typing import ClassVar
 
 from django.contrib.gis.db import models as gis_models
 from django.contrib.postgres.indexes import GistIndex
+from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from urbenmend.reporting.models import SeveritySignal
+
+
+class ClusteringRuleStatus(models.TextChoices):
+    """Lifecycle for tunable per-category clustering configuration."""
+
+    ACTIVE = "active", _("Active")
+    RETIRED = "retired", _("Retired")
+
+
+class ClusteringRule(models.Model):
+    """Per-category proximity and age limits used by future clustering decisions (T4.3)."""
+
+    category = models.ForeignKey(
+        "classification.Category",
+        on_delete=models.PROTECT,
+        related_name="clustering_rules",
+    )
+    radius_m = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)],
+        help_text=_("Maximum distance in metres for joining an existing Issue."),
+    )
+    time_window_hours = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)],
+        help_text=_("Maximum Issue age in hours for accepting another Report."),
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=ClusteringRuleStatus.choices,
+        default=ClusteringRuleStatus.ACTIVE,
+        db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "issues_clustering_rule"
+        verbose_name = _("clustering rule")
+        verbose_name_plural = _("clustering rules")
+        ordering = ["category_id", "-created_at"]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.CheckConstraint(
+                condition=Q(radius_m__gt=0),
+                name="issues_rule_radius_positive",
+            ),
+            models.CheckConstraint(
+                condition=Q(time_window_hours__gt=0),
+                name="issues_rule_window_positive",
+            ),
+            models.UniqueConstraint(
+                fields=["category"],
+                condition=Q(status=ClusteringRuleStatus.ACTIVE),
+                name="issues_rule_one_active_category",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.category}: {self.radius_m} m / {self.time_window_hours} h ({self.status})"
 
 
 class IssueStatus(models.TextChoices):

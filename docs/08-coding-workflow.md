@@ -2126,6 +2126,18 @@ clean; P3 migrations verified forward/reverse/forward on a fresh database. Next:
   Validation: 966 passed / 1 xfailed; ruff, format, strict mypy, model drift and production deploy
   checks clean; the concurrent migration passed forward/reverse/forward on a fresh database and is
   applied to development. Next: T4.3 admin-managed per-category clustering rules.
+- **T4.3 implementation record (2026-08-14):** complete. `ClusteringRule` stores a category's
+  positive radius in metres, positive time window in hours, active/retired lifecycle and audit
+  timestamps. Historical retired versions may coexist, while a partial database uniqueness
+  constraint permits exactly one active rule per category. The migration seeds every controlled
+  category with a conservative `50 m / 72 h` starting rule: these are explicitly chosen initial
+  data based on API §6.10's example and Architecture §4.3's under-merge preference, not hard-coded
+  clustering behavior. Django admin can create and tune future-facing rules but cannot hard-delete
+  them, and the selector reads the database afresh so an edit affects the next clustering decision
+  without restarting workers. Missing configuration fails closed. Validation: 978 passed / 1
+  xfailed; ruff, format, strict mypy, model drift and production deploy checks clean; the schema and
+  seven-row seed passed forward/reverse/forward on a fresh database and are applied to development.
+  Next: T4.4 concurrency-safe find-or-create clustering.
 - T4.4 is the hardest task in the project. The concurrency-safe find-or-create must use a
   **Postgres transaction-scoped advisory lock** keyed on `(geohash_cell, category_id)` inside
   `atomic()`. Test it with two concurrent requests — assert exactly one Issue is created.

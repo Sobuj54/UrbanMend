@@ -6,10 +6,27 @@ import factory
 from django.contrib.gis.geos import Point
 
 from urbenmend.classification.models import Category
-from urbenmend.issues.models import Issue, IssueStatus
+from urbenmend.issues.models import (
+    ClusteringRule,
+    ClusteringRuleStatus,
+    Issue,
+    IssueStatus,
+)
 from urbenmend.reporting.models import SeveritySignal
 
 DEFAULT_ISSUE_LOCATION = Point(90.4125, 23.8103, srid=4326)
+
+
+class ClusteringRuleFactory(factory.django.DjangoModelFactory[ClusteringRule]):
+    """A tunable rule attached to a controlled taxonomy category."""
+
+    class Meta:
+        model = ClusteringRule
+
+    category = factory.LazyFunction(lambda: Category.objects.get(slug="roads"))
+    radius_m = 50
+    time_window_hours = 72
+    status = ClusteringRuleStatus.ACTIVE
 
 
 class IssueFactory(factory.django.DjangoModelFactory[Issue]):

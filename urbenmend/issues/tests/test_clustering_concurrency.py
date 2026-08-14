@@ -143,9 +143,9 @@ def _seed_category() -> Category:
     a **real** one rather than inventing `test-category`. Clustering keys on category, and a node
     no report will ever carry would make the match trivially true.
 
-    ⚠️ The clustering radius is deliberately still not asserted anywhere here: radius and time
-    window are per-category reference data (ASSUMP-4, NFR-11, Arch §4.3) that T4.3 owns, and
-    `Category` carries no such column today.
+    ⚠️ The clustering radius is deliberately still not asserted here: T4.3 stores radius and time
+    window as per-category reference data, and T4.4 must resolve that rule rather than hard-code a
+    value into this concurrency test.
     """
     from urbenmend.classification.models import Category
 

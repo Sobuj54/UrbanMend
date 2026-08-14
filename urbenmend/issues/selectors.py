@@ -12,11 +12,32 @@ from typing import TYPE_CHECKING
 from django.contrib.gis.db.models.functions import GeometryDistance
 from django.contrib.gis.measure import Distance
 
-from urbenmend.issues.models import Issue
+from urbenmend.issues.models import ClusteringRule, ClusteringRuleStatus, Issue
 
 if TYPE_CHECKING:
     from django.contrib.gis.geos import Point
     from django.db.models import QuerySet
+
+
+class ClusteringRuleUnavailable(RuntimeError):
+    """No active clustering rule exists for the requested category."""
+
+
+def active_clustering_rule(*, category_id: int) -> ClusteringRule:
+    """Current per-category clustering configuration, read fresh for every decision.
+
+    No module cache is used: an Admin adjustment must affect the next Report without a worker
+    restart. The partial unique constraint makes the active row unambiguous.
+    """
+    try:
+        return ClusteringRule.objects.select_related("category").get(
+            category_id=category_id,
+            status=ClusteringRuleStatus.ACTIVE,
+        )
+    except ClusteringRule.DoesNotExist as exc:
+        raise ClusteringRuleUnavailable(
+            f"No active clustering rule is configured for category {category_id}."
+        ) from exc
 
 
 def issues_within_radius(*, point: Point, radius_m: float) -> QuerySet[Issue]:

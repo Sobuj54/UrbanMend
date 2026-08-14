@@ -5,12 +5,39 @@ from typing import TYPE_CHECKING
 from django.contrib import admin
 from django.http import HttpRequest
 
-from urbenmend.issues.models import Issue
+from urbenmend.issues.models import ClusteringRule, Issue
 
 if TYPE_CHECKING:
     _IssueAdminBase = admin.ModelAdmin[Issue]
+    _ClusteringRuleAdminBase = admin.ModelAdmin[ClusteringRule]
 else:
     _IssueAdminBase = admin.ModelAdmin
+    _ClusteringRuleAdminBase = admin.ModelAdmin
+
+
+@admin.register(ClusteringRule)
+class ClusteringRuleAdmin(_ClusteringRuleAdminBase):
+    """Admin-managed clustering configuration affecting future reports only (T4.3)."""
+
+    list_display = [
+        "category",
+        "radius_m",
+        "time_window_hours",
+        "status",
+        "updated_at",
+    ]
+    list_editable = ["radius_m", "time_window_hours", "status"]
+    list_filter = ["status", "category"]
+    search_fields = ["category__slug", "category__name_en", "category__name_bn"]
+    autocomplete_fields = ["category"]
+    readonly_fields = ["created_at", "updated_at"]
+    ordering = ["category__name_en", "-created_at"]
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: ClusteringRule | None = None
+    ) -> bool:
+        """Retire rules so past clustering configuration remains inspectable."""
+        return False
 
 
 @admin.register(Issue)
