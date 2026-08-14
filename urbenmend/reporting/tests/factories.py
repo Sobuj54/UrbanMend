@@ -70,7 +70,7 @@ class ClassifiedReportFactory(ReportFactory):
     product ships.
 
     ⚠️ **`status` stays `processing`, not `triaged`.** `triaged` means "attached to an Issue"
-    (data-model §2), and no Issue exists until T4.5 attaches one — a factory asserting otherwise
+    (data-model §2), and this pre-clustering factory has no Issue — asserting otherwise
     would ship a row whose status contradicts its (absent) Issue FK.
     """
 

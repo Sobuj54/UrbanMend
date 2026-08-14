@@ -34,7 +34,7 @@ class ReportAdmin(_ReportAdminBase):
     an author who never submitted it.
 
     ⚠️ **`status` is not editable here either.** It is the Report's *processing* lifecycle, driven
-    by the classification worker (T3.5) and clustering (T4.5); setting it by hand would strand a
+    by the classification-then-clustering worker (T3.5/T4.5); setting it by hand would strand a
     row as `triaged` with no Issue, or re-queue one that is already classified.
 
     ⚠️ **No delete** (database.md "No hard deletes") — a removed Report takes an Issue's

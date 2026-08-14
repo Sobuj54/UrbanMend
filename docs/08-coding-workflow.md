@@ -1593,7 +1593,8 @@ drift, `check --deploy` clean on `prod`.
   pieces of code, free to drift, with the client-visible symptom being a retry that looks like a
   *different* submission. One dataclass through one serializer.
 - ⚠️ **The derivations moved into `_acknowledge()` because they must be evaluated at acceptance
-  time.** `issueId` (null until T4.5), `classification.state` (from `is_classified`, BR-9) and
+  time.** `issueId` (null in this pre-worker snapshot), `classification.state` (from
+  `is_classified`, BR-9) and
   `status` (read off the row) used to be `SerializerMethodField`s. By the time a replay arrives,
   triage may have finished — re-deriving then would answer a `202` with post-acceptance state that
   §6.3 sends clients to `GET /reports/{id}` for. A test mutates the row to `triaged`/`high`/classified
@@ -2146,10 +2147,23 @@ clean; P3 migrations verified forward/reverse/forward on a fresh database. Next:
   nearest open same-category Issue within the configured radius and Report-relative time window,
   or creates one, then attaches and triages the Report. Category, distance, age and terminal-status
   mismatches create distinct Issues; missing, malformed, moderated and unclassified Reports fail
-  explicitly. Existing-Issue severity recomputation remains T4.6 and worker chaining remains T4.5.
+  explicitly. Existing-Issue severity recomputation remains T4.6; worker chaining was deliberately
+  deferred to T4.5.
   Validation: 997 passed with no xfails; ruff, format, strict mypy, model drift and production deploy
   checks clean. The live two-thread race test passed in the full suite and ten consecutive stress
   runs. Next: T4.5 clustering worker step after classification.
+- **T4.5 implementation record (2026-08-14):** complete. The existing stable Celery triage task now
+  runs classification first and invokes clustering only after `classified` or
+  `already_classified`; stale input is requeued, while missing, moderated and ineligible Reports
+  remain safe no-ops. Clustering failures intentionally propagate so task delivery can retry. The
+  completed classification is durable, therefore redelivery returns `already_classified` and
+  retries clustering without another provider call. Worker-level tests prove the ordering, the
+  successful `processing` → `triaged` transition, nearby Reports converging on one Issue, and
+  already-classified Reports clustering without another LLM call. Validation: 1007 passed with no
+  xfails; ruff, format, strict mypy, model drift and production deploy checks clean. No migration
+  was required. The development Celery worker was restarted, registered
+  `classification.classify_report`, and reached ready state. Next: T4.6 Issue severity = max of
+  member Report severity.
 - T4.6: Issue severity = max of member report severity signals. Recompute on every new member.
   Enum is `{Critical, High, Medium, Low}` — four bands (Q2 resolved). The stale three-band
   references in `03-data-model.md` §3 are superseded.

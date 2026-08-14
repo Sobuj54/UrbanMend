@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import ClassVar
+from unittest.mock import patch
 
 import pytest
 from django.test import override_settings
@@ -74,7 +75,8 @@ def test_the_default_unconfigured_provider_falls_back_and_persists() -> None:
     assert classify_report.run(str(report.pk)) is None
 
     report.refresh_from_db()
-    assert report.status == ReportStatus.PROCESSING
+    assert report.status == ReportStatus.TRIAGED
+    assert report.issue_id is not None
     assert report.category is not None
     assert report.category.slug == "electrical"
     assert report.severity_signal == SeveritySignal.CRITICAL
@@ -98,6 +100,8 @@ def test_a_successful_llm_result_is_persisted() -> None:
     assert report.classification_source == ClassificationSource.LLM
     assert report.classification_model == "successful/1"
     assert report.classification_rationale == "The report says the road is dangerous."
+    assert report.status == ReportStatus.TRIAGED
+    assert report.issue_id is not None
     assert SuccessfulProvider.calls == 1
 
 
@@ -127,8 +131,48 @@ def test_repeated_delivery_is_idempotent() -> None:
     assert SuccessfulProvider.calls == 1
 
 
+def test_two_nearby_worker_runs_cluster_into_one_issue() -> None:
+    first = ReportFactory.create(description="A pothole has opened in the road.")
+    second = ReportFactory.create(description="Another pothole is blocking the road.")
+
+    classify_report.run(str(first.pk))
+    classify_report.run(str(second.pk))
+    first.refresh_from_db()
+    second.refresh_from_db()
+
+    assert first.issue_id is not None
+    assert second.issue_id == first.issue_id
+    assert first.status == second.status == ReportStatus.TRIAGED
+
+
 @override_settings(CLASSIFICATION_LLM_PROVIDER=f"{_HERE}.SuccessfulProvider")
-def test_moderated_and_already_classified_reports_are_skipped() -> None:
+def test_clustering_failure_retries_without_reclassifying() -> None:
+    report = ReportFactory.create(description="A dangerous hole has opened in the road.")
+
+    with (
+        patch(
+            "urbenmend.issues.services.cluster_report",
+            side_effect=RuntimeError("database unavailable"),
+        ),
+        pytest.raises(RuntimeError, match="database unavailable"),
+    ):
+        classify_report.run(str(report.pk))
+
+    report.refresh_from_db()
+    assert report.is_classified is True
+    assert report.issue_id is None
+    assert report.status == ReportStatus.PROCESSING
+
+    classify_report.run(str(report.pk))
+    report.refresh_from_db()
+
+    assert SuccessfulProvider.calls == 1
+    assert report.issue_id is not None
+    assert report.status == ReportStatus.TRIAGED
+
+
+@override_settings(CLASSIFICATION_LLM_PROVIDER=f"{_HERE}.SuccessfulProvider")
+def test_moderated_is_skipped_and_already_classified_is_clustered() -> None:
     moderated = ReportFactory.create(status=ReportStatus.HIDDEN)
     classified = ClassifiedReportFactory.create()
 
@@ -136,6 +180,11 @@ def test_moderated_and_already_classified_reports_are_skipped() -> None:
     classify_report.run(str(classified.pk))
 
     assert SuccessfulProvider.calls == 0
+    moderated.refresh_from_db()
+    classified.refresh_from_db()
+    assert moderated.issue_id is None
+    assert classified.issue_id is not None
+    assert classified.status == ReportStatus.TRIAGED
 
 
 def test_an_authority_category_correction_is_not_overwritten() -> None:

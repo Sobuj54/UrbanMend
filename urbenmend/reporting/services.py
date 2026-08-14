@@ -126,9 +126,9 @@ def _acknowledge(report: Report) -> SubmissionAcknowledgement:
     because the value is stored in the cache for a replay, and pickling a `ReportStatus` member
     would put a domain enum in Redis for a field the contract defines as a string.
 
-    ⚠️ **`issue_id` is `None` until T4.5.** Clustering (T4.4) is what assigns an Issue, and it runs
-    in the worker — so at acceptance there is genuinely no Issue to name. §6.3 documents the field
-    as populating later, via `GET /reports/{id}`.
+    ⚠️ **`issue_id` is `None` in this acceptance snapshot.** Clustering runs after classification
+    in the asynchronous triage worker (T4.5), so at acceptance there is genuinely no Issue to name.
+    §6.3 documents the field as populating later, via `GET /reports/{id}`.
 
     ⚠️ **`classification.state` is derived from the row, not fixed to `"pending"`.** It is always
     pending at acceptance today, but deriving it means a future synchronous-classification path

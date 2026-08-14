@@ -218,7 +218,7 @@ class Report(models.Model):
     # configures one. It is intentionally not exposed by the v1 Report serializer yet.
     classification_needs_review = models.BooleanField(default=False, db_index=True)
 
-    # BR-6 / C-5 — at most one Issue at a time, null until clustering attaches it (T4.5).
+    # BR-6 / C-5 — at most one Issue at a time, null while asynchronous clustering is pending.
     # `PROTECT` keeps citizen evidence and authority work history intact: Issues are moderated or
     # merged, never hard-deleted (database.md "No hard deletes").
     issue = models.ForeignKey(

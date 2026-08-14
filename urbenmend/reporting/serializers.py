@@ -132,13 +132,13 @@ class ReportSubmitResponseSerializer(CamelCaseSerializer):
     `Idempotency-Replayed` header (§4.6), and the bodies must stay byte-identical or the header
     would be redundant and the "verbatim" guarantee false. A test asserts the exact key set.
 
-    The derivations these fields used to compute — `issueId` always `null` until T4.5 attaches an
-    Issue (BR-6), `classification.state` from `is_classified` rather than a literal `"pending"`
-    (BR-9), and `status` read off the row instead of a hardcoded `"processing"` (the T2.2 decision) —
-    now live in `services._acknowledge()`, with their reasoning. They moved because they must be
-    evaluated **at acceptance time**: by the time a replay arrives, triage may have finished, and
-    re-deriving them then would answer a `202` with post-acceptance state that §6.3 sends clients to
-    `GET /reports/{id}` for.
+    The derivations these fields used to compute — `issueId` always `null` in the pre-worker
+    acceptance snapshot (BR-6), `classification.state` from `is_classified` rather than a literal
+    `"pending"` (BR-9), and `status` read off the row instead of a hardcoded `"processing"` (the T2.2
+    decision) — now live in `services._acknowledge()`, with their reasoning. They moved because they
+    must be evaluated **at acceptance time**: by the time a replay arrives, triage may have finished,
+    and re-deriving them then would answer a `202` with post-acceptance state that §6.3 sends clients
+    to `GET /reports/{id}` for.
     """
 
     # `CharField`, not `UUIDField(source="pk")`: the acknowledgement already holds a `str`, which is
@@ -286,9 +286,10 @@ class ReportDetailSerializer(CamelCaseSerializer):
     def get_issue_id(self, report: Report) -> str | None:
         """The opaque Issue id once clustering attaches this Report, otherwise `null`.
 
-        ⚠️ **Declared now rather than added later, because §6.3 lists it** and a client that has to
-        start handling a new key after clustering ships is a breaking change dressed as an additive
-        one. Reading the raw `issue_id` avoids loading the related Issue just to serialize its key.
+        ⚠️ **Declared from the initial contract rather than added with clustering, because §6.3 lists
+        it** and making clients start handling a new key later would be a breaking change dressed as
+        an additive one. Reading the raw `issue_id` avoids loading the related Issue just to serialize
+        its key.
         """
         return str(report.issue_id) if report.issue_id else None
 
