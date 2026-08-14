@@ -481,9 +481,8 @@ satisfy "one Issue" while losing a citizen's submission.
   `warn_unused_ignores`, so mypy errors on those very lines the moment T4.4 defines the names —
   the same self-cleaning property as the strict xfail, applied to the type checker.
 
-The three `_seed_*` helpers stand in for the `factory_boy` factories T2.1/T4.2 will own (they
-cannot be written before the models). When the models land, the diff is confined to those
-helpers; the assertions stand unchanged.
+The three `_seed_*` helpers now delegate to the `factory_boy` factories delivered by T2.1/T4.1;
+their call sites and the concurrency assertions remain unchanged.
 
 ⚠️ **The test has never actually exercised a lock** — it XFAILs at the first import. It pins the
 contract, not the implementation. T4.4 is where it first runs for real, and a green run there is
@@ -1430,7 +1429,7 @@ drift, `check --deploy` clean on `prod`, both new apps verified reversible in bo
 - ⚠️ **The P4 concurrency test's `_seed_*` helpers were de-rotted, and mypy forced it.** A
   `# type: ignore[attr-defined]` on its `Report` import became an *unused-ignore* error the moment
   T2.1 defined the model — the ignore comment worked exactly as a self-cleaning device should. The
-  test still xfails at the `Issue`/`cluster_report` imports (T4.2/T4.4), as intended.
+  `Issue` now imports normally; the test still xfails only at `cluster_report` (T4.4), as intended.
 - ⚠️ **The deliberate `author=None` test keeps a `type: ignore[misc]`, and that is the point.** mypy
   rejecting it is the first line of defence; the test asserts the second, because typing does not
   cover raw SQL, a data migration, or `**kwargs` assembled from a request body.
@@ -2117,6 +2116,16 @@ clean; P3 migrations verified forward/reverse/forward on a fresh database. Next:
   `issueId`. Validation: 959 passed / 1 xfailed; ruff, format, strict mypy, model drift and production
   deploy checks clean; migrations verified forward/reverse/forward on a fresh database and applied
   to development. Next: T4.2 geospatial indexing/setup.
+- **T4.2 implementation record (2026-08-14):** complete. `Issue.representative_location` now has
+  the named `issues_issue_location_gist` GiST index, added and removed with explicit concurrent SQL
+  in a non-atomic reversible migration. This explicit database/state split is required because
+  GeoDjango 5.2's spatial-index SQL builder drops the `concurrently=True` argument supplied by
+  `AddIndexConcurrently`. Issue selectors now expose metre-based `ST_DWithin` radius filtering and
+  GiST-assisted KNN `<->` nearest ordering through the ORM. Real PostGIS tests assert distances,
+  query operators, the database index definition, and query plans using the named index.
+  Validation: 966 passed / 1 xfailed; ruff, format, strict mypy, model drift and production deploy
+  checks clean; the concurrent migration passed forward/reverse/forward on a fresh database and is
+  applied to development. Next: T4.3 admin-managed per-category clustering rules.
 - T4.4 is the hardest task in the project. The concurrency-safe find-or-create must use a
   **Postgres transaction-scoped advisory lock** keyed on `(geohash_cell, category_id)` inside
   `atomic()`. Test it with two concurrent requests — assert exactly one Issue is created.

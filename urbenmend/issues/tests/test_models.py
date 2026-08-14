@@ -6,6 +6,7 @@ import uuid
 
 import pytest
 from django.contrib.gis.db.models import PointField
+from django.contrib.postgres.indexes import GistIndex
 from django.db.models import ProtectedError
 
 from urbenmend.issues.models import Issue, IssueStatus
@@ -85,13 +86,16 @@ def test_issue_with_member_reports_cannot_be_hard_deleted() -> None:
     assert Report.objects.filter(pk=report.pk).exists()
 
 
-def test_representative_location_is_wgs84_geography_without_the_t4_2_index() -> None:
+def test_representative_location_is_indexed_wgs84_geography() -> None:
     field = Issue._meta.get_field("representative_location")
+    indexes = {index.name: index for index in Issue._meta.indexes}
 
     assert isinstance(field, PointField)
     assert field.geography is True
     assert field.srid == 4326
     assert field.spatial_index is False
+    assert isinstance(indexes["issues_issue_location_gist"], GistIndex)
+    assert indexes["issues_issue_location_gist"].fields == ["representative_location"]
 
 
 def test_issue_status_contains_workflow_and_moderation_states_but_not_reopen() -> None:

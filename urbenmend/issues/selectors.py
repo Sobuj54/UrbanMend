@@ -1,15 +1,39 @@
+"""Geospatial Issue read primitives (T4.2).
+
+These functions deliberately express spatial work through GeoDjango so PostGIS can use the
+`issues_issue_location_gist` index. Category/time-window matching and open-status rules belong to
+T4.3/T4.4; public/authority queue visibility belongs to the later Issue read endpoints.
 """
-Issues & Clustering — read operations.
 
-Query functions for this module. Kept separate from services.py so reads never acquire
-write-path side effects, and so the modules that consume this one have a single documented
-surface to call [doc: Arch §3.1].
+from __future__ import annotations
 
-Rules for this file:
-  - No writes, no `transaction.atomic`, no task enqueue.
-  - Apply the caller's visibility rules here — a selector that returns rows the actor may
-    not see is an authorization bug even though it wrote nothing [doc: Arch §3.1, FR-3].
-  - Return querysets or domain objects, never DRF serializers or HTTP responses.
+from typing import TYPE_CHECKING
 
-[doc: Arch §3 (FR-14, FR-15, FR-18, FR-19, FR-20, FR-24, FR-25)]
-"""
+from django.contrib.gis.db.models.functions import GeometryDistance
+from django.contrib.gis.measure import Distance
+
+from urbenmend.issues.models import Issue
+
+if TYPE_CHECKING:
+    from django.contrib.gis.geos import Point
+    from django.db.models import QuerySet
+
+
+def issues_within_radius(*, point: Point, radius_m: float) -> QuerySet[Issue]:
+    """Issues within `radius_m` metres of `point`, using index-assisted `ST_DWithin`.
+
+    `representative_location` is PostGIS `geography(Point, 4326)`, so the lookup's distance unit is
+    metres. The explicit `Distance` value keeps that unit visible at the call site.
+    """
+    return Issue.objects.filter(representative_location__dwithin=(point, Distance(m=radius_m)))
+
+
+def nearest_issues(*, point: Point) -> QuerySet[Issue]:
+    """Issues ordered nearest-first using PostGIS's GiST-assisted KNN `<->` operator.
+
+    Callers apply their own visibility filters and slice the lazy queryset to the required limit.
+    The UUID tie-break makes equidistant rows deterministic without replacing the KNN ordering.
+    """
+    return Issue.objects.annotate(
+        knn_distance=GeometryDistance("representative_location", point)
+    ).order_by("knn_distance", "pk")

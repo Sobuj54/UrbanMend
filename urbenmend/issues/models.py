@@ -4,8 +4,9 @@ An Issue is the authority-facing unit of work: one real-world problem represente
 citizen Reports. Report processing state stays on Report; severity, municipal workflow and
 assignment live here and nowhere else.
 
-T4.1 establishes the aggregate and its relationships only. Spatial matching, clustering locks,
-severity recomputation and lifecycle transitions belong to T4.2-T5 and are deliberately absent.
+T4.1 establishes the aggregate and its relationships. T4.2 adds the spatial index and query
+primitives; clustering rules, locks, severity recomputation and lifecycle transitions remain later
+T4-T5 work.
 
 [doc: data-model section 3; Arch sections 4.2-4.4; plan T4.1]
 """
@@ -16,6 +17,7 @@ import uuid
 from typing import ClassVar
 
 from django.contrib.gis.db import models as gis_models
+from django.contrib.postgres.indexes import GistIndex
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -105,6 +107,12 @@ class Issue(models.Model):
         verbose_name_plural = _("issues")
         ordering = ["opened_at"]
         indexes: ClassVar[list[models.Index]] = [
+            # T4.2: serves `ST_DWithin`, KNN `<->` and later bbox/map queries. The field disables
+            # its implicit index so this stable, reviewable name is the only spatial index.
+            GistIndex(
+                fields=["representative_location"],
+                name="issues_issue_location_gist",
+            ),
             models.Index(
                 fields=["primary_category", "status", "opened_at"],
                 name="issues_issue_queue_idx",
