@@ -1429,7 +1429,7 @@ drift, `check --deploy` clean on `prod`, both new apps verified reversible in bo
 - ⚠️ **The P4 concurrency test's `_seed_*` helpers were de-rotted, and mypy forced it.** A
   `# type: ignore[attr-defined]` on its `Report` import became an *unused-ignore* error the moment
   T2.1 defined the model — the ignore comment worked exactly as a self-cleaning device should. The
-  `Issue` now imports normally; the test still xfails only at `cluster_report` (T4.4), as intended.
+  T4.4 removed the final import ignore and strict xfail; the same test now runs the real service.
 - ⚠️ **The deliberate `author=None` test keeps a `type: ignore[misc]`, and that is the point.** mypy
   rejecting it is the first line of defence; the test asserts the second, because typing does not
   cover raw SQL, a data migration, or `**kwargs` assembled from a request body.
@@ -2138,9 +2138,18 @@ clean; P3 migrations verified forward/reverse/forward on a fresh database. Next:
   xfailed; ruff, format, strict mypy, model drift and production deploy checks clean; the schema and
   seven-row seed passed forward/reverse/forward on a fresh database and are applied to development.
   Next: T4.4 concurrency-safe find-or-create clustering.
-- T4.4 is the hardest task in the project. The concurrency-safe find-or-create must use a
-  **Postgres transaction-scoped advisory lock** keyed on `(geohash_cell, category_id)` inside
-  `atomic()`. Test it with two concurrent requests — assert exactly one Issue is created.
+- **T4.4 implementation record (2026-08-14):** complete. `cluster_report(report_id)` now locks the
+  Report row for at-least-once idempotency, resolves the live category rule, and takes sorted
+  transaction-scoped PostgreSQL advisory locks over the Report's geohash cell plus its eight
+  neighbors, with category in every key. Neighbor locking closes the duplicate race across a cell
+  boundary; sorted acquisition prevents deadlocks. Inside the same atomic block it selects the
+  nearest open same-category Issue within the configured radius and Report-relative time window,
+  or creates one, then attaches and triages the Report. Category, distance, age and terminal-status
+  mismatches create distinct Issues; missing, malformed, moderated and unclassified Reports fail
+  explicitly. Existing-Issue severity recomputation remains T4.6 and worker chaining remains T4.5.
+  Validation: 997 passed with no xfails; ruff, format, strict mypy, model drift and production deploy
+  checks clean. The live two-thread race test passed in the full suite and ten consecutive stress
+  runs. Next: T4.5 clustering worker step after classification.
 - T4.6: Issue severity = max of member report severity signals. Recompute on every new member.
   Enum is `{Critical, High, Medium, Low}` — four bands (Q2 resolved). The stale three-band
   references in `03-data-model.md` §3 are superseded.

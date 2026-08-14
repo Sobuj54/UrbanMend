@@ -1,8 +1,8 @@
 """
 P4 clustering-concurrency test — R-2's acceptance criterion, written in P0 (A10, T4.4).
 
-⚠️ THIS TEST IS RED ON PURPOSE. The Issue aggregate now exists (T4.1), but
-`cluster_report()` remains T4.4 work. It is written as a forcing function
+✅ T4.4 now implements the service this acceptance test pins. The test remains focused on the
+race rather than duplicating the find-or-create implementation inline.
 [doc: Plan §8.1, P0 checkpoint]: R-2 ("duplicate Issues under concurrent submission", Plan §risks)
 is the single most expensive defect to discover late, so the acceptance criteria are locked into
 the suite *before* the schedule pressure that would otherwise trim them.
@@ -14,17 +14,7 @@ It encodes the Arch §4.3 contract and nothing more:
     for an **open** Issue of the same category within the configured radius and time window.
     2. If found -> attach; if not -> create new Issue.
 
-⚠️ `xfail(strict=True)`, not a bare failing assert and not `skip`:
-
-  - `skip` would let it pass without running — it would stop being a forcing function.
-  - a bare red test permanently fails CI stage 5, which gates stages 6-7 (build/scan/push). No
-    image would build for the whole of P1-P3, and a gate that is always red stops being read —
-    the same reasoning that set `ignore-unfixed` on the Trivy step.
-  - `strict=True` means an unexpected PASS is a FAILURE. When T4.4 lands, this test cannot go
-    quietly green; the run fails until someone deletes the marker deliberately. That is the
-    property a "deliberately failing test" is actually for.
-
-⚠️ The test calls the future `cluster_report()` service rather than inlining a find-or-create.
+✅ The test calls `cluster_report()` rather than inlining a find-or-create.
 An inlined version would only ever test itself, and would still pass in P4 while the real
 service raced. The seam asserted here is the one T4.4 must implement.
 """
@@ -37,6 +27,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from django.contrib.gis.geos import Point
+from django.db import close_old_connections, connection
 
 if TYPE_CHECKING:
     from urbenmend.classification.models import Category
@@ -56,11 +47,17 @@ LOCATION = Point(90.4125, 23.8103, srid=4326)
 CONCURRENT_SUBMISSIONS = 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="T4.4 not implemented: cluster_report() and its advisory lock are still absent. "
-    "Written red in P0 on purpose — see module docstring. Remove this marker in T4.4.",
-)
+def _cluster_in_thread(report_id: uuid.UUID) -> uuid.UUID:
+    """Run with a thread-local connection and close it before pytest drops the test database."""
+    from urbenmend.issues.services import cluster_report
+
+    close_old_connections()
+    try:
+        return cluster_report(report_id)
+    finally:
+        connection.close()
+
+
 @pytest.mark.django_db(transaction=True)
 def test_concurrent_reports_of_one_real_world_issue_create_exactly_one_issue() -> None:
     """Two same-category reports at one location, submitted in parallel -> exactly one Issue.
@@ -73,12 +70,7 @@ def test_concurrent_reports_of_one_real_world_issue_create_exactly_one_issue() -
     `INSERT` — a lost-update race. No error surfaces; the damage is two Issues for one pothole,
     which splits the report count authorities triage on and double-notifies subscribers.
     """
-    # ⚠️ `type: ignore[attr-defined]` remains only for the service that does not exist yet. It is
-    # the same self-cleaning device as `xfail(strict=True)`: `strict = true` implies
-    # `warn_unused_ignores`, so mypy errors on these very lines ("unused ignore") the moment
-    # T4.4 defines them. The scaffolding cannot rot silently.
     from urbenmend.issues.models import Issue
-    from urbenmend.issues.services import cluster_report  # type: ignore[attr-defined]
 
     category = _seed_category()
     reports = [
@@ -91,7 +83,7 @@ def test_concurrent_reports_of_one_real_world_issue_create_exactly_one_issue() -
     with ThreadPoolExecutor(max_workers=CONCURRENT_SUBMISSIONS) as executor:
         issue_ids: list[uuid.UUID] = [
             future.result()
-            for future in [executor.submit(cluster_report, report.id) for report in reports]
+            for future in [executor.submit(_cluster_in_thread, report.id) for report in reports]
         ]
 
     # Both reports must have landed on the same Issue...
@@ -117,11 +109,10 @@ def test_concurrent_reports_of_one_real_world_issue_create_exactly_one_issue() -
 # ✅ **T2.1 replaced the hand-rolled `_seed_*` helpers with `factory_boy` factories**, which is
 # what the P0 note here anticipated ("kept as thin helpers so that when the models land, the diff
 # is confined to these three functions and the assertions above stand unchanged" — it is, and
-# they do). The forcing function that made that happen is `xfail(strict=True)` plus mypy's
-# `warn_unused_ignores`: the `type: ignore[attr-defined]` on the old `Report` import became an
-# error the moment T2.1 defined the model.
+# they do). The original forcing function was `xfail(strict=True)` plus mypy's
+# `warn_unused_ignores`; T4.4 removed both once the service became real.
 #
-# ⚠️ `cluster_report` is still absent (T4.4), so this test still xfails at its service import.
+# ✅ T4.4 removed the strict xfail and the final self-cleaning import ignore.
 # ------------------------------------------------------------------------------------------
 def _seed_citizen(index: int) -> User:
     """One citizen account. Distinct submitters, because two reports from one account at one

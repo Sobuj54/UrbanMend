@@ -15,6 +15,9 @@ from django.contrib.gis.measure import Distance
 from urbenmend.issues.models import ClusteringRule, ClusteringRuleStatus, Issue
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+    from datetime import datetime
+
     from django.contrib.gis.geos import Point
     from django.db.models import QuerySet
 
@@ -47,6 +50,27 @@ def issues_within_radius(*, point: Point, radius_m: float) -> QuerySet[Issue]:
     metres. The explicit `Distance` value keeps that unit visible at the call site.
     """
     return Issue.objects.filter(representative_location__dwithin=(point, Distance(m=radius_m)))
+
+
+def matching_open_issues(
+    *,
+    category_id: int,
+    point: Point,
+    radius_m: float,
+    opened_after: datetime,
+    statuses: Collection[str],
+) -> QuerySet[Issue]:
+    """Nearest matching candidates for T4.4 after the advisory lock is held."""
+    return (
+        issues_within_radius(point=point, radius_m=radius_m)
+        .filter(
+            primary_category_id=category_id,
+            status__in=statuses,
+            opened_at__gte=opened_after,
+        )
+        .annotate(knn_distance=GeometryDistance("representative_location", point))
+        .order_by("knn_distance", "opened_at", "pk")
+    )
 
 
 def nearest_issues(*, point: Point) -> QuerySet[Issue]:

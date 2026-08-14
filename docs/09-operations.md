@@ -128,13 +128,13 @@ runs the **second command on the host**, where ruff is not installed — it eith
 or silently checks nothing. To chain inside the container, quote the whole thing:
 `docker compose exec api sh -c 'ruff check && ruff format --check'`.
 
-Verified 2026-08-05 against the running stack: ruff clean, mypy clean (105 files), `pytest`
-**183 passed / 1 xfailed**, `makemigrations --check` "No changes detected",
+Verified again 2026-08-14 against the running stack: ruff clean, strict mypy clean, `pytest`
+**997 passed**, `makemigrations --check` "No changes detected",
 `GET /api/v1/health` → `200 {"status":"ok","dependencies":{"database":{"status":"ok"},"cache":{"status":"ok"}}}`.
 
-⚠️ The 1 xfail is **intentional** — `test_clustering_concurrency.py` is the P4 concurrency test
-written red in P0 (A10, R-2). It is `xfail(strict=True)`, so it fails the build if it ever passes
-unexpectedly. Remove the marker in T4.4, not before.
+✅ T4.4 removed the deliberate clustering xfail. `test_clustering_concurrency.py` now exercises
+two real parallel database transactions and must pass; a failure indicates the geohash+category
+advisory locking no longer prevents duplicate Issues.
 
 ### 1.7 Why everything runs in a container
 
