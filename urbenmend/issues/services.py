@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -12,6 +12,7 @@ import structlog
 from django.core.exceptions import ValidationError
 from django.db import connection, transaction
 from django.http import Http404
+from django.utils import timezone
 
 from urbenmend.api.exceptions import Conflict, UnprocessableEntity
 from urbenmend.identity.models import Role, User
@@ -23,7 +24,7 @@ from urbenmend.identity.services import (
 )
 from urbenmend.issues.models import Confirmation, Issue, IssueStatus, StatusEvent
 from urbenmend.issues.selectors import active_clustering_rule, matching_open_issues
-from urbenmend.reporting.models import SEVERITY_RANK, Report, ReportStatus
+from urbenmend.reporting.models import SEVERITY_RANK, Report, ReportStatus, SeveritySignal
 
 if TYPE_CHECKING:
     from django.contrib.gis.geos import Point
@@ -108,6 +109,20 @@ class IssueAssignmentResult:
 
     issue_id: UUID
     assignee_id: UUID | None
+
+
+@dataclass(frozen=True)
+class IssueSeverityResult:
+    """Computed and overridden severity state returned by the T5.5 endpoint."""
+
+    issue_id: UUID
+    computed: str
+    computed_rationale: str
+    overridden: str
+    current: str
+    override_reason: str
+    overridden_by: UUID
+    overridden_at: datetime
 
 
 def validate_issue_transition(
@@ -216,6 +231,57 @@ def assign_issue(
 
     issue.save(update_fields=["assignee", "updated_at"])
     return IssueAssignmentResult(issue_id=issue.pk, assignee_id=issue.assignee_id)
+
+
+@transaction.atomic
+def override_issue_severity(
+    *,
+    actor: User,
+    issue_id: UUID | str,
+    severity: str | None,
+    reason: str | None,
+) -> IssueSeverityResult:
+    """Set an explainable authority override while preserving computed severity (T5.5)."""
+    require_role(actor, Role.AUTHORITY, Role.ADMIN)
+    issue = _locked_issue(issue_id)
+    require_category_scope(actor, issue.primary_category)
+
+    if severity not in SeveritySignal.values:
+        raise UnprocessableEntity(
+            "Severity must be one of critical, high, medium or low.",
+            code="VALIDATION_FAILED",
+        )
+    normalized_reason = reason.strip() if reason is not None else ""
+    if not normalized_reason:
+        raise UnprocessableEntity(
+            "A reason is required to override severity.",
+            code="VALIDATION_FAILED",
+        )
+
+    overridden_at = timezone.now()
+    issue.overridden_severity = severity
+    issue.severity_override_reason = normalized_reason
+    issue.severity_overridden_by = actor
+    issue.severity_overridden_at = overridden_at
+    issue.save(
+        update_fields=[
+            "overridden_severity",
+            "severity_override_reason",
+            "severity_overridden_by",
+            "severity_overridden_at",
+            "updated_at",
+        ]
+    )
+    return IssueSeverityResult(
+        issue_id=issue.pk,
+        computed=issue.computed_severity,
+        computed_rationale=issue.computed_severity_rationale,
+        overridden=severity,
+        current=issue.current_severity,
+        override_reason=normalized_reason,
+        overridden_by=actor.pk,
+        overridden_at=overridden_at,
+    )
 
 
 @transaction.atomic

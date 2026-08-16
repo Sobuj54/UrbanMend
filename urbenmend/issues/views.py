@@ -15,6 +15,8 @@ from urbenmend.issues.serializers import (
     ConfirmationResponseSerializer,
     IssueAssignmentResponseSerializer,
     IssueAssignmentSerializer,
+    IssueSeverityOverrideSerializer,
+    IssueSeverityResponseSerializer,
     IssueStatusResponseSerializer,
     IssueStatusTransitionSerializer,
 )
@@ -55,6 +57,26 @@ class IssueAssignmentView(APIView):
         )
         return Response(
             IssueAssignmentResponseSerializer(result).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class IssueSeverityView(APIView):
+    """`PATCH /issues/{id}/severity` (API section 6.5, T5.5)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request: Request, issue_id: str) -> Response:
+        serializer = IssueSeverityOverrideSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = services.override_issue_severity(
+            actor=cast("User", request.user),
+            issue_id=issue_id,
+            severity=serializer.validated_data.get("severity"),
+            reason=serializer.validated_data.get("reason"),
+        )
+        return Response(
+            IssueSeverityResponseSerializer(result).data,
             status=status.HTTP_200_OK,
         )
 

@@ -7,6 +7,7 @@ from rest_framework import serializers
 from urbenmend.api.serializers import CamelCaseSerializer, reject_unknown_fields
 from urbenmend.issues.models import IssueStatus
 from urbenmend.issues.services import REOPEN_ACTION
+from urbenmend.reporting.models import SeveritySignal
 
 
 class IssueStatusTransitionSerializer(CamelCaseSerializer):
@@ -56,6 +57,35 @@ class IssueAssignmentResponseSerializer(CamelCaseSerializer):
 
     issue_id = serializers.UUIDField()
     assignee_id = serializers.UUIDField(allow_null=True)
+
+
+class IssueSeverityOverrideSerializer(CamelCaseSerializer):
+    """`PATCH /issues/{id}/severity` request body (API section 6.5)."""
+
+    # Business-rule errors are 422, so presence/band/reason validation lives in the service.
+    severity = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    reason = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self)
+        return attrs
+
+
+class IssueSeverityStateSerializer(CamelCaseSerializer):
+    computed = serializers.ChoiceField(choices=SeveritySignal.choices)
+    computed_rationale = serializers.CharField()
+    overridden = serializers.ChoiceField(choices=SeveritySignal.choices)
+    current = serializers.ChoiceField(choices=SeveritySignal.choices)
+    override_reason = serializers.CharField()
+    overridden_by = serializers.UUIDField()
+    overridden_at = serializers.DateTimeField()
+
+
+class IssueSeverityResponseSerializer(CamelCaseSerializer):
+    """The preserved computed value and current human override (BR-20/21)."""
+
+    issue_id = serializers.UUIDField()
+    severity = IssueSeverityStateSerializer(source="*")
 
 
 class ConfirmationCreateSerializer(CamelCaseSerializer):
