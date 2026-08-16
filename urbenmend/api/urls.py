@@ -103,6 +103,11 @@ urlpatterns = [
         name="issues-severity",
     ),
     path(
+        "issues/<uuid:issue_id>/merge",
+        issue_views.IssueMergeView.as_view(),
+        name="issues-merge",
+    ),
+    path(
         "issues/<uuid:issue_id>/confirmations",
         issue_views.IssueConfirmationCreateView.as_view(),
         name="issues-confirmations",
@@ -143,6 +148,7 @@ urlpatterns = [
 #   PATCH /issues/{id}/status        → T5.2 ✅ built; T5.3 adds immutable event emission
 #   PATCH /issues/{id}/assignment    → T5.4 ✅ built (Authority self-assign; Admin any)
 #   PATCH /issues/{id}/severity      → T5.5 ✅ built (computed severity retained)
+#   POST /issues/{id}/merge          → T5.6 ✅ built (path Issue survives)
 #   other /issues, /map, /comments   → later P4/P5 tasks
 #   /meta/enums                      → P1 (taxonomy confirmed — Q1 resolved 2026-08-07)
 # ⚠️ No `POST /issues` ever: Issues form only via async clustering [doc: API §3, CLAUDE.md].

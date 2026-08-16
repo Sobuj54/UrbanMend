@@ -1,4 +1,4 @@
-"""Issue clustering, severity, confirmations, lifecycle and assignment (T4.4-T5.4)."""
+"""Issue clustering, severity, confirmations and triage mutations (T4.4-T5.6)."""
 
 from __future__ import annotations
 
@@ -123,6 +123,19 @@ class IssueSeverityResult:
     override_reason: str
     overridden_by: UUID
     overridden_at: datetime
+
+
+@dataclass(frozen=True)
+class IssueMergeResult:
+    """The surviving Issue state returned after a T5.6 merge."""
+
+    issue_id: UUID
+    merged_issue_id: UUID
+    status: str
+    computed_severity: str
+    current_severity: str
+    report_count: int
+    corroboration_count: int
 
 
 def validate_issue_transition(
@@ -281,6 +294,89 @@ def override_issue_severity(
         override_reason=normalized_reason,
         overridden_by=actor.pk,
         overridden_at=overridden_at,
+    )
+
+
+def _locked_merge_pair(survivor_id: UUID | str, absorbed_id: UUID | str) -> tuple[Issue, Issue]:
+    try:
+        survivor_uuid = UUID(str(survivor_id))
+        absorbed_uuid = UUID(str(absorbed_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise Http404("Issue not found.") from exc
+    if survivor_uuid == absorbed_uuid:
+        raise Conflict("An Issue cannot be merged with itself.", code="INVALID_MERGE")
+
+    issues = {
+        issue.pk: issue
+        for issue in Issue.objects.select_for_update()
+        .select_related("primary_category")
+        .filter(pk__in=[survivor_uuid, absorbed_uuid])
+        .order_by("id")
+    }
+    if len(issues) != 2:
+        raise Http404("Issue not found.")
+    return issues[survivor_uuid], issues[absorbed_uuid]
+
+
+@transaction.atomic
+def merge_issues(
+    *,
+    actor: User,
+    survivor_issue_id: UUID | str,
+    merge_with_issue_id: UUID | str,
+    reason: str | None,
+) -> IssueMergeResult:
+    """Absorb one open Issue into another while preserving the retired row (T5.6)."""
+    require_role(actor, Role.AUTHORITY, Role.ADMIN)
+    survivor, absorbed = _locked_merge_pair(survivor_issue_id, merge_with_issue_id)
+    require_category_scope(actor, survivor.primary_category)
+    require_category_scope(actor, absorbed.primary_category)
+
+    normalized_reason = reason.strip() if reason is not None else ""
+    if not normalized_reason:
+        raise UnprocessableEntity(
+            "A reason is required to merge Issues.",
+            code="VALIDATION_FAILED",
+        )
+    if survivor.status not in OPEN_ISSUE_STATUSES or absorbed.status not in OPEN_ISSUE_STATUSES:
+        raise Conflict("Only open Issues can be merged.", code="INVALID_MERGE")
+    if not survivor.reports.exists() or not absorbed.reports.exists():
+        raise Conflict("Both Issues must contain Reports before merging.", code="INVALID_MERGE")
+
+    # One citizen can confirm both clusters before an Authority identifies the duplicate. Remove
+    # only that collision, then move every remaining confirmation without violating BR-23.
+    existing_citizens = survivor.confirmations.values_list("citizen_id", flat=True)
+    absorbed.confirmations.filter(citizen_id__in=existing_citizens).delete()
+    absorbed.confirmations.update(issue=survivor)
+    absorbed.reports.update(issue=survivor)
+    _recompute_issue_severity(survivor)
+
+    from_status = absorbed.status
+    absorbed.status = IssueStatus.DUPLICATE
+    absorbed.duplicate_of = survivor
+    absorbed.save(update_fields=["status", "duplicate_of", "updated_at"])
+    StatusEvent.objects.create(
+        issue=absorbed,
+        from_status=from_status,
+        to_status=IssueStatus.DUPLICATE,
+        actor=actor,
+        reason=normalized_reason,
+        related_issue=survivor,
+    )
+    logger.info(
+        "issue.merged",
+        survivor_issue_id=str(survivor.pk),
+        absorbed_issue_id=str(absorbed.pk),
+        actor_id=str(actor.pk),
+    )
+    return IssueMergeResult(
+        issue_id=survivor.pk,
+        merged_issue_id=absorbed.pk,
+        status=survivor.status,
+        computed_severity=survivor.computed_severity,
+        current_severity=survivor.current_severity,
+        report_count=survivor.report_count,
+        corroboration_count=survivor.corroboration_count,
     )
 
 

@@ -1,4 +1,4 @@
-"""Issue status, assignment and confirmation API serializers (T4.7-T5.4)."""
+"""Issue status, assignment, severity, merge and confirmation serializers (T4.7-T5.6)."""
 
 from typing import Any
 
@@ -86,6 +86,29 @@ class IssueSeverityResponseSerializer(CamelCaseSerializer):
 
     issue_id = serializers.UUIDField()
     severity = IssueSeverityStateSerializer(source="*")
+
+
+class IssueMergeSerializer(CamelCaseSerializer):
+    """`POST /issues/{id}/merge` request body (API section 6.5)."""
+
+    merge_with_issue_id = serializers.UUIDField()
+    reason = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self)
+        return attrs
+
+
+class IssueMergeResponseSerializer(CamelCaseSerializer):
+    """Compact surviving Issue resource until the full T7.3 serializer exists."""
+
+    issue_id = serializers.UUIDField()
+    merged_issue_id = serializers.UUIDField()
+    status = serializers.ChoiceField(choices=IssueStatus.choices)
+    computed_severity = serializers.ChoiceField(choices=SeveritySignal.choices)
+    current_severity = serializers.ChoiceField(choices=SeveritySignal.choices)
+    report_count = serializers.IntegerField(min_value=1)
+    corroboration_count = serializers.IntegerField(min_value=0)
 
 
 class ConfirmationCreateSerializer(CamelCaseSerializer):

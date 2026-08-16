@@ -61,11 +61,11 @@ layer + `{data, page, meta}` envelope + error handler) · T0.10 (`Category`, sev
 resolved) · T1.2–T1.9 (registration/verification, sessions, CSRF, RBAC, provisioning, 2FA, throttling,
 `/users/me`) · T2.1–T2.9 (report/media intake, processing, reads, edits, idempotency, throttling) ·
 T3.1–T3.7 (LLM abstraction, keyword fallback, controls, async classification) · T4.1–T4.8 (Issue,
-clustering, severity, confirmations, proximity) · T5.1–T5.5 (workflow, status events, assignment,
-severity override).
+clustering, severity, confirmations, proximity) · T5.1–T5.6 (workflow, status events, assignment,
+severity override, merge).
 
-Suite after T5.5 (2026-08-16): **1141 passed**, mypy 169 source files and ruff clean, no migration
-drift. **Next: T5.6** (merge issues).
+Suite after T5.6 (2026-08-16): **1150 passed**, mypy 170 source files and ruff clean, no migration
+drift. **Next: T5.7** (split issues).
 
 **Unowned / blocked — do not silently absorb into another task:** `/auth/password/forgot`·`/reset`
 (blocked on ❓Q5; **a provisioned Authority still has no way to set a first password**, so T1.6 accounts

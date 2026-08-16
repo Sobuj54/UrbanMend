@@ -1,4 +1,4 @@
-"""Thin HTTP endpoints for Issue status, assignment and confirmations (T4.7-T5.4)."""
+"""Thin HTTP endpoints for Issue triage mutations and confirmations (T4.7-T5.6)."""
 
 from typing import cast
 
@@ -15,6 +15,8 @@ from urbenmend.issues.serializers import (
     ConfirmationResponseSerializer,
     IssueAssignmentResponseSerializer,
     IssueAssignmentSerializer,
+    IssueMergeResponseSerializer,
+    IssueMergeSerializer,
     IssueSeverityOverrideSerializer,
     IssueSeverityResponseSerializer,
     IssueStatusResponseSerializer,
@@ -79,6 +81,23 @@ class IssueSeverityView(APIView):
             IssueSeverityResponseSerializer(result).data,
             status=status.HTTP_200_OK,
         )
+
+
+class IssueMergeView(APIView):
+    """`POST /issues/{id}/merge` (API section 6.5, T5.6)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request, issue_id: str) -> Response:
+        serializer = IssueMergeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = services.merge_issues(
+            actor=cast("User", request.user),
+            survivor_issue_id=issue_id,
+            merge_with_issue_id=serializer.validated_data["merge_with_issue_id"],
+            reason=serializer.validated_data.get("reason"),
+        )
+        return Response(IssueMergeResponseSerializer(result).data, status=status.HTTP_200_OK)
 
 
 class IssueConfirmationCreateView(APIView):
