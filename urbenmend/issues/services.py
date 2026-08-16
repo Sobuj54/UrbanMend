@@ -1,4 +1,4 @@
-"""Issue clustering, severity, confirmations, lifecycle and status history (T4.4-T5.3)."""
+"""Issue clustering, severity, confirmations, lifecycle and assignment (T4.4-T5.4)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,12 @@ from django.http import Http404
 
 from urbenmend.api.exceptions import Conflict, UnprocessableEntity
 from urbenmend.identity.models import Role, User
-from urbenmend.identity.services import require_category_scope, require_role
+from urbenmend.identity.services import (
+    AuthorizationError,
+    has_category_scope,
+    require_category_scope,
+    require_role,
+)
 from urbenmend.issues.models import Confirmation, Issue, IssueStatus, StatusEvent
 from urbenmend.issues.selectors import active_clustering_rule, matching_open_issues
 from urbenmend.reporting.models import SEVERITY_RANK, Report, ReportStatus
@@ -97,6 +102,14 @@ class IssueStatusResult:
     reopened_from_issue_id: UUID | None
 
 
+@dataclass(frozen=True)
+class IssueAssignmentResult:
+    """The assignment sub-resource returned by the T5.4 endpoint."""
+
+    issue_id: UUID
+    assignee_id: UUID | None
+
+
 def validate_issue_transition(
     *,
     from_status: str,
@@ -155,6 +168,54 @@ def _locked_issue(issue_id: UUID | str) -> Issue:
         return Issue.objects.select_for_update().select_related("primary_category").get(pk=issue_id)
     except (Issue.DoesNotExist, ValidationError, ValueError, TypeError) as exc:
         raise Http404("Issue not found.") from exc
+
+
+def _locked_assignee(assignee_id: UUID | str) -> User:
+    try:
+        return User.objects.select_for_update().get(pk=assignee_id)
+    except (User.DoesNotExist, ValidationError, ValueError, TypeError) as exc:
+        raise Http404("Assignee not found.") from exc
+
+
+@transaction.atomic
+def assign_issue(
+    *,
+    actor: User,
+    issue_id: UUID | str,
+    assignee_id: UUID | str | None,
+) -> IssueAssignmentResult:
+    """Assign or unassign one Issue under the T5.4 role and scope rules.
+
+    Authorities may assign only themselves and may clear only their own assignment. Admins may
+    assign or clear any Issue, but an assigned Authority must still be active and scoped to the
+    Issue category; otherwise the assignment would create work the target cannot legally access.
+    """
+    require_role(actor, Role.AUTHORITY, Role.ADMIN)
+    issue = _locked_issue(issue_id)
+    require_category_scope(actor, issue.primary_category)
+
+    if assignee_id is None:
+        if actor.role == Role.AUTHORITY and issue.assignee_id not in {None, actor.pk}:
+            raise AuthorizationError("You do not have permission to change this assignment.")
+        issue.assignee = None
+    else:
+        if actor.role == Role.AUTHORITY and str(assignee_id) != str(actor.pk):
+            raise AuthorizationError("You do not have permission to assign another authority.")
+        assignee = _locked_assignee(assignee_id)
+        if assignee.role != Role.AUTHORITY or not assignee.is_active:
+            raise UnprocessableEntity(
+                "The assignee must be an active Authority.",
+                code="VALIDATION_FAILED",
+            )
+        if not has_category_scope(assignee, issue.primary_category):
+            raise UnprocessableEntity(
+                "The assignee is outside the Issue category scope.",
+                code="VALIDATION_FAILED",
+            )
+        issue.assignee = assignee
+
+    issue.save(update_fields=["assignee", "updated_at"])
+    return IssueAssignmentResult(issue_id=issue.pk, assignee_id=issue.assignee_id)
 
 
 @transaction.atomic

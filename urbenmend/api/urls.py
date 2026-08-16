@@ -93,6 +93,11 @@ urlpatterns = [
         name="issues-status",
     ),
     path(
+        "issues/<uuid:issue_id>/assignment",
+        issue_views.IssueAssignmentView.as_view(),
+        name="issues-assignment",
+    ),
+    path(
         "issues/<uuid:issue_id>/confirmations",
         issue_views.IssueConfirmationCreateView.as_view(),
         name="issues-confirmations",
@@ -131,6 +136,7 @@ urlpatterns = [
 #                                      submission, and both are covered by role checks instead
 #   /issues/{id}/confirmations       → T4.7 ✅ built
 #   PATCH /issues/{id}/status        → T5.2 ✅ built; T5.3 adds immutable event emission
+#   PATCH /issues/{id}/assignment    → T5.4 ✅ built (Authority self-assign; Admin any)
 #   other /issues, /map, /comments   → later P4/P5 tasks
 #   /meta/enums                      → P1 (taxonomy confirmed — Q1 resolved 2026-08-07)
 # ⚠️ No `POST /issues` ever: Issues form only via async clustering [doc: API §3, CLAUDE.md].

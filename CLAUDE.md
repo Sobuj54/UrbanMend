@@ -59,17 +59,18 @@ urbenmend/
 **Done:** A1/A4–A7 (settings split, skeleton, `AUTH_USER_MODEL`, baseline migration) · T0.6 (camelCase
 layer + `{data, page, meta}` envelope + error handler) · T0.10 (`Category`, seven-node taxonomy, ✅ ❓Q1
 resolved) · T1.2–T1.9 (registration/verification, sessions, CSRF, RBAC, provisioning, 2FA, throttling,
-`/users/me`) · T2.1–T2.3 (`Report` + `geo` app, `POST /reports`, `Idempotency-Key`).
+`/users/me`) · T2.1–T2.9 (report/media intake, processing, reads, edits, idempotency, throttling) ·
+T3.1–T3.7 (LLM abstraction, keyword fallback, controls, async classification) · T4.1–T4.8 (Issue,
+clustering, severity, confirmations, proximity) · T5.1–T5.4 (workflow, status events, assignment).
 
-Suite after T2.3 (2026-08-08): **529 passed / 1 xfailed**, mypy 131 files / ruff 139 files clean, no
-drift, `check --deploy` clean. **Next: T2.4** (media upload).
+Suite after T5.4 (2026-08-16): **1131 passed**, mypy 168 source files and ruff clean, no migration
+drift. **Next: T5.5** (severity override).
 
 **Unowned / blocked — do not silently absorb into another task:** `/auth/password/forgot`·`/reset`
 (blocked on ❓Q5; **a provisioned Authority still has no way to set a first password**, so T1.6 accounts
 cannot log in) · `GET /users` and `PATCH /users/{id}` (Admin, API §6.2 — need a task ID; that `PATCH` is
 the documented route for Authority deprovisioning *and* Admin-side email changes, so **two T1.9
-decisions have no implemented alternative path**) · `POST /reports` is **unthrottled** until **T2.9**
-(FR-33) — idempotency bounds accidental duplication, not abuse.
+decisions have no implemented alternative path**).
 
 ## ⚠️ Traps that bind future work
 

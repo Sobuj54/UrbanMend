@@ -1,4 +1,4 @@
-"""Thin HTTP endpoints for Issue status and confirmations (T4.7-T5.2)."""
+"""Thin HTTP endpoints for Issue status, assignment and confirmations (T4.7-T5.4)."""
 
 from typing import cast
 
@@ -13,6 +13,8 @@ from urbenmend.issues import services
 from urbenmend.issues.serializers import (
     ConfirmationCreateSerializer,
     ConfirmationResponseSerializer,
+    IssueAssignmentResponseSerializer,
+    IssueAssignmentSerializer,
     IssueStatusResponseSerializer,
     IssueStatusTransitionSerializer,
 )
@@ -36,6 +38,25 @@ class IssueStatusView(APIView):
             duplicate_of_issue_id=data.get("duplicate_of_issue_id"),
         )
         return Response(IssueStatusResponseSerializer(result).data, status=status.HTTP_200_OK)
+
+
+class IssueAssignmentView(APIView):
+    """`PATCH /issues/{id}/assignment` (API section 6.5, T5.4)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request: Request, issue_id: str) -> Response:
+        serializer = IssueAssignmentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = services.assign_issue(
+            actor=cast("User", request.user),
+            issue_id=issue_id,
+            assignee_id=serializer.validated_data["assignee_id"],
+        )
+        return Response(
+            IssueAssignmentResponseSerializer(result).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class IssueConfirmationCreateView(APIView):

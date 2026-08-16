@@ -1,4 +1,4 @@
-"""Issue status and confirmation API serializers (T4.7-T5.2)."""
+"""Issue status, assignment and confirmation API serializers (T4.7-T5.4)."""
 
 from typing import Any
 
@@ -39,6 +39,23 @@ class IssueStatusResponseSerializer(CamelCaseSerializer):
     status = serializers.ChoiceField(choices=IssueStatus.choices)
     duplicate_of_issue_id = serializers.UUIDField(allow_null=True)
     reopened_from_issue_id = serializers.UUIDField(allow_null=True)
+
+
+class IssueAssignmentSerializer(CamelCaseSerializer):
+    """`PATCH /issues/{id}/assignment` request body (API section 6.5)."""
+
+    assignee_id = serializers.UUIDField(allow_null=True)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self)
+        return attrs
+
+
+class IssueAssignmentResponseSerializer(CamelCaseSerializer):
+    """Assignment mutation result; the full Issue resource lands with T7.3."""
+
+    issue_id = serializers.UUIDField()
+    assignee_id = serializers.UUIDField(allow_null=True)
 
 
 class ConfirmationCreateSerializer(CamelCaseSerializer):
