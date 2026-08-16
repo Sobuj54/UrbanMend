@@ -69,7 +69,10 @@ def test_admin_can_assign_and_clear_any_scoped_authority() -> None:
     assignee = _scoped_authority(issue)
     admin = AdminFactory.create()
 
-    assert assign_issue(actor=admin, issue_id=issue.pk, assignee_id=assignee.pk).assignee_id == assignee.pk
+    assert (
+        assign_issue(actor=admin, issue_id=issue.pk, assignee_id=assignee.pk).assignee_id
+        == assignee.pk
+    )
     assert assign_issue(actor=admin, issue_id=issue.pk, assignee_id=None).assignee_id is None
 
 
@@ -122,17 +125,21 @@ def test_assignment_endpoint_validates_body_authentication_and_csrf() -> None:
     issue = IssueFactory.create()
     authority = _scoped_authority(issue)
 
-    missing = _client_for(authority).patch(
-        _url(issue.pk), data={}, content_type="application/json"
-    )
+    missing = _client_for(authority).patch(_url(issue.pk), data={}, content_type="application/json")
     assert missing.status_code == 400
 
-    assert Client().patch(
-        _url(issue.pk), data={"assigneeId": None}, content_type="application/json"
-    ).status_code == 401
+    assert (
+        Client()
+        .patch(_url(issue.pk), data={"assigneeId": None}, content_type="application/json")
+        .status_code
+        == 401
+    )
 
     csrf_client = Client(enforce_csrf_checks=True)
     csrf_client.force_login(authority)
-    assert csrf_client.patch(
-        _url(issue.pk), data={"assigneeId": None}, content_type="application/json"
-    ).status_code == 403
+    assert (
+        csrf_client.patch(
+            _url(issue.pk), data={"assigneeId": None}, content_type="application/json"
+        ).status_code
+        == 403
+    )

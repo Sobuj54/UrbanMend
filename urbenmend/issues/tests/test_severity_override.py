@@ -80,11 +80,14 @@ def test_admin_can_replace_an_existing_override_without_scope() -> None:
 
 @pytest.mark.parametrize(
     ("severity", "reason"),
-    [(None, "Evidence."), ("urgent", "Evidence."), (SeveritySignal.HIGH, None), (SeveritySignal.HIGH, "  ")],
+    [
+        (None, "Evidence."),
+        ("urgent", "Evidence."),
+        (SeveritySignal.HIGH, None),
+        (SeveritySignal.HIGH, "  "),
+    ],
 )
-def test_invalid_band_or_reason_is_unprocessable(
-    severity: str | None, reason: str | None
-) -> None:
+def test_invalid_band_or_reason_is_unprocessable(severity: str | None, reason: str | None) -> None:
     issue = IssueFactory.create()
     with pytest.raises(UnprocessableEntity):
         override_issue_severity(
@@ -140,9 +143,12 @@ def test_endpoint_returns_422_for_business_rules_and_400_for_unknown_fields() ->
     issue = IssueFactory.create()
     client = _client_for(_scoped_authority(issue))
 
-    assert client.patch(
-        _url(issue.pk), data={"severity": "urgent"}, content_type="application/json"
-    ).status_code == 422
+    assert (
+        client.patch(
+            _url(issue.pk), data={"severity": "urgent"}, content_type="application/json"
+        ).status_code
+        == 422
+    )
     unknown = client.patch(
         _url(issue.pk),
         data={"severity": "high", "reason": "Evidence.", "score": 99},
@@ -155,8 +161,13 @@ def test_endpoint_returns_422_for_business_rules_and_400_for_unknown_fields() ->
 def test_endpoint_requires_authentication_and_csrf() -> None:
     issue = IssueFactory.create()
     body = {"severity": "high", "reason": "Evidence."}
-    assert Client().patch(_url(issue.pk), data=body, content_type="application/json").status_code == 401
+    assert (
+        Client().patch(_url(issue.pk), data=body, content_type="application/json").status_code
+        == 401
+    )
 
     client = Client(enforce_csrf_checks=True)
     client.force_login(_scoped_authority(issue))
-    assert client.patch(_url(issue.pk), data=body, content_type="application/json").status_code == 403
+    assert (
+        client.patch(_url(issue.pk), data=body, content_type="application/json").status_code == 403
+    )

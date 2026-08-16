@@ -1,4 +1,4 @@
-"""Issue status, assignment, severity, merge and confirmation serializers (T4.7-T5.6)."""
+"""Issue status, assignment, severity, merge/split and confirmation serializers (T4.7-T5.7)."""
 
 from typing import Any
 
@@ -109,6 +109,31 @@ class IssueMergeResponseSerializer(CamelCaseSerializer):
     current_severity = serializers.ChoiceField(choices=SeveritySignal.choices)
     report_count = serializers.IntegerField(min_value=1)
     corroboration_count = serializers.IntegerField(min_value=0)
+
+
+class IssueSplitSerializer(CamelCaseSerializer):
+    """`POST /issues/{id}/split` request body (API section 6.5)."""
+
+    report_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=True)
+    reason = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self)
+        return attrs
+
+
+class SplitIssueStateSerializer(CamelCaseSerializer):
+    issue_id = serializers.UUIDField()
+    status = serializers.ChoiceField(choices=IssueStatus.choices)
+    computed_severity = serializers.ChoiceField(choices=SeveritySignal.choices)
+    current_severity = serializers.ChoiceField(choices=SeveritySignal.choices)
+    report_count = serializers.IntegerField(min_value=1)
+    corroboration_count = serializers.IntegerField(min_value=0)
+
+
+class IssueSplitResponseSerializer(CamelCaseSerializer):
+    original = SplitIssueStateSerializer()
+    created = SplitIssueStateSerializer()
 
 
 class ConfirmationCreateSerializer(CamelCaseSerializer):

@@ -603,7 +603,10 @@ unclassified report valid). A citizen's optional `category` hint fills `category
 - **Body:** `{ "reportIds":["rep_2","rep_5"], "reason":"different issue" }`
 - **Response `201`:** new issue + updated original.
 - **Errors:** `422` (would empty a side), `409`, `FORBIDDEN`, standard.
-- **DM-Q7 RESOLVED:** On split, moved Reports carry their own data to the new Issue; Confirmations re-attribute accordingly.
+- **DM-Q7 RESOLVED:** On split, moved Reports carry their own data to the new Issue. A Confirmation
+  moves only when its citizen authored one or more moved Reports and authored no Report remaining on
+  the original Issue. Confirmations from citizens represented on both sides, and confirmation-only
+  citizens, stay on the original because the request contains no evidence assigning them to one side.
 
 > Issues are **not** created directly via the API — they are formed by async clustering (FR-18, Architecture §4.3). There is deliberately **no** `POST /issues`. Issues are also never hard-deleted; moderation hides content (FR-31).
 

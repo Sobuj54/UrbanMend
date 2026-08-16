@@ -1,4 +1,4 @@
-"""Issue clustering, severity, confirmations and triage mutations (T4.4-T5.6)."""
+"""Issue clustering, severity, confirmations and triage mutations (T4.4-T5.7)."""
 
 from __future__ import annotations
 
@@ -136,6 +136,26 @@ class IssueMergeResult:
     current_severity: str
     report_count: int
     corroboration_count: int
+
+
+@dataclass(frozen=True)
+class SplitIssueState:
+    """One side of a T5.7 split response."""
+
+    issue_id: UUID
+    status: str
+    computed_severity: str
+    current_severity: str
+    report_count: int
+    corroboration_count: int
+
+
+@dataclass(frozen=True)
+class IssueSplitResult:
+    """The updated original and newly-created Issue after a T5.7 split."""
+
+    original: SplitIssueState
+    created: SplitIssueState
 
 
 def validate_issue_transition(
@@ -378,6 +398,94 @@ def merge_issues(
         report_count=survivor.report_count,
         corroboration_count=survivor.corroboration_count,
     )
+
+
+def _split_state(issue: Issue) -> SplitIssueState:
+    return SplitIssueState(
+        issue_id=issue.pk,
+        status=issue.status,
+        computed_severity=issue.computed_severity,
+        current_severity=issue.current_severity,
+        report_count=issue.report_count,
+        corroboration_count=issue.corroboration_count,
+    )
+
+
+@transaction.atomic
+def split_issue(
+    *,
+    actor: User,
+    issue_id: UUID | str,
+    report_ids: list[UUID],
+    reason: str | None,
+) -> IssueSplitResult:
+    """Move selected Reports into one fresh triaged Issue (T5.7, BR-14/18)."""
+    require_role(actor, Role.AUTHORITY, Role.ADMIN)
+    original = _locked_issue(issue_id)
+    require_category_scope(actor, original.primary_category)
+
+    normalized_reason = reason.strip() if reason is not None else ""
+    if not normalized_reason:
+        raise UnprocessableEntity(
+            "A reason is required to split an Issue.",
+            code="VALIDATION_FAILED",
+        )
+    if original.status not in OPEN_ISSUE_STATUSES:
+        raise Conflict("Only an open Issue can be split.", code="INVALID_SPLIT")
+    if not report_ids or len(set(report_ids)) != len(report_ids):
+        raise UnprocessableEntity(
+            "Provide one or more distinct Report IDs.",
+            code="VALIDATION_FAILED",
+        )
+
+    members = list(
+        Report.objects.select_for_update()
+        .filter(issue=original)
+        .select_related("author")
+        .order_by("created_at", "id")
+    )
+    selected_ids = set(report_ids)
+    member_ids = {report.pk for report in members}
+    if not selected_ids.issubset(member_ids):
+        raise Conflict("Every selected Report must belong to this Issue.", code="INVALID_SPLIT")
+    if len(selected_ids) >= len(members):
+        raise UnprocessableEntity(
+            "A split must leave at least one Report on each Issue.",
+            code="VALIDATION_FAILED",
+        )
+
+    moved = [report for report in members if report.pk in selected_ids]
+    remaining = [report for report in members if report.pk not in selected_ids]
+    driver = max(moved, key=_severity_rank)
+    severity = driver.severity_signal
+    if severity is None:  # Narrowed by `_severity_rank`; retained for static type checking.
+        raise ClusteringError(f"Issue member Report {driver.pk} has no severity signal.")
+
+    created = Issue.objects.create(
+        primary_category=original.primary_category,
+        representative_location=moved[0].location,
+        computed_severity=severity,
+        computed_severity_rationale=_severity_rationale(driver),
+        status=IssueStatus.TRIAGED,
+        opened_at=moved[0].created_at,
+    )
+    Report.objects.filter(pk__in=selected_ids).update(issue=created)
+
+    moved_authors = {report.author_id for report in moved}
+    remaining_authors = {report.author_id for report in remaining}
+    moved_only_authors = moved_authors - remaining_authors
+    original.confirmations.filter(citizen_id__in=moved_only_authors).update(issue=created)
+
+    _recompute_issue_severity(original)
+    _recompute_issue_severity(created)
+    logger.info(
+        "issue.split",
+        original_issue_id=str(original.pk),
+        created_issue_id=str(created.pk),
+        actor_id=str(actor.pk),
+        moved_report_count=len(moved),
+    )
+    return IssueSplitResult(original=_split_state(original), created=_split_state(created))
 
 
 @transaction.atomic

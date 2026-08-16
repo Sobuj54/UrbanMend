@@ -76,7 +76,10 @@ def test_merge_moves_reports_deduplicates_confirmations_and_recomputes_severity(
     assert absorbed.reports.count() == 0
     assert survivor.computed_severity == SeveritySignal.CRITICAL
     assert survivor.computed_severity_rationale == "Live wire above the footpath."
-    assert set(survivor.confirmations.values_list("citizen_id", flat=True)) == {shared.pk, unique.pk}
+    assert set(survivor.confirmations.values_list("citizen_id", flat=True)) == {
+        shared.pk,
+        unique.pk,
+    }
     assert Confirmation.objects.count() == 2
     assert absorbed.status == IssueStatus.DUPLICATE
     assert absorbed.duplicate_of == survivor
@@ -106,7 +109,9 @@ def test_merge_preserves_survivor_override_and_records_status_event() -> None:
     assert event.reason == "Duplicate cluster."
 
 
-@pytest.mark.parametrize("terminal", [IssueStatus.RESOLVED, IssueStatus.CLOSED, IssueStatus.DUPLICATE])
+@pytest.mark.parametrize(
+    "terminal", [IssueStatus.RESOLVED, IssueStatus.CLOSED, IssueStatus.DUPLICATE]
+)
 def test_terminal_issue_cannot_be_merged(terminal: str) -> None:
     survivor = _issue_with_report()
     absorbed = _issue_with_report(primary_category=survivor.primary_category, status=terminal)
@@ -209,8 +214,14 @@ def test_merge_endpoint_requires_authentication_and_csrf() -> None:
     survivor = _issue_with_report()
     absorbed = _issue_with_report(primary_category=survivor.primary_category)
     body = {"mergeWithIssueId": str(absorbed.pk), "reason": "Duplicate."}
-    assert Client().post(_url(survivor.pk), data=body, content_type="application/json").status_code == 401
+    assert (
+        Client().post(_url(survivor.pk), data=body, content_type="application/json").status_code
+        == 401
+    )
 
     client = Client(enforce_csrf_checks=True)
     client.force_login(_scoped_authority(survivor, absorbed))
-    assert client.post(_url(survivor.pk), data=body, content_type="application/json").status_code == 403
+    assert (
+        client.post(_url(survivor.pk), data=body, content_type="application/json").status_code
+        == 403
+    )
