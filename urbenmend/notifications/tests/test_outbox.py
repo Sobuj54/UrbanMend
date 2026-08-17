@@ -66,7 +66,9 @@ def test_duplicate_and_reopen_capture_related_issue() -> None:
         reason="Same hazard.",
     )
 
-    closed = IssueFactory.create(status=IssueStatus.CLOSED, primary_category=duplicate.primary_category)
+    closed = IssueFactory.create(
+        status=IssueStatus.CLOSED, primary_category=duplicate.primary_category
+    )
     reopened = transition_issue_status(
         actor=actor,
         issue_id=closed.pk,

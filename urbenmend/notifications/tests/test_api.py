@@ -108,10 +108,14 @@ def test_mark_read_is_idempotent_and_returns_resource() -> None:
     client = Client()
     client.force_login(owner)
 
-    first = client.patch(_detail_url(notification), data={"read": True}, content_type="application/json")
+    first = client.patch(
+        _detail_url(notification), data={"read": True}, content_type="application/json"
+    )
     notification.refresh_from_db()
     first_read_at = notification.read_at
-    second = client.patch(_detail_url(notification), data={"read": True}, content_type="application/json")
+    second = client.patch(
+        _detail_url(notification), data={"read": True}, content_type="application/json"
+    )
     notification.refresh_from_db()
 
     assert first.status_code == 200
@@ -125,7 +129,9 @@ def test_mark_read_hides_other_users_notification() -> None:
     client = Client()
     client.force_login(UserFactory.create())
 
-    response = client.patch(_detail_url(notification), data={"read": True}, content_type="application/json")
+    response = client.patch(
+        _detail_url(notification), data={"read": True}, content_type="application/json"
+    )
 
     assert response.status_code == 404
 
@@ -136,7 +142,9 @@ def test_mark_read_rejects_false() -> None:
     client = Client()
     client.force_login(owner)
 
-    response = client.patch(_detail_url(notification), data={"read": False}, content_type="application/json")
+    response = client.patch(
+        _detail_url(notification), data={"read": False}, content_type="application/json"
+    )
 
     assert response.status_code == 400
     notification.refresh_from_db()
@@ -151,7 +159,9 @@ def test_mark_all_read_affects_only_callers_notifications() -> None:
     client = Client()
     client.force_login(owner)
 
-    response = client.post(reverse("api:notifications-read-all"), data={}, content_type="application/json")
+    response = client.post(
+        reverse("api:notifications-read-all"), data={}, content_type="application/json"
+    )
 
     assert response.status_code == 204
     for notification in (own_first, own_second, other):

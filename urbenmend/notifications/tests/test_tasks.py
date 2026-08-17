@@ -64,11 +64,14 @@ def test_relay_does_not_republish_published_event() -> None:
 
 def test_publish_failure_leaves_event_pending_for_replay() -> None:
     event = _pending_event()
-    with patch.object(
-        consume_outbox_event,
-        "apply_async",
-        side_effect=RuntimeError("broker unavailable"),
-    ), pytest.raises(RuntimeError, match="broker unavailable"):
+    with (
+        patch.object(
+            consume_outbox_event,
+            "apply_async",
+            side_effect=RuntimeError("broker unavailable"),
+        ),
+        pytest.raises(RuntimeError, match="broker unavailable"),
+    ):
         relay_outbox.run()
 
     event.refresh_from_db()

@@ -57,16 +57,30 @@ jobs:
 
       # Three separate steps, not one `&&` chain, so a failure names which gate failed in
       # the job summary without anyone expanding the log.
+      #
+      # The image runs as the non-root `app` user, while Actions bind-mounts the checkout with
+      # the runner's UID. Tool caches therefore belong in container-local /tmp, not under /app:
+      # writing `.ruff_cache` or `.mypy_cache` beside the source fails with EACCES on GitHub's
+      # Linux runner even though the same commands work through Docker Desktop locally.
       - name: ruff check
-        run: docker run --rm -v "$PWD:/app" -w /app urbenmend:ci ruff check
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app \
+            -e RUFF_CACHE_DIR=/tmp/ruff-cache \
+            urbenmend:ci ruff check
 
       - name: ruff format --check
-        run: docker run --rm -v "$PWD:/app" -w /app urbenmend:ci ruff format --check
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app \
+            -e RUFF_CACHE_DIR=/tmp/ruff-cache \
+            urbenmend:ci ruff format --check
 
       # Reads pyproject.toml (strict + the django-stubs plugin). Needs no DATABASE_URL:
       # the plugin loads settings.dev, which carries local fallbacks and opens no connection.
       - name: mypy
-        run: docker run --rm -v "$PWD:/app" -w /app urbenmend:ci mypy
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app \
+            -e MYPY_CACHE_DIR=/tmp/mypy-cache \
+            urbenmend:ci mypy
 
   # ====================================================================================
   # Stage 2 — model drift
