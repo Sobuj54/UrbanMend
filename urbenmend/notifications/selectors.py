@@ -1,15 +1,27 @@
-"""
-Notifications — read operations.
+"""Notification read operations (T6.4)."""
 
-Query functions for this module. Kept separate from services.py so reads never acquire
-write-path side effects, and so the modules that consume this one have a single documented
-surface to call [doc: Arch §3.1].
+from __future__ import annotations
 
-Rules for this file:
-  - No writes, no `transaction.atomic`, no task enqueue.
-  - Apply the caller's visibility rules here — a selector that returns rows the actor may
-    not see is an authorization bug even though it wrote nothing [doc: Arch §3.1, FR-3].
-  - Return querysets or domain objects, never DRF serializers or HTTP responses.
+from collections.abc import Sequence
 
-[doc: Arch §3 (FR-27, FR-28, FR-29)]
-"""
+from django.db.models import QuerySet
+
+from urbenmend.identity.models import User
+from urbenmend.notifications.models import Notification
+
+
+def list_notifications(
+    *,
+    actor: User,
+    unread_only: bool | None = None,
+    notification_types: Sequence[str] = (),
+) -> QuerySet[Notification]:
+    """Return only the caller's notifications, newest first."""
+    queryset = Notification.objects.filter(recipient=actor).select_related("issue")
+    if unread_only is True:
+        queryset = queryset.filter(read_at__isnull=True)
+    elif unread_only is False:
+        queryset = queryset.filter(read_at__isnull=False)
+    if notification_types:
+        queryset = queryset.filter(notification_type__in=notification_types)
+    return queryset.order_by("-created_at", "-pk")

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from django.db import connection, transaction
+from django.http import Http404
 from django.utils import timezone
 
 from urbenmend.identity.models import User, UserStatus
@@ -87,3 +89,28 @@ def generate_status_change_notifications(event: OutboxEvent) -> int:
         source_event=event,
         channel=NotificationChannel.IN_APP,
     ).count()
+
+
+@transaction.atomic
+def mark_notification_read(*, actor: User, notification_id: UUID | str) -> Notification:
+    """Mark one caller-owned notification read without exposing another user's row."""
+    try:
+        notification = Notification.objects.select_for_update().get(
+            pk=notification_id,
+            recipient=actor,
+        )
+    except (Notification.DoesNotExist, ValueError, TypeError) as exc:
+        raise Http404("Notification not found.") from exc
+
+    if notification.read_at is None:
+        notification.read_at = timezone.now()
+        notification.save(update_fields=["read_at"])
+    return notification
+
+
+@transaction.atomic
+def mark_all_notifications_read(*, actor: User) -> int:
+    """Mark every currently unread notification owned by the caller."""
+    return Notification.objects.filter(recipient=actor, read_at__isnull=True).update(
+        read_at=timezone.now()
+    )

@@ -16,6 +16,7 @@ from django.urls import path
 from urbenmend.identity import views as identity_views
 from urbenmend.issues import views as issue_views
 from urbenmend.media import views as media_views
+from urbenmend.notifications import views as notification_views
 from urbenmend.platform import views as platform_views
 from urbenmend.reporting import views as reporting_views
 
@@ -134,6 +135,22 @@ urlpatterns = [
     # so a scan for `/media/1` answers `404` without reaching a view — and no selector has to
     # defend against a `ValueError` from the ORM to avoid a `500`.
     path("media/<uuid:media_id>", media_views.MediaDetailView.as_view(), name="media-detail"),
+    # API section 6.11 - self-owned in-app notification reads and read-state mutations.
+    path(
+        "notifications/read-all",
+        notification_views.NotificationReadAllView.as_view(),
+        name="notifications-read-all",
+    ),
+    path(
+        "notifications/<uuid:notification_id>",
+        notification_views.NotificationDetailView.as_view(),
+        name="notifications-detail",
+    ),
+    path(
+        "notifications",
+        notification_views.NotificationCollectionView.as_view(),
+        name="notifications",
+    ),
 ]
 
 # Remaining §6 resources land with their phases, not here:
