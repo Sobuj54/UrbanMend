@@ -558,6 +558,15 @@ CELERY_ENABLE_UTC = True
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 300  # 5 minutes hard limit.
 CELERY_TASK_SOFT_TIME_LIMIT = 270  # 4.5 minutes soft limit.
+CELERY_BEAT_SCHEDULE = {
+    # A short polling interval keeps the notification SLA independent of API request volume.
+    # Deployment runs exactly one beat scheduler; worker concurrency does not affect this lock-safe
+    # relay because pending rows are claimed with SELECT ... FOR UPDATE SKIP LOCKED.
+    "notifications-outbox-relay": {
+        "task": "notifications.relay_outbox",
+        "schedule": 10.0,
+    },
+}
 
 # --------------------------------------------------------------------------------------
 # Logging

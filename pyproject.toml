@@ -102,6 +102,7 @@ module = [
     "urbenmend.platform.celery_tracing",
     "urbenmend.classification.tasks",
     "urbenmend.media.tasks",
+    "urbenmend.notifications.tasks",
 ]
 disallow_untyped_decorators = false
 
