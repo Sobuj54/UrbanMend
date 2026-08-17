@@ -10,6 +10,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from urbenmend.notifications.models import OutboxEvent
+from urbenmend.notifications.services import generate_status_change_notifications
 
 logger = structlog.get_logger(__name__)
 
@@ -18,14 +19,24 @@ OUTBOX_CONSUMER_TASK = "notifications.consume_outbox_event"
 DEFAULT_BATCH_SIZE = 100
 
 
-@shared_task(name=OUTBOX_CONSUMER_TASK)
+@shared_task(
+    name=OUTBOX_CONSUMER_TASK,
+    acks_late=True,
+    reject_on_worker_lost=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    max_retries=5,
+)
 def consume_outbox_event(event_id: str, **_options: Any) -> None:
-    """Dispatch target placeholder for T6.3 notification consumers.
+    """Generate idempotent notification records for one published event (T6.3)."""
+    try:
+        event = OutboxEvent.objects.get(pk=event_id)
+    except OutboxEvent.DoesNotExist:
+        logger.warning("notifications.outbox_missing", event_id=event_id)
+        return
 
-    The relay's delivery contract ends at publishing this durable event to Celery. T6.3 will
-    replace this handler with idempotent in-app/email/SMS generation keyed by ``event_id``.
-    """
-    logger.info("notifications.outbox_consumed", event_id=event_id)
+    created = generate_status_change_notifications(event)
+    logger.info("notifications.outbox_consumed", event_id=event_id, notifications_created=created)
 
 
 @shared_task(name=OUTBOX_RELAY_TASK)
