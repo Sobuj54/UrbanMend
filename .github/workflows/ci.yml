@@ -271,7 +271,7 @@ jobs:
       # block every merge until an upstream Debian fix lands, and a permanently red gate stops
       # being read. Unfixed findings still appear in the SARIF upload below.
       - name: Trivy scan (fail on CRITICAL/HIGH)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: urbenmend:${{ github.sha }}
           format: table
