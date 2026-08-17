@@ -24,6 +24,7 @@ from urbenmend.identity.services import (
 )
 from urbenmend.issues.models import Confirmation, Issue, IssueStatus, StatusEvent
 from urbenmend.issues.selectors import active_clustering_rule, matching_open_issues
+from urbenmend.notifications.services import record_issue_status_changed
 from urbenmend.reporting.models import SEVERITY_RANK, Report, ReportStatus, SeveritySignal
 
 if TYPE_CHECKING:
@@ -375,7 +376,7 @@ def merge_issues(
     absorbed.status = IssueStatus.DUPLICATE
     absorbed.duplicate_of = survivor
     absorbed.save(update_fields=["status", "duplicate_of", "updated_at"])
-    StatusEvent.objects.create(
+    event = StatusEvent.objects.create(
         issue=absorbed,
         from_status=from_status,
         to_status=IssueStatus.DUPLICATE,
@@ -383,6 +384,7 @@ def merge_issues(
         reason=normalized_reason,
         related_issue=survivor,
     )
+    record_issue_status_changed(event)
     logger.info(
         "issue.merged",
         survivor_issue_id=str(survivor.pk),
@@ -530,7 +532,7 @@ def transition_issue_status(
         issue.status = IssueStatus.DUPLICATE
         issue.duplicate_of = surviving
         issue.save(update_fields=["status", "duplicate_of", "updated_at"])
-        StatusEvent.objects.create(
+        event = StatusEvent.objects.create(
             issue=issue,
             from_status=plan.from_status,
             to_status=plan.to_status,
@@ -539,6 +541,7 @@ def transition_issue_status(
             public_note=normalized_public_note,
             related_issue=surviving,
         )
+        record_issue_status_changed(event)
         return _status_result(issue)
 
     if duplicate_of_issue_id is not None:
@@ -557,7 +560,7 @@ def transition_issue_status(
             status=IssueStatus.TRIAGED,
             reopened_from=issue,
         )
-        StatusEvent.objects.create(
+        event = StatusEvent.objects.create(
             issue=issue,
             from_status=plan.from_status,
             to_status=REOPEN_ACTION,
@@ -566,12 +569,13 @@ def transition_issue_status(
             public_note=normalized_public_note,
             related_issue=reopened,
         )
+        record_issue_status_changed(event)
         return _status_result(reopened)
 
     issue.status = plan.to_status
     issue.duplicate_of = None
     issue.save(update_fields=["status", "duplicate_of", "updated_at"])
-    StatusEvent.objects.create(
+    event = StatusEvent.objects.create(
         issue=issue,
         from_status=plan.from_status,
         to_status=plan.to_status,
@@ -579,6 +583,7 @@ def transition_issue_status(
         reason=plan.reason or "",
         public_note=normalized_public_note,
     )
+    record_issue_status_changed(event)
     return _status_result(issue)
 
 

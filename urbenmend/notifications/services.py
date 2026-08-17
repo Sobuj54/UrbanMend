@@ -1,19 +1,39 @@
-"""
-Notifications — write operations.
+"""Notification and transactional-outbox write operations."""
 
-Every state change and every authorization check for this module lives here. This file
-exists from day one even while empty: R-12 is the risk that "service-layer discipline
-erodes under Django's idiom, scattering authorization into views/serializers", and the
-named mitigation is that the convention is already in place, so putting a rule in a view
-is never the path of least resistance.
+from __future__ import annotations
 
-Rules for this file [doc: Arch §3.1, FR-3]:
-  - Callers pass the acting user; functions authorize before mutating. DRF permission
-    classes are defence-in-depth, never the enforcement point.
-  - Wrap multi-write operations in `transaction.atomic`.
-  - Enqueue Celery tasks via `transaction.on_commit` so a worker cannot observe an
-    uncommitted row [doc: Arch §2.4, §4.1].
-  - Reads belong in selectors.py.
+from typing import TYPE_CHECKING, Any
 
-[doc: Arch §3 (FR-27, FR-28, FR-29)]
-"""
+from django.db import connection
+
+from urbenmend.notifications.models import OutboxEvent
+
+if TYPE_CHECKING:
+    from urbenmend.issues.models import StatusEvent
+
+ISSUE_STATUS_CHANGED = "issue.status_changed"
+ISSUE_STATUS_CHANGED_SCHEMA_VERSION = 1
+
+
+def record_issue_status_changed(event: StatusEvent) -> OutboxEvent:
+    """Record a status-change snapshot inside the caller's domain transaction."""
+    if not connection.in_atomic_block:
+        raise RuntimeError("Outbox events must be recorded inside a database transaction.")
+
+    payload: dict[str, Any] = {
+        "schemaVersion": ISSUE_STATUS_CHANGED_SCHEMA_VERSION,
+        "statusEventId": str(event.pk),
+        "issueId": str(event.issue_id),
+        "fromStatus": event.from_status,
+        "toStatus": event.to_status,
+        "actorId": str(event.actor_id),
+        "reason": event.reason,
+        "publicNote": event.public_note,
+        "relatedIssueId": None if event.related_issue_id is None else str(event.related_issue_id),
+    }
+    return OutboxEvent.objects.create(
+        event_type=ISSUE_STATUS_CHANGED,
+        aggregate_type="issue",
+        aggregate_id=event.issue_id,
+        payload=payload,
+    )
