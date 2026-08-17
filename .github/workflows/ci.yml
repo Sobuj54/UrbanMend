@@ -158,8 +158,11 @@ jobs:
 
       - name: pytest (no external deps)
         run: |
-          docker run --rm -v "$PWD:/app" -w /app urbenmend:ci \
-            pytest -m "not django_db" --durations=10
+          docker run --rm -v "$PWD:/app" -w /app \
+            -e UNIT_TEST_NO_EXTERNALS=1 \
+            -e MYPY_CACHE_DIR=/tmp/mypy-cache \
+            urbenmend:ci \
+            pytest -p no:cacheprovider -m "not django_db" --durations=10
 
   # ====================================================================================
   # Stage 5 — integration tests
@@ -213,7 +216,7 @@ jobs:
             -e DATABASE_URL="postgis://ci:ci@127.0.0.1:5432/urbenmend" \
             -e REDIS_URL="redis://127.0.0.1:6379/0" \
             -e CELERY_BROKER_URL="redis://127.0.0.1:6379/1" \
-            urbenmend:ci pytest --durations=10
+            urbenmend:ci pytest -p no:cacheprovider --durations=10
 
       # Migrations must apply cleanly from zero, and back down again [doc: testing.md].
       # This is separate from the pytest run above: pytest builds the test database with

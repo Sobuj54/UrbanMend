@@ -11,11 +11,14 @@ loudly. The remaining tests check properties the list itself cannot express.
 
 from __future__ import annotations
 
+import pytest
 from django.db import IntegrityError
 from django.db.models import F
 from django.test import TestCase
 
 from urbenmend.classification.models import Category, CategoryStatus
+
+pytestmark = pytest.mark.django_db
 
 # The 7 nodes confirmed as Q1's answer (PRD §6.2). English names are the canonical identifiers;
 # Bangla labels are display data (NFR-8) and are checked for presence, not for content — this

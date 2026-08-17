@@ -13,6 +13,7 @@ the kind of rule that holds until someone adds a throttled endpoint and does not
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -67,6 +68,22 @@ def _reset_throttle_cache() -> Iterator[None]:
     source of truth and a cleared cache is re-read from it, not lost. It would NOT be safe under a
     pure `cache` session backend; if that ever changes, this fixture must clear only throttle keys.
     """
+    if os.environ.get("UNIT_TEST_NO_EXTERNALS") == "1":
+        # The unit CI job deliberately has no Redis service. Keep its cache-dependent tests
+        # deterministic without weakening integration tests, which run with real Redis.
+        with override_settings(
+            CACHES={
+                "default": {
+                    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                    "LOCATION": "urbanmend-unit-cache",
+                }
+            }
+        ):
+            cache.clear()
+            yield
+            cache.clear()
+        return
+
     cache.clear()
     yield
     cache.clear()
