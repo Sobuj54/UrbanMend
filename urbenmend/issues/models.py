@@ -310,3 +310,29 @@ class Confirmation(models.Model):
 
     def __str__(self) -> str:
         return f"{self.citizen} confirmed {self.issue}"
+
+
+class CommentVisibility(models.TextChoices):
+    PUBLIC = "public", _("Public")
+    INTERNAL = "internal", _("Internal")
+
+
+class Comment(models.Model):
+    """Issue discussion visible publicly or to the authority team only (T5.8)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    issue = models.ForeignKey(Issue, on_delete=models.PROTECT, related_name="comments")
+    author = models.ForeignKey("identity.User", on_delete=models.PROTECT, related_name="issue_comments")
+    body = models.TextField()
+    visibility = models.CharField(max_length=16, choices=CommentVisibility.choices, default=CommentVisibility.PUBLIC)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    removed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "issues_comment"
+        ordering = ["created_at", "id"]
+        indexes = [models.Index(fields=["issue", "created_at"], name="issues_comment_issue_created")]
+
+    def __str__(self) -> str:
+        return f"Comment {self.pk} on {self.issue_id}"

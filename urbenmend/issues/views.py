@@ -2,6 +2,7 @@
 
 from typing import cast
 
+from django.http import Http404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -9,10 +10,15 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from urbenmend.identity.models import User
+from urbenmend.identity.models import Role, User
+from urbenmend.identity.services import AuthorizationError, has_category_scope
 from urbenmend.issues import selectors, services
+from urbenmend.issues.models import Issue, IssueStatus
 from urbenmend.issues.pagination import SORT_DEFAULT, IssueCursorPagination
 from urbenmend.issues.serializers import (
+    CommentCreateSerializer,
+    CommentSerializer,
+    CommentUpdateSerializer,
     ConfirmationCreateSerializer,
     ConfirmationResponseSerializer,
     IssueAssignmentResponseSerializer,
@@ -126,6 +132,46 @@ class IssueCollectionView(APIView):
         # different ages — which an `?sort=age` page would render as non-monotonic.
         serializer = IssueQueueItemSerializer(rows, many=True, context={"now": timezone.now()})
         return paginator.get_paginated_response(serializer.data)
+
+
+class IssueCommentsView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request: Request, issue_id: str) -> Response:
+        issue = Issue.objects.filter(pk=issue_id).exclude(status__in={IssueStatus.HIDDEN, IssueStatus.REMOVED}).first()
+        if issue is None:
+            raise Http404("Issue not found.")
+        if isinstance(request.user, User) and request.user.role == Role.AUTHORITY and not has_category_scope(request.user, issue.primary_category):
+            raise AuthorizationError("You do not have permission to view this issue.")
+        queryset = issue.comments.filter(removed_at__isnull=True)
+        if not isinstance(request.user, User) or request.user.role not in {Role.AUTHORITY, Role.ADMIN}:
+            queryset = queryset.filter(visibility="public")
+        return Response({"data": CommentSerializer(queryset, many=True).data, "page": {}, "meta": {"count": queryset.count()}})
+
+    def post(self, request: Request, issue_id: str) -> Response:
+        serializer = CommentCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        if not isinstance(request.user, User):
+            raise AuthorizationError("Authentication required.")
+        comment = services.create_comment(actor=request.user, issue_id=issue_id, body=data["body"], visibility=data["visibility"])
+        return Response(CommentSerializer(comment).data, status=status.HTTP_201_CREATED)
+
+
+class IssueCommentDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request: Request, issue_id: str, comment_id: str) -> Response:
+        serializer = CommentUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        comment = services.update_comment(actor=cast("User", request.user), comment_id=comment_id, body=serializer.validated_data["body"])
+        if str(comment.issue_id) != issue_id:
+            raise Http404("Comment not found.")
+        return Response(CommentSerializer(comment).data)
+
+    def delete(self, request: Request, issue_id: str, comment_id: str) -> Response:
+        services.delete_comment(actor=cast("User", request.user), comment_id=comment_id)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class IssueStatusView(APIView):

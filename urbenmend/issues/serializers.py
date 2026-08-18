@@ -16,7 +16,7 @@ from urbenmend.api.serializers import (
 from urbenmend.classification.models import Category
 from urbenmend.geo.models import POI
 from urbenmend.geo.selectors import nearby_pois
-from urbenmend.issues.models import Issue, IssueStatus
+from urbenmend.issues.models import Comment, CommentVisibility, Issue, IssueStatus
 from urbenmend.issues.pagination import SORT_CHOICES
 from urbenmend.issues.selectors import MODERATED_ISSUE_STATUSES, PROXIMITY_ATTR
 from urbenmend.issues.services import REOPEN_ACTION
@@ -163,6 +163,35 @@ class ConfirmationResponseSerializer(CamelCaseSerializer):
 
     issue_id = serializers.UUIDField()
     corroboration_count = serializers.IntegerField(min_value=0)
+
+
+class CommentSerializer(CamelCaseSerializer):
+    author_id = serializers.UUIDField(source="author_id", read_only=True)
+    visibility = serializers.ChoiceField(choices=CommentVisibility.choices)
+    body = serializers.CharField()
+    created_at = serializers.DateTimeField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+
+    class Meta:
+        model = Comment
+        fields = ["id", "author_id", "body", "visibility", "created_at", "updated_at"]
+
+
+class CommentCreateSerializer(CamelCaseSerializer):
+    body = serializers.CharField()
+    visibility = serializers.ChoiceField(choices=CommentVisibility.choices, default=CommentVisibility.PUBLIC)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self)
+        return attrs
+
+
+class CommentUpdateSerializer(CamelCaseSerializer):
+    body = serializers.CharField()
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self)
+        return attrs
 
 
 def _poi_context(poi: POI) -> dict[str, Any]:

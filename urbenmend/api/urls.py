@@ -131,6 +131,8 @@ urlpatterns = [
         issue_views.IssueConfirmationDeleteView.as_view(),
         name="issues-confirmations-me",
     ),
+    path("issues/<uuid:issue_id>/comments", issue_views.IssueCommentsView.as_view(), name="issues-comments"),
+    path("issues/<uuid:issue_id>/comments/<uuid:comment_id>", issue_views.IssueCommentDetailView.as_view(), name="issues-comment-detail"),
     # API §6.4 — media. T2.4 adds upload + read + moderation-remove; T2.5 is the worker that
     # builds the derivatives, so a fresh upload answers `state: "processing"` and a null
     # `thumbnailUrl` until it runs.

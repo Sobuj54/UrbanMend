@@ -22,7 +22,14 @@ from urbenmend.identity.services import (
     require_category_scope,
     require_role,
 )
-from urbenmend.issues.models import Confirmation, Issue, IssueStatus, StatusEvent
+from urbenmend.issues.models import (
+    Comment,
+    CommentVisibility,
+    Confirmation,
+    Issue,
+    IssueStatus,
+    StatusEvent,
+)
 from urbenmend.issues.selectors import active_clustering_rule, matching_open_issues
 from urbenmend.notifications.services import record_issue_status_changed
 from urbenmend.reporting.models import SEVERITY_RANK, Report, ReportStatus, SeveritySignal
@@ -78,6 +85,47 @@ REASON_REQUIRED_TRANSITIONS = frozenset(
         REOPEN_ACTION,
     }
 )
+
+
+def create_comment(*, actor: User, issue_id: UUID | str, body: str, visibility: str) -> Comment:
+    issue = Issue.objects.select_related("primary_category").filter(pk=issue_id).first()
+    if issue is None:
+        raise Http404("Issue not found.")
+    text = body.strip()
+    if not text:
+        raise ValidationError("Comment body cannot be blank.")
+    if visibility == CommentVisibility.INTERNAL:
+        require_role(actor, Role.AUTHORITY, Role.ADMIN)
+        require_category_scope(actor, issue.primary_category)
+    elif visibility != CommentVisibility.PUBLIC:
+        raise ValidationError("Invalid comment visibility.")
+    return Comment.objects.create(issue=issue, author=actor, body=text, visibility=visibility)
+
+
+def update_comment(*, actor: User, comment_id: UUID | str, body: str) -> Comment:
+    try:
+        comment = Comment.objects.select_related("issue").get(pk=comment_id, removed_at__isnull=True)
+    except Comment.DoesNotExist as exc:
+        raise Http404("Comment not found.") from exc
+    if actor.pk != comment.author_id and actor.role != Role.ADMIN:
+        raise AuthorizationError("You may edit only your own comment.")
+    text = body.strip()
+    if not text:
+        raise ValidationError("Comment body cannot be blank.")
+    comment.body = text
+    comment.save(update_fields=["body", "updated_at"])
+    return comment
+
+
+def delete_comment(*, actor: User, comment_id: UUID | str) -> None:
+    try:
+        comment = Comment.objects.get(pk=comment_id, removed_at__isnull=True)
+    except Comment.DoesNotExist as exc:
+        raise Http404("Comment not found.") from exc
+    if actor.pk != comment.author_id and actor.role != Role.ADMIN:
+        raise AuthorizationError("You may delete only your own comment.")
+    comment.removed_at = timezone.now()
+    comment.save(update_fields=["removed_at", "updated_at"])
 
 
 @dataclass(frozen=True)
