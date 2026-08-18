@@ -10,7 +10,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from urbenmend.export import selectors, services
-from urbenmend.export.serializers import ExportCreateSerializer, ExportSerializer
+from urbenmend.export.serializers import (
+    ExportCreateSerializer,
+    ExportSerializer,
+    ExportStatusSerializer,
+)
 from urbenmend.identity.models import User
 from urbenmend.identity.services import AuthorizationError
 
@@ -41,4 +45,4 @@ class ExportDetailView(APIView):
         export = selectors.visible_export(actor=cast("User", request.user), export_id=export_id)
         if export is None:
             raise Http404("Export not found.")
-        return Response(ExportSerializer(export).data)
+        return Response(ExportStatusSerializer(export).data)

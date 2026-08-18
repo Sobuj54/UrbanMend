@@ -66,6 +66,38 @@ def test_export_polling_is_creator_only(client: Client) -> None:
     )
 
 
+def test_ready_export_polling_returns_short_lived_signed_link(client: Client) -> None:
+    owner = AuthorityFactory.create()
+    export = Export.objects.create(
+        requester=owner,
+        resource="issues",
+        format="geojson",
+        state=ExportState.READY,
+        object_key="exports/result.geojson",
+    )
+    client.force_login(owner)
+    with patch(
+        "urbenmend.export.serializers.default_storage.url",
+        return_value="https://storage.test/signed?X-Amz-Expires=3600",
+    ):
+        response = client.get(reverse("api:exports-detail", kwargs={"export_id": export.pk}))
+
+    payload = response.json()
+    assert payload["state"] == "ready"
+    assert payload["downloadUrl"].startswith("https://storage.test/signed")
+    assert payload["expiresAt"]
+
+
+def test_processing_export_has_no_download_link(client: Client) -> None:
+    owner = AuthorityFactory.create()
+    export = Export.objects.create(requester=owner, resource="issues", format="csv")
+    client.force_login(owner)
+
+    response = client.get(reverse("api:exports-detail", kwargs={"export_id": export.pk}))
+
+    assert response.json() == {"state": "processing", "downloadUrl": None, "expiresAt": None}
+
+
 def test_worker_generates_scoped_issue_csv() -> None:
     authority = AuthorityFactory.create()
     authority.category_scope.add(Category.objects.get(slug="roads"))
