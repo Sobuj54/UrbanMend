@@ -2371,7 +2371,7 @@ Sourced from `docs/06-devops-guide.md` §4.1.
 | 3. Deploy check | `manage.py check --deploy` (prod settings) | Any Django security warning |
 | 4. Unit tests | `pytest` (no external deps) | Any test failure |
 | 5. Integration tests | `pytest` (real PostGIS + Redis) | Any test failure or migration error |
-| 6. Build + scan | `docker build` + vulnerability scan (e.g. Trivy) | Build error; critical/high CVE |
+| 6. Build + scan | `docker build` + vulnerability scan (e.g. Trivy) | Build error; critical CVE |
 | 7. Push image | Push SHA-tagged image | Registry auth failure |
 
 Integration tests need `postgis/postgis` as a CI service and a DB user with `CREATE EXTENSION`

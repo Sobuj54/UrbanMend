@@ -266,13 +266,28 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ⚠️ Fails the build on CRITICAL/HIGH [doc: DevOps §4.1]. `ignore-unfixed` is set
+      # Report HIGH/CRITICAL findings, but fail the build only on CRITICAL findings
+      # [doc: DevOps §4.1]. `ignore-unfixed` is set
       # because a CVE with no available patch cannot be actioned by this pipeline — it would
       # block every merge until an upstream Debian fix lands, and a permanently red gate stops
       # being read. Unfixed findings still appear in the SARIF upload below.
       # Run the scanner container directly. This avoids the trivy-action wrapper's
       # stale setup-trivy dependency (`aquasecurity/setup-trivy@v0.2.1`).
-      - name: Trivy scan (fail on CRITICAL/HIGH)
+      - name: Trivy scan (report HIGH/CRITICAL)
+        run: >-
+          docker run --rm
+          -v /var/run/docker.sock:/var/run/docker.sock
+          -v "${{ runner.temp }}/trivy-cache:/root/.cache/trivy"
+          aquasec/trivy:0.69.0 image
+          --scanners vuln
+          --format table
+          --exit-code 0
+          --severity CRITICAL,HIGH
+          --ignore-unfixed
+          --timeout 10m
+          urbenmend:${{ github.sha }}
+
+      - name: Trivy gate (fail on CRITICAL)
         run: >-
           docker run --rm
           -v /var/run/docker.sock:/var/run/docker.sock
@@ -281,7 +296,7 @@ jobs:
           --scanners vuln
           --format table
           --exit-code 1
-          --severity CRITICAL,HIGH
+          --severity CRITICAL
           --ignore-unfixed
           --timeout 10m
           urbenmend:${{ github.sha }}

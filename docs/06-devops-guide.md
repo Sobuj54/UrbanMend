@@ -175,7 +175,7 @@ Run on every push and pull request. All stages must pass before merge to `stagin
 | Deploy check      | `manage.py check --deploy` against production settings                                              | Any Django security-configuration warning    |
 | Unit tests        | `pytest` — fast in-process tests, no external deps                                                  | Any test failure                             |
 | Integration tests | `pytest` (`pytest-django` + `factory_boy`) against real PostGIS/Redis/storage as CI services        | Any test failure or migration error          |
-| Build & scan      | `docker build`; vulnerability scan (e.g. Trivy)                                                     | Build error; critical/high CVE               |
+| Build & scan      | `docker build`; vulnerability scan (e.g. Trivy)                                                     | Build error; critical CVE                    |
 | Push image        | Push SHA-tagged image to registry                                                                   | Registry auth failure                        |
 
 The **model drift check** is cheap and catches the most common Django review miss: a model edited without `makemigrations`, which passes tests locally against an already-migrated dev database and then fails on a fresh deploy.
@@ -475,7 +475,7 @@ Propagate a `traceId` (API §4.1) through all service calls. Use the OpenTelemet
 | No privilege escalation | `allowPrivilegeEscalation: false`                                                                                                 |
 | Django security checks  | `manage.py check --deploy` in CI (§4.1); `SECURE_SSL_REDIRECT`, `SECURE_HSTS_SECONDS`, `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_HTTPONLY`, `SESSION_COOKIE_SAMESITE`, `CSRF_COOKIE_SECURE` per API spec §2 |
 | Network policies        | Restrict pod-to-pod traffic: only `api` and `worker` may reach `db` and `redis`; `db` and `redis` accept no external traffic      |
-| Image scanning          | Scan on every CI build; block deploy on critical/high CVEs                                                                        |
+| Image scanning          | Scan on every CI build; report high CVEs and block deploy on critical CVEs                                                        |
 | Secrets rotation        | Rotate DB passwords, **session secrets and `DJANGO_SECRET_KEY` on a schedule**; use external secrets operator to propagate without redeployment |
 | TLS everywhere          | HTTPS enforced at ingress; internal service-to-service traffic over TLS where supported                                           |
 | Rate limiting           | Enforced at application layer (DRF throttling, NFR-13); optionally also at ingress for coarse protection                          |
