@@ -524,3 +524,33 @@ class IssueMapQuerySerializer(CamelCaseSerializer):
             message="This query parameter is not accepted by this endpoint.",
         )
         return attrs
+
+
+class AnalyticsSummaryQuerySerializer(CamelCaseSerializer):
+    """Query parameters for the Authority/Admin analytics summary (API section 6.9)."""
+
+    from_date = serializers.DateTimeField(required=False)
+    to_date = serializers.DateTimeField(required=False)
+    group_by = serializers.ChoiceField(
+        choices=["category", "severity", "status", "area"], default="category"
+    )
+    category = serializers.CharField(required=False)
+    bbox = serializers.CharField(required=False)
+
+    validate_category = IssueListQuerySerializer.validate_category
+    validate_bbox = IssueListQuerySerializer.validate_bbox
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(
+            self,
+            message="This query parameter is not accepted by this endpoint.",
+        )
+        if (
+            attrs.get("from_date")
+            and attrs.get("to_date")
+            and attrs["from_date"] > attrs["to_date"]
+        ):
+            raise serializers.ValidationError(
+                {"from_date": "from must be earlier than to."}, code="INVALID"
+            )
+        return attrs

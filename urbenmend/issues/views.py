@@ -1,6 +1,7 @@
 """Thin HTTP endpoints for Issue reads, triage mutations and confirmations."""
 
-from collections import defaultdict
+from collections import Counter, defaultdict
+from datetime import datetime
 from typing import Protocol, cast
 
 from django.db.models import QuerySet
@@ -18,6 +19,7 @@ from urbenmend.issues import selectors, services
 from urbenmend.issues.models import Issue, IssueStatus
 from urbenmend.issues.pagination import SORT_DEFAULT, IssueCursorPagination
 from urbenmend.issues.serializers import (
+    AnalyticsSummaryQuerySerializer,
     CommentCreateSerializer,
     CommentSerializer,
     CommentUpdateSerializer,
@@ -280,6 +282,79 @@ class IssueMapView(APIView):
             for issue in rows
         ]
         return Response({"type": "FeatureCollection", "features": features})
+
+
+class AnalyticsSummaryView(APIView):
+    """`GET /analytics/summary` for scoped operational aggregates (API section 6.9)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        if not isinstance(request.user, User) or request.user.role not in {
+            Role.AUTHORITY,
+            Role.ADMIN,
+        }:
+            raise AuthorizationError("Authority or Admin role required.")
+        params = AnalyticsSummaryQuerySerializer(data=request.query_params)
+        params.is_valid(raise_exception=True)
+        filters = params.validated_data
+        queryset = selectors.list_issues(
+            actor=request.user,
+            category_slugs=filters.get("category", ()),
+            bbox=filters.get("bbox"),
+        )
+        from_date: datetime | None = filters.get("from_date")
+        to_date: datetime | None = filters.get("to_date")
+        if from_date is not None:
+            queryset = queryset.filter(opened_at__gte=from_date)
+        if to_date is not None:
+            queryset = queryset.filter(opened_at__lte=to_date)
+        rows = list(queryset)
+        group_by = filters["group_by"]
+        keys = []
+        for issue in rows:
+            if group_by == "category":
+                keys.append(issue.primary_category.slug)
+            elif group_by == "severity":
+                keys.append(issue.current_severity)
+            elif group_by == "status":
+                keys.append(issue.status)
+            else:
+                keys.append("all")
+        groups = [{"key": key, "count": count} for key, count in sorted(Counter(keys).items())]
+        resolved = [
+            issue for issue in rows if issue.status in {IssueStatus.RESOLVED, IssueStatus.CLOSED}
+        ]
+        durations = [
+            (issue.updated_at - issue.opened_at).total_seconds()
+            for issue in resolved
+            if issue.updated_at >= issue.opened_at
+        ]
+        durations.sort()
+        median = None
+        if durations:
+            middle = len(durations) // 2
+            median = (
+                durations[middle]
+                if len(durations) % 2
+                else (durations[middle - 1] + durations[middle]) / 2
+            )
+        return Response(
+            {
+                "groupBy": group_by,
+                "groups": groups,
+                "metrics": {
+                    "total": len(rows),
+                    "open": sum(
+                        issue.status not in {IssueStatus.RESOLVED, IssueStatus.CLOSED}
+                        for issue in rows
+                    ),
+                    "resolved": len(resolved),
+                    "medianTimeToResolutionSeconds": median,
+                },
+                "trend": {"open": len(rows) - len(resolved), "resolved": len(resolved)},
+            }
+        )
 
 
 def _clustered_issue_features(
