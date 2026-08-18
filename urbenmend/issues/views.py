@@ -1,7 +1,9 @@
-"""Thin HTTP endpoints for the Issue work queue, triage mutations and confirmations (T4.7-T7.2)."""
+"""Thin HTTP endpoints for Issue reads, triage mutations and confirmations."""
 
-from typing import cast
+from collections import defaultdict
+from typing import Protocol, cast
 
+from django.db.models import QuerySet
 from django.http import Http404
 from django.utils import timezone
 from rest_framework import status
@@ -24,6 +26,7 @@ from urbenmend.issues.serializers import (
     IssueAssignmentResponseSerializer,
     IssueAssignmentSerializer,
     IssueListQuerySerializer,
+    IssueMapQuerySerializer,
     IssueMergeResponseSerializer,
     IssueMergeSerializer,
     IssueQueueItemSerializer,
@@ -36,6 +39,10 @@ from urbenmend.issues.serializers import (
 )
 from urbenmend.reporting.pagination import ReportCursorPagination
 from urbenmend.reporting.serializers import ReportDetailSerializer
+
+
+class _QueueAnnotatedIssue(Protocol):
+    corroboration_total: int
 
 
 class IssueCollectionView(APIView):
@@ -228,6 +235,98 @@ class IssueReportsView(APIView):
         paginator = ReportCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
         return paginator.get_paginated_response(ReportDetailSerializer(page or [], many=True).data)
+
+
+class IssueMapView(APIView):
+    """`GET /map/issues` as individual or low-zoom clustered GeoJSON features."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request: Request) -> Response:
+        params = IssueMapQuerySerializer(data=request.query_params)
+        params.is_valid(raise_exception=True)
+        filters = params.validated_data
+        bbox = filters["bbox"]
+        queryset = selectors.list_issues(
+            actor=request.user,
+            category_slugs=filters.get("category", ()),
+            severities=filters.get("severity", ()),
+            statuses=filters.get("status", ()),
+            bbox=bbox,
+        )
+        zoom = filters["zoom"]
+        if zoom < 12:
+            return Response(_clustered_issue_features(queryset, bbox.extent, zoom))
+
+        rows = list(queryset[:1000])
+        features = [
+            {
+                "type": "Feature",
+                "id": str(issue.pk),
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [
+                        issue.representative_location.x,
+                        issue.representative_location.y,
+                    ],
+                },
+                "properties": {
+                    "severity": issue.current_severity,
+                    "status": issue.status,
+                    "corroborationCount": _corroboration_total(issue),
+                    "count": 1,
+                },
+            }
+            for issue in rows
+        ]
+        return Response({"type": "FeatureCollection", "features": features})
+
+
+def _clustered_issue_features(
+    queryset: QuerySet[Issue], extent: tuple[float, float, float, float], zoom: int
+) -> dict[str, object]:
+    """Aggregate a bounded grid over the requested bbox; at most 16 x 16 features leave the API."""
+    min_lng, min_lat, max_lng, max_lat = extent
+    grid_size = min(16, max(4, 2 ** max(0, zoom - 4)))
+    cell_width = (max_lng - min_lng) / grid_size
+    cell_height = (max_lat - min_lat) / grid_size
+    cells: dict[tuple[int, int], dict[str, float | int]] = defaultdict(
+        lambda: {"count": 0, "lngTotal": 0.0, "latTotal": 0.0, "corroborationCount": 0}
+    )
+
+    for issue in queryset:
+        location = issue.representative_location
+        x = min(grid_size - 1, int((location.x - min_lng) / cell_width))
+        y = min(grid_size - 1, int((location.y - min_lat) / cell_height))
+        cell = cells[(x, y)]
+        cell["count"] += 1
+        cell["lngTotal"] += location.x
+        cell["latTotal"] += location.y
+        cell["corroborationCount"] += _corroboration_total(issue)
+
+    features = []
+    for (x, y), cell in sorted(cells.items()):
+        count = int(cell["count"])
+        features.append(
+            {
+                "type": "Feature",
+                "id": f"cluster-{zoom}-{x}-{y}",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [cell["lngTotal"] / count, cell["latTotal"] / count],
+                },
+                "properties": {
+                    "count": count,
+                    "corroborationCount": int(cell["corroborationCount"]),
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _corroboration_total(issue: Issue) -> int:
+    """Read the SQL annotation guaranteed by `selectors.list_issues()`."""
+    return cast("_QueueAnnotatedIssue", issue).corroboration_total
 
 
 class IssueStatusView(APIView):

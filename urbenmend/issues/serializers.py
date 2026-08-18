@@ -502,3 +502,25 @@ class IssueListQuerySerializer(CamelCaseSerializer):
         if data.get("near_lng") is None:
             return None
         return LocationSerializer.to_point({"lng": data["near_lng"], "lat": data["near_lat"]})
+
+
+class IssueMapQuerySerializer(CamelCaseSerializer):
+    """Validated query contract for the public GeoJSON issue map (API section 6.9)."""
+
+    category = serializers.CharField(required=False)
+    severity = serializers.CharField(required=False)
+    status = serializers.CharField(required=False)
+    bbox = serializers.CharField(required=True)
+    zoom = serializers.IntegerField(required=False, default=12, min_value=0, max_value=22)
+
+    validate_category = IssueListQuerySerializer.validate_category
+    validate_severity = IssueListQuerySerializer.validate_severity
+    validate_status = IssueListQuerySerializer.validate_status
+    validate_bbox = IssueListQuerySerializer.validate_bbox
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(
+            self,
+            message="This query parameter is not accepted by this endpoint.",
+        )
+        return attrs

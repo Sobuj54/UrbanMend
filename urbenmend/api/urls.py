@@ -147,6 +147,7 @@ urlpatterns = [
         issue_views.IssueReportsView.as_view(),
         name="issues-reports",
     ),
+    path("map/issues", issue_views.IssueMapView.as_view(), name="map-issues"),
     # API §6.4 — media. T2.4 adds upload + read + moderation-remove; T2.5 is the worker that
     # builds the derivatives, so a fresh upload answers `state: "processing"` and a null
     # `thumbnailUrl` until it runs.
