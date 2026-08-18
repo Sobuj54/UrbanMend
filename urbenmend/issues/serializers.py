@@ -179,7 +179,9 @@ class CommentSerializer(CamelCaseSerializer):
 
 class CommentCreateSerializer(CamelCaseSerializer):
     body = serializers.CharField()
-    visibility = serializers.ChoiceField(choices=CommentVisibility.choices, default=CommentVisibility.PUBLIC)
+    visibility = serializers.ChoiceField(
+        choices=CommentVisibility.choices, default=CommentVisibility.PUBLIC
+    )
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         reject_unknown_fields(self)

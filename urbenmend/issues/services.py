@@ -104,7 +104,9 @@ def create_comment(*, actor: User, issue_id: UUID | str, body: str, visibility: 
 
 def update_comment(*, actor: User, comment_id: UUID | str, body: str) -> Comment:
     try:
-        comment = Comment.objects.select_related("issue").get(pk=comment_id, removed_at__isnull=True)
+        comment = Comment.objects.select_related("issue").get(
+            pk=comment_id, removed_at__isnull=True
+        )
     except Comment.DoesNotExist as exc:
         raise Http404("Comment not found.") from exc
     if actor.pk != comment.author_id and actor.role != Role.ADMIN:
