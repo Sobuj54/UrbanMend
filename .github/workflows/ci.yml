@@ -276,11 +276,14 @@ jobs:
         run: >-
           docker run --rm
           -v /var/run/docker.sock:/var/run/docker.sock
-          aquasec/trivy:0.56.2 image
+          -v "${{ runner.temp }}/trivy-cache:/root/.cache/trivy"
+          aquasec/trivy:0.69.0 image
+          --scanners vuln
           --format table
           --exit-code 1
           --severity CRITICAL,HIGH
           --ignore-unfixed
+          --timeout 10m
           urbenmend:${{ github.sha }}
 
   # ====================================================================================
