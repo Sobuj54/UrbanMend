@@ -294,17 +294,38 @@ MEDIA_IMAGE_QUALITY = env.int("MEDIA_IMAGE_QUALITY", default=82)
 MEDIA_MAX_PER_REPORT = env.int("MEDIA_MAX_PER_REPORT", default=5)
 
 # --------------------------------------------------------------------------------------
-# Report search limits (T2.7, API §6.3)
+# Collection search limits (T2.7 API §6.3, T7.1 API §6.5)
 # --------------------------------------------------------------------------------------
-# ⚠️ **Our policy, not spec-derived.** §6.3 documents `?nearLng=&nearLat=&radiusM=` without bounding
-# the radius. This is a defensible default kept in config (NFR-11), like the media limits above.
+# ⚠️ **Our policy, not spec-derived.** §6.3 and §6.5 both document `?nearLng=&nearLat=&radiusM=`
+# without bounding the radius. This is a defensible default kept in config (NFR-11), like the media
+# limits above.
 #
 # ⚠️ **Uncapped, `radiusM` is a free full-table spatial scan on a public-shaped read.** A radius
 # larger than the planet makes `ST_DWithin` match every row, so the GiST index (T2.1) stops helping
 # and the sort runs over the whole table on every request. 50 km bounds a search to "the whole
 # city with room to spare" — Dhaka's metropolitan area is roughly 30 km across, and UrbanMend serves
 # one city (PRD §11), so a larger value cannot express a question about *this* deployment.
+#
+# ⚠️ **The name reads narrower than the setting is: it bounds `?radiusM=` on *every* collection**,
+# `/issues` included (T7.1). One number rather than a per-resource pair, deliberately — two would let
+# the Issue and Report searches drift apart, and there is no reason a citizen may sweep a wider
+# radius over one collection than the other. Renaming it is a three-deploy env-var change for no
+# behavioural gain, so the comment carries the breadth instead.
 REPORT_SEARCH_MAX_RADIUS_M = env.int("REPORT_SEARCH_MAX_RADIUS_M", default=50_000)
+
+# --------------------------------------------------------------------------------------
+# Issue proximity context (T7.1, FR-17, C-10)
+# --------------------------------------------------------------------------------------
+# ⚠️ **Our numbers, not spec-derived.** FR-17 asks for nearby-POI context and §6.5's example shows a
+# single hospital 120 m away; neither fixes a radius or a count. Kept in config (NFR-11).
+#
+# ⚠️ **These are presentation limits and must never become policy.** C-10 makes proximity
+# display-only: it may not affect severity, clustering or queue ordering, so widening the radius can
+# only ever add context to a row, never move it. 500 m is walking distance — "the school is right
+# there" — and beyond it "nearby" stops being a claim an operator can act on. Three entries is what a
+# queue row can show without the POI list becoming the row.
+ISSUE_PROXIMITY_RADIUS_M = env.int("ISSUE_PROXIMITY_RADIUS_M", default=500)
+ISSUE_PROXIMITY_LIMIT = env.int("ISSUE_PROXIMITY_LIMIT", default=3)
 
 # --------------------------------------------------------------------------------------
 # Classification (T3.1–T3.3, FR-9/FR-10/FR-13a, NFR-13, Arch §6)

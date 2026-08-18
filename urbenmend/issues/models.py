@@ -27,6 +27,18 @@ from django.utils.translation import gettext_lazy as _
 from urbenmend.identity.models import User, UserStatus
 from urbenmend.reporting.models import SeveritySignal
 
+# ⚠️ **The user statuses that count toward corroboration, named once.** `corroboration_count` below
+# reads this tuple and so does T7.1's `corroboration_total` SQL annotation, which must return the
+# same number as the property for the same row (FR-16). The parity test in
+# `issues/tests/test_queue_annotations.py` is only meaningful because both sides derive from one
+# constant — restated in two places, they would agree on the day they were written and diverge the
+# first time a `UserStatus` member is added.
+ACTIVE_CORROBORATION_STATUSES: tuple[str, ...] = (
+    UserStatus.REGISTERED,
+    UserStatus.VERIFIED,
+    UserStatus.ACTIVE,
+)
+
 
 class ClusteringRuleStatus(models.TextChoices):
     """Lifecycle for tunable per-category clustering configuration."""
@@ -206,11 +218,10 @@ class Issue(models.Model):
         # Verification/age weighting is deliberately absent: the trust inputs exist, but the
         # product defines no threshold or weight. Inventing one would turn this display-only count
         # into the undeclared numeric scoring system FR-21 removed.
-        active_statuses = (UserStatus.REGISTERED, UserStatus.VERIFIED, UserStatus.ACTIVE)
         return (
             User.objects.filter(
                 Q(reports__issue=self) | Q(confirmations__issue=self),
-                status__in=active_statuses,
+                status__in=ACTIVE_CORROBORATION_STATUSES,
             )
             .distinct()
             .count()

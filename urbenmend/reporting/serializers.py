@@ -24,7 +24,11 @@ from django.conf import settings
 from django.contrib.gis.geos import Point
 from rest_framework import serializers
 
-from urbenmend.api.serializers import CamelCaseSerializer, reject_unknown_fields
+from urbenmend.api.serializers import (
+    CamelCaseSerializer,
+    allowlisted_csv,
+    reject_unknown_fields,
+)
 from urbenmend.classification.models import Category
 from urbenmend.media.selectors import VISIBLE_MEDIA_ATTR, media_for_report
 from urbenmend.media.serializers import MediaResponseSerializer
@@ -63,6 +67,18 @@ class LocationSerializer(CamelCaseSerializer):
         which is how the order ends up duplicated in two places.
         """
         return Point(data["lng"], data["lat"], srid=4326)
+
+    @staticmethod
+    def to_coordinates(point: Point) -> dict[str, float]:
+        """The inverse of `to_point()`: the `{lng, lat}` object §1.2 requires, out of a `Point`.
+
+        ⚠️ **`x` is longitude and `y` is latitude — the same trap as `to_point()`, read backwards.**
+        Transposed, a response places every Issue and Report in the wrong hemisphere while every
+        field name, type and range check still passes; a client map renders points in the Indian
+        Ocean. Both directions of the conversion therefore live in this one class, so a reviewer
+        comparing them has them side by side.
+        """
+        return {"lng": point.x, "lat": point.y}
 
 
 class ReportSubmitSerializer(CamelCaseSerializer):
@@ -234,15 +250,14 @@ class ReportDetailSerializer(CamelCaseSerializer):
     def get_location(self, report: Report) -> dict[str, Any]:
         """`{"lng": …, "lat": …, "address": …}` (API §1.2, §6.3).
 
-        ⚠️ **`.x` is longitude and `.y` is latitude** — the read side of `LocationSerializer
-        .to_point()`'s trap. Transposed here, a submission round-trips through
-        `POST` → `GET` looking self-consistent to any test that only compares the two, while every
-        client plots the report in the wrong hemisphere.
+        The coordinate pair comes from `LocationSerializer.to_coordinates()` so the `x`-is-longitude
+        decision has exactly one implementation to review — see that method for what a transposition
+        looks like from the outside. `address` is this resource's own addition to the §1.2 object.
 
         `address` is `""` rather than `null` when reverse geocoding was unavailable (ASSUMP-5,
         Arch §4.9): the column is `blank=True` with no `null`, so one spelling of empty.
         """
-        return {"lng": report.location.x, "lat": report.location.y, "address": report.address}
+        return {**LocationSerializer.to_coordinates(report.location), "address": report.address}
 
     def get_media(self, report: Report) -> list[dict[str, Any]]:
         """§6.3's `media[]`, moderated rows already excluded by the selector.
@@ -345,14 +360,10 @@ class ReportListQuerySerializer(CamelCaseSerializer):
 
     @staticmethod
     def _allowlisted(value: str, *, allowed: set[str], label: str) -> list[str]:
-        submitted = [item.strip() for item in value.split(",") if item.strip()]
-        if not submitted:
-            raise serializers.ValidationError(f"Provide at least one {label} value.")
-        if unknown := sorted(set(submitted) - allowed):
-            raise serializers.ValidationError(
-                f"Unknown {label} value(s): {', '.join(unknown)}.", code="INVALID"
-            )
-        return submitted
+        # Delegates to the shared §4.4 helper — `GET /issues` needs the identical split-and-check,
+        # and two implementations would agree until one of them grew a `strip()` the other lacked.
+        # Kept as a staticmethod so the two `validate_*` call sites above read unchanged.
+        return allowlisted_csv(value, allowed=allowed, label=label)
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         """Unknown params, and the all-or-nothing spatial triple."""

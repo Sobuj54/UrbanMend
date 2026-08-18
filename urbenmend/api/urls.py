@@ -86,6 +86,14 @@ urlpatterns = [
         reporting_views.ReportDetailView.as_view(),
         name="reports-detail",
     ),
+    # API §6.5 — the authority work queue. `GET` only: Issues form via async clustering, never a
+    # client POST (the note at the foot of this file).
+    #
+    # ⚠️ **Collection before the detail patterns**, for the third time in this file. `<uuid:…>` is
+    # narrow enough that it could not shadow the bare `issues` path today, but T7.3's
+    # `issues/<uuid:issue_id>` will sit in this same block, and the ordering habit is what keeps that
+    # addition safe. Order in this file IS the router.
+    path("issues", issue_views.IssueCollectionView.as_view(), name="issues"),
     # API §6.6 — nested-only, revocable "me-too" confirmations. The collection accepts POST;
     # `/me` accepts DELETE, so separate views prevent either verb from leaking onto the other path.
     path(
@@ -172,6 +180,10 @@ urlpatterns = [
 #   PATCH /issues/{id}/severity      → T5.5 ✅ built (computed severity retained)
 #   POST /issues/{id}/merge          → T5.6 ✅ built (path Issue survives)
 #   POST /issues/{id}/split          → T5.7 ✅ built (selected Reports form new Issue)
-#   other /issues, /map, /comments   → later P4/P5 tasks
+#   GET /issues                      → T7.1/T7.2 ✅ built (public; Authority sees in-scope only per
+#                                      BR-26, so a signed-in Authority sees *fewer* Issues than an
+#                                      anonymous visitor — `list_issues()` records why)
+#   GET /issues/{id}, /{id}/reports  → T7.3 (detail includes public comments, which need T5.8)
+#   /map, /comments                  → later P4/P5 tasks
 #   /meta/enums                      → P1 (taxonomy confirmed — Q1 resolved 2026-08-07)
 # ⚠️ No `POST /issues` ever: Issues form only via async clustering [doc: API §3, CLAUDE.md].

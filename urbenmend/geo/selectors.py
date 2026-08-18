@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from django.contrib.gis.db.models.functions import Distance as DistanceFunction
 from django.contrib.gis.db.models.functions import GeometryDistance
 from django.contrib.gis.geos import Point
 from django.contrib.gis.measure import Distance
@@ -83,6 +84,18 @@ def nearby_pois(*, point: Point, radius_m: float, limit: int = 5) -> QuerySet[PO
     `radius_m` and `limit` stay explicit at the call site so presentation choices cannot become
     hidden policy. The geography `ST_DWithin` predicate uses metres and the KNN ordering can use
     `geo_poi_location_gist`.
+
+    ⚠️ **Two distance annotations, and they are not redundant.** `knn_distance` is PostGIS's `<->`
+    operator, which is what the GiST index can answer an ordering with; its value is a planar
+    approximation and must never be shown. `distance` is `ST_Distance`, the true geodesic metres
+    §6.5 renders as `proximity[].distanceM` (T7.1). Ordering by `distance` instead would be *more*
+    accurate and would abandon the index, turning a display-only garnish into a table scan.
+
+    ⚠️ **`distance` is a `django.contrib.gis.measure.Distance` object, not a float.** GeoDjango's
+    `DistanceField` wraps the result, so a serializer must read `.m` — using the value directly
+    would render `{"distanceM": "120.0 m"}` or a repr, depending on the JSON encoder. The DB
+    function is imported aliased because this module already imports the measure class under its
+    real name.
     """
     if radius_m <= 0:
         raise ValueError("radius_m must be positive.")
@@ -94,6 +107,9 @@ def nearby_pois(*, point: Point, radius_m: float, limit: int = 5) -> QuerySet[PO
             is_active=True,
             location__dwithin=(point, Distance(m=radius_m)),
         )
-        .annotate(knn_distance=GeometryDistance("location", point))
+        .annotate(
+            knn_distance=GeometryDistance("location", point),
+            distance=DistanceFunction("location", point),
+        )
         .order_by("knn_distance", "pk")[:limit]
     )

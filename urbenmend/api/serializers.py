@@ -167,3 +167,28 @@ def reject_unknown_fields(
 
     if unknown := sorted(submitted - allowed):
         raise serializers.ValidationError(dict.fromkeys(unknown, message), code="VALIDATION_FAILED")
+
+
+def allowlisted_csv(value: str, *, allowed: set[str], label: str) -> list[str]:
+    """`?severity=high,medium` → `["high", "medium"]`, refusing anything off the allowlist.
+
+    §4.4 fixes comma separation for repeated filter values, so the split belongs in one place rather
+    than in each query serializer.
+
+    ⚠️ **An invalid *value* is a `400`, never an empty page.** `?status=bogus` matches nothing, and
+    "no results" is indistinguishable from "you asked the wrong question" — a citizen filtering their
+    own open reports would be shown an empty list and conclude they had none. Every enum this guards
+    is public (§6.13's `/meta/enums`, the taxonomy), so naming the offending value leaks nothing.
+
+    ⚠️ **`code="INVALID"`, not the default.** `_flatten_validation_detail` reads the code as the
+    contract's `details[].issue`, so without it a rejected value reports the same `issue` as a missing
+    one and a client cannot tell "you omitted this" from "that word is not a status".
+    """
+    submitted = [item.strip() for item in value.split(",") if item.strip()]
+    if not submitted:
+        raise serializers.ValidationError(f"Provide at least one {label} value.")
+    if unknown := sorted(set(submitted) - allowed):
+        raise serializers.ValidationError(
+            f"Unknown {label} value(s): {', '.join(unknown)}.", code="INVALID"
+        )
+    return submitted

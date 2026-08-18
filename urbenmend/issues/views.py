@@ -1,22 +1,26 @@
-"""Thin HTTP endpoints for Issue triage mutations and confirmations (T4.7-T5.7)."""
+"""Thin HTTP endpoints for the Issue work queue, triage mutations and confirmations (T4.7-T7.2)."""
 
 from typing import cast
 
+from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from urbenmend.identity.models import User
-from urbenmend.issues import services
+from urbenmend.issues import selectors, services
+from urbenmend.issues.pagination import SORT_DEFAULT, IssueCursorPagination
 from urbenmend.issues.serializers import (
     ConfirmationCreateSerializer,
     ConfirmationResponseSerializer,
     IssueAssignmentResponseSerializer,
     IssueAssignmentSerializer,
+    IssueListQuerySerializer,
     IssueMergeResponseSerializer,
     IssueMergeSerializer,
+    IssueQueueItemSerializer,
     IssueSeverityOverrideSerializer,
     IssueSeverityResponseSerializer,
     IssueSplitResponseSerializer,
@@ -24,6 +28,104 @@ from urbenmend.issues.serializers import (
     IssueStatusResponseSerializer,
     IssueStatusTransitionSerializer,
 )
+
+
+class IssueCollectionView(APIView):
+    """`GET /issues` — the authority work queue (API §6.5, FR-22, T7.1/T7.2).
+
+    ⚠️ **`AllowAny`, because §6.5 marks the endpoint "Session or public (Q7 RESOLVED: public)".** The
+    project default is `IsAuthenticated`, so this override is what makes the list reachable by an
+    anonymous citizen at all.
+
+    ⚠️ **`authentication_classes` is NOT emptied**, even though every method here is a read. Setting
+    it to `[]` is what silently disables CSRF for the view (the T1.3 trap `identity/tests/test_csrf.py`
+    exists to catch), and it would also erase `request.user` — which this endpoint needs, because the
+    caller's role decides what they see. `AllowAny` skips the *permission* check while
+    `SessionAuthentication` still runs, which is exactly the split wanted.
+
+    ⚠️ **No role permission class, and no local scope check.** Visibility is `list_issues()`'s job
+    (FR-3, Arch §3.1): a DRF permission class here would read as the enforcement point and drift from
+    it, and it cannot express BR-26's per-category scope in any case — the reasoning
+    `ReportCollectionView` and `ProvisionAuthorityView` both record.
+
+    ⚠️ **No throttling and no `RateLimitHeadersMixin`.** §4.5 places reads in "everything else", and
+    this is the endpoint a busy Authority refreshes all day; `ReportCollectionView.get_throttles()`
+    already records that throttling the queue breaks it for a legitimate operator. Advertising
+    `RateLimit-*` headers for a limit that is not enforced is the separate failure that mixin's test
+    on `/health` catches.
+
+    ⚠️ **No `post`, ever.** Issues form only through async clustering (`api/urls.py` carries the same
+    line). A `POST` here would let a client fabricate a "real-world problem" with no Report behind it,
+    and every corroboration count downstream would be a claim about nothing.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request: Request) -> Response:
+        """The severity-ranked queue, filtered, scoped and cursor-paginated — `200`.
+
+        ⚠️ **The query serializer runs before the selector, and its `400`s are the point.** Reading
+        `request.query_params.get()` here instead would ignore `?statuss=resolved` and answer `200`
+        with the *unfiltered* queue — an Authority hunting their in-progress work would be shown
+        everything, with no signal the filter was dropped (§4.4 fixes `400` for an unknown param).
+
+        ⚠️ **`context={"request": request}` is not decoration** — `validate()` needs it to answer
+        `400` for `assignedTo=me` without a session, and a serializer built without it would silently
+        take the "no request" branch and reject a legitimately signed-in caller.
+
+        ⚠️ **The paginator is constructed here with the validated sort.** `IssueCursorPagination`
+        needs the sort to choose its key tuple — the sort and the cursor's keys are one decision, not
+        two — and `APIView` (unlike `GenericAPIView`) has no `self.paginator` to configure. The sort
+        is never re-read from `request.query_params` inside the paginator: the validated value is the
+        only one, or an unallowlisted `?sort=` could reach the key lookup (the `ReportCursorPagination`
+        rule).
+
+        ⚠️ **`attach_proximity()` runs *after* pagination, over the page's rows.** That is C-10
+        compliance rather than tuning: POI data must never be reachable from anything that filters or
+        orders the collection, and doing it here — downstream of both — is what guarantees it. It also
+        bounds the cost to at most `limit` short GiST lookups.
+        """
+        params = IssueListQuerySerializer(data=request.query_params, context={"request": request})
+        params.is_valid(raise_exception=True)
+        filters = params.validated_data
+
+        # ⚠️ **No `cast`, unlike every other view in this module.** DRF types `request.user` as
+        # `User | AnonymousUser`, which is exactly what `list_issues()` accepts — the other views
+        # narrow to `User` because `IsAuthenticated` has already run, and this one deliberately has
+        # not. The selector narrows with `isinstance` rather than trusting the caller.
+        actor = request.user
+
+        queryset = selectors.list_issues(
+            actor=actor,
+            # The `validate_*` methods return lists; absent means "no filter", spelled `()` rather
+            # than `None` so the selector never has to distinguish the two.
+            category_slugs=filters.get("category", ()),
+            severities=filters.get("severity", ()),
+            statuses=filters.get("status", ()),
+            assigned_to_me=filters.get("assigned_to") == "me",
+            bbox=filters.get("bbox"),
+            # ⚠️ `to_point()` on the serializer, not a `Point(...)` built here — the `(lng, lat)`
+            # order lives in `LocationSerializer` and nowhere else. `validate()` has already
+            # guaranteed a centre and a radius arrive together or not at all.
+            near=params.to_point(),
+            radius_m=filters.get("radius_m"),
+            opened_after=filters.get("opened_after"),
+            query=filters.get("q", ""),
+        )
+
+        paginator = IssueCursorPagination(sort=filters.get("sort") or SORT_DEFAULT)
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        # ⚠️ `or []` rather than falling back to the unpaginated queryset. DRF types this `list | None`
+        # because paging can be disabled, which cannot happen here (NFR-2 makes it mandatory); if that
+        # invariant ever broke, an empty page is a visible bug while silently streaming every Issue in
+        # the city is the kind that only surfaces under load.
+        rows = page or []
+        selectors.attach_proximity(rows)
+
+        # ⚠️ **One `now` for the whole page**, so two Issues opened in the same instant cannot report
+        # different ages — which an `?sort=age` page would render as non-monotonic.
+        serializer = IssueQueueItemSerializer(rows, many=True, context={"now": timezone.now()})
+        return paginator.get_paginated_response(serializer.data)
 
 
 class IssueStatusView(APIView):
