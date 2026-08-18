@@ -1,19 +1,20 @@
-"""
-Export — write operations.
+"""Export job write operations."""
 
-Every state change and every authorization check for this module lives here. This file
-exists from day one even while empty: R-12 is the risk that "service-layer discipline
-erodes under Django's idiom, scattering authorization into views/serializers", and the
-named mitigation is that the convention is already in place, so putting a rule in a view
-is never the path of least resistance.
+from django.db import transaction
 
-Rules for this file [doc: Arch §3.1, FR-3]:
-  - Callers pass the acting user; functions authorize before mutating. DRF permission
-    classes are defence-in-depth, never the enforcement point.
-  - Wrap multi-write operations in `transaction.atomic`.
-  - Enqueue Celery tasks via `transaction.on_commit` so a worker cannot observe an
-    uncommitted row [doc: Arch §2.4, §4.1].
-  - Reads belong in selectors.py.
+from urbenmend.export.models import Export
+from urbenmend.export.tasks import generate_export
+from urbenmend.identity.models import Role, User
 
-[doc: Arch §3 (NFR-12)]
-"""
+
+def create_export(
+    *, actor: User, resource: str, file_format: str, filters: dict[str, object]
+) -> Export:
+    if actor.role not in {Role.AUTHORITY, Role.ADMIN}:
+        raise PermissionError("Authority or Admin role required.")
+    with transaction.atomic():
+        export = Export.objects.create(
+            requester=actor, resource=resource, format=file_format, filters=filters
+        )
+        transaction.on_commit(lambda: generate_export.delay(str(export.pk)))
+    return export

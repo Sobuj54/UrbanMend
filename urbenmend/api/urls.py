@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from django.urls import path
 
+from urbenmend.export import views as export_views
 from urbenmend.identity import views as identity_views
 from urbenmend.issues import views as issue_views
 from urbenmend.media import views as media_views
@@ -149,6 +150,10 @@ urlpatterns = [
     ),
     path("map/issues", issue_views.IssueMapView.as_view(), name="map-issues"),
     path("analytics/summary", issue_views.AnalyticsSummaryView.as_view(), name="analytics-summary"),
+    path("exports", export_views.ExportCollectionView.as_view(), name="exports"),
+    path(
+        "exports/<uuid:export_id>", export_views.ExportDetailView.as_view(), name="exports-detail"
+    ),
     # API §6.4 — media. T2.4 adds upload + read + moderation-remove; T2.5 is the worker that
     # builds the derivatives, so a fresh upload answers `state: "processing"` and a null
     # `thumbnailUrl` until it runs.
