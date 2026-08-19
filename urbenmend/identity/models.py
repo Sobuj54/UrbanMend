@@ -396,3 +396,26 @@ class VerificationCode(models.Model):
         return (
             self.consumed_at is None and not self.is_expired and self.attempts < self.MAX_ATTEMPTS
         )
+
+
+class PasswordResetToken(models.Model):
+    """Single-use hashed email password-reset credential."""
+
+    TTL = timedelta(minutes=30)
+    MAX_ATTEMPTS = 5
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey("identity.User", on_delete=models.CASCADE, related_name="reset_tokens")
+    token_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = "identity_password_reset_token"
+        indexes = [models.Index(fields=["user", "-created_at"], name="identity_reset_lookup_idx")]
+
+    @property
+    def is_usable(self) -> bool:
+        return self.consumed_at is None and timezone.now() < self.expires_at and self.attempts < self.MAX_ATTEMPTS

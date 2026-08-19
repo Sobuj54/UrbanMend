@@ -1129,10 +1129,9 @@ documented as also confirming an enrolment, and the amendment is recorded in §9
   enrolled" would tell a password-only caller whether the account has 2FA at all.
 - ⚠️ **Both 2FA routes are the only ones in the project accepting a non-authenticated session.**
   Anything else added under `auth/2fa/` needs that decision made deliberately, not inherited.
-- **`/auth/password/forgot`·`/reset` is still unbuilt and now explicitly unowned.** `api/urls.py`'s
-  comment previously routed it to T1.7; the plan's T1.7 row is 2FA-only and reset traces to FR-1
-  (T1.2's row), where it was never built. Delivery is blocked on ❓Q5 the same way T1.2's verification
-  codes are. The comment was corrected rather than the scope silently widened.
+- ✅ **`/auth/password/forgot`·`/reset` is built (FR-1).** The flow returns a generic `202`, sends a
+  single-use reset token by email only, expires it after 30 minutes, consumes it on success, and
+  revokes existing sessions. SMS remains out of scope.
 
 Verified in the container: `pytest urbenmend/identity/tests/test_two_factor.py` **29 passed**; full
 suite **338 passed / 1 xfailed**; `ruff check`, `ruff format --check` (121 files), `mypy --strict`

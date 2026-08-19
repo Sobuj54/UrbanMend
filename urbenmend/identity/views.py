@@ -53,8 +53,37 @@ from urbenmend.identity.serializers import (
     VerifyRequestSerializer,
     AdminUserListQuerySerializer,
     AdminUserUpdateSerializer,
+    PasswordForgotSerializer,
+    PasswordResetSerializer,
 )
 from urbenmend.api.pagination import StandardCursorPagination
+
+
+class PasswordForgotView(RateLimitHeadersMixin, APIView):
+    permission_classes = [AllowAny]
+    authentication_classes: list[Any] = []
+    throttle_classes = [AuthAnonRateThrottle]
+
+    def post(self, request: Request) -> Response:
+        serializer = PasswordForgotSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        services.request_password_reset(identifier=serializer.validated_data["identifier"])
+        return Response(status=status.HTTP_202_ACCEPTED)
+
+
+class PasswordResetView(RateLimitHeadersMixin, APIView):
+    permission_classes = [AllowAny]
+    authentication_classes: list[Any] = []
+    throttle_classes = [AuthAnonRateThrottle]
+
+    def post(self, request: Request) -> Response:
+        serializer = PasswordResetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            services.reset_password(**serializer.validated_data)
+        except DjangoValidationError as exc:
+            raise UnprocessableEntity(exc.messages[0]) from exc
+        return Response(status=status.HTTP_200_OK)
 
 
 class RegisterView(RateLimitHeadersMixin, APIView):

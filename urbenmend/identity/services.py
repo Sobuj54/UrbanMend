@@ -33,6 +33,7 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from django.core.mail import send_mail
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -48,6 +49,60 @@ if TYPE_CHECKING:
 # (T0.9), so a stdlib logger would emit an unstructured line into a JSON stream and lose the
 # `trace_id` that `contextvars` binds per request.
 logger = structlog.get_logger(__name__)
+
+
+def request_password_reset(*, identifier: str) -> None:
+    """Issue an email-only reset token while keeping the caller response generic."""
+    from urbenmend.identity.models import PasswordResetToken, User
+
+    user = User.objects.filter(email=identifier.strip().lower()).first()
+    if user is None or not user.email or user.email_verified_at is None or not user.is_active:
+        return
+    raw_token = secrets.token_urlsafe(32)
+    PasswordResetToken.objects.filter(user=user, consumed_at__isnull=True).update(
+        consumed_at=timezone.now()
+    )
+    PasswordResetToken.objects.create(
+        user=user,
+        token_hash=make_password(raw_token),
+        expires_at=timezone.now() + PasswordResetToken.TTL,
+    )
+    transaction.on_commit(
+        lambda: send_mail(
+            subject="UrbanMend password reset",
+            message=f"Your password reset token is: {raw_token}",
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@urbanmend.local"),
+            recipient_list=[user.email],
+        )
+    )
+
+
+@transaction.atomic
+def reset_password(*, reset_token: str, new_password: str) -> None:
+    """Consume one valid reset token, change the password and revoke every session."""
+    from django.contrib.sessions.models import Session
+    from django.contrib.auth.password_validation import validate_password
+    from urbenmend.identity.models import PasswordResetToken
+
+    candidates = PasswordResetToken.objects.select_for_update().select_related("user").filter(
+        consumed_at__isnull=True, expires_at__gt=timezone.now(), attempts__lt=PasswordResetToken.MAX_ATTEMPTS
+    ).order_by("-created_at")
+    matched = None
+    for candidate in candidates:
+        if check_password(reset_token, candidate.token_hash):
+            matched = candidate
+            break
+    if matched is None:
+        raise ValidationError("The reset token is invalid or expired.")
+    validate_password(new_password, user=matched.user)
+    matched.user.set_password(new_password)
+    matched.user.save(update_fields=["password"])
+    matched.consumed_at = timezone.now()
+    matched.save(update_fields=["consumed_at"])
+    for session in Session.objects.all().iterator():
+        data = session.get_decoded()
+        if data.get(SESSION_KEY) == str(matched.user_id):
+            session.delete()
 
 
 class RegistrationError(Exception):

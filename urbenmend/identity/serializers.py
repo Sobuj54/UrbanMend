@@ -24,6 +24,23 @@ from urbenmend.identity import services
 from urbenmend.identity.models import Channel, Role, User, UserStatus
 
 
+class PasswordForgotSerializer(CamelCaseSerializer):
+    identifier = serializers.EmailField()
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self)
+        return attrs
+
+
+class PasswordResetSerializer(CamelCaseSerializer):
+    reset_token = serializers.CharField(min_length=32, max_length=256)
+    new_password = serializers.CharField(min_length=8, max_length=128, write_only=True)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self)
+        return attrs
+
+
 class RegisterSerializer(CamelCaseSerializer):
     """POST /auth/register request body (API §6.1).
 

@@ -33,8 +33,7 @@ urlpatterns = [
     path("health", platform_views.health, name="health"),
     path("meta/enums", platform_views.EnumMetadataView.as_view(), name="meta-enums"),
     # API §6.1 — authentication. T1.2 covers register + verify; T1.3 adds login + logout;
-    # T1.7 adds the two 2FA routes. `/auth/password` remains deliberately absent rather than
-    # stubbed — it is unbuilt and blocked on ❓Q5 for delivery of the reset token.
+    # T1.7 adds the two 2FA routes; password reset is implemented as the FR-1 email-only flow.
     path("auth/register", identity_views.RegisterView.as_view(), name="auth-register"),
     path("auth/verify", identity_views.VerifyView.as_view(), name="auth-verify"),
     path("auth/login", identity_views.LoginView.as_view(), name="auth-login"),
@@ -52,6 +51,8 @@ urlpatterns = [
         name="auth-2fa-verify",
     ),
     path("auth/logout", identity_views.LogoutView.as_view(), name="auth-logout"),
+    path("auth/password/forgot", identity_views.PasswordForgotView.as_view(), name="password-forgot"),
+    path("auth/password/reset", identity_views.PasswordResetView.as_view(), name="password-reset"),
     # API §6.2 — users. T1.6 adds Authority provisioning (FR-2, BR-25).
     #
     # ⚠️ Registered before any `users/<id>` route, and it must stay that way. Django matches in
@@ -216,7 +217,7 @@ urlpatterns = [
 ]
 
 # Remaining §6 resources land with their phases, not here:
-#   /auth/password                   → unowned; ❓Q5 blocks delivery of the reset token
+#   /auth/password/forgot, /reset     → ✅ built; email-only, generic 202 response
 #   /users/me                        → T1.9 ✅ built
 #   /users, /users/{id}              → unowned (admin list/search, role/scope/status change);
 #                                      API §6.2 names both, T1.9 scoped them out

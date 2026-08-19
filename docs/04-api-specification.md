@@ -304,6 +304,7 @@ verified against an unconfirmed device confirms it; against a confirmed device i
 - **Purpose:** Initiate and complete password reset (FR-1).
 - **Auth:** None.
 - **Bodies:** `{ "identifier": "…" }` → then `{ "resetToken": "…", "newPassword": "…" }`
+- **Delivery:** Email only, and only for an active account with a verified email. SMS is out of scope.
 - **Responses:** `202` (always generic, no enumeration) / `200`.
 - **Errors:** `422` (token invalid/expired), `429`, standard.
 
