@@ -77,7 +77,7 @@ class MediaResponseSerializer(CamelCaseSerializer):
 
     @staticmethod
     def _file_url(media: Media, field: str) -> str | None:
-        if media.state == MediaState.REMOVED:
+        if media.state in {MediaState.HIDDEN, MediaState.REMOVED}:
             return None
         stored = getattr(media, field)
         if not stored:

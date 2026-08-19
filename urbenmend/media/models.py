@@ -48,6 +48,7 @@ class MediaState(models.TextChoices):
     PROCESSING = "processing", _("Processing (compression and thumbnail)")
     READY = "ready", _("Ready")
     FAILED = "failed", _("Processing failed")
+    HIDDEN = "hidden", _("Hidden by moderation")
     REMOVED = "removed", _("Removed by moderation")
 
 
