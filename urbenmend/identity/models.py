@@ -416,6 +416,13 @@ class PasswordResetToken(models.Model):
         db_table = "identity_password_reset_token"
         indexes = [models.Index(fields=["user", "-created_at"], name="identity_reset_lookup_idx")]
 
+    def __str__(self) -> str:
+        return f"Password reset for {self.user_id} ({self.id})"
+
     @property
     def is_usable(self) -> bool:
-        return self.consumed_at is None and timezone.now() < self.expires_at and self.attempts < self.MAX_ATTEMPTS
+        return (
+            self.consumed_at is None
+            and timezone.now() < self.expires_at
+            and self.attempts < self.MAX_ATTEMPTS
+        )

@@ -11,9 +11,9 @@ from urbenmend.issues.tests.factories import IssueFactory
 from urbenmend.notifications.models import (
     Notification,
     NotificationChannel,
+    NotificationPreference,
     NotificationState,
     NotificationType,
-    NotificationPreference,
     OutboxEvent,
 )
 from urbenmend.notifications.services import generate_status_change_notifications

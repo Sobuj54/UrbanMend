@@ -79,7 +79,9 @@ def _visible_media() -> QuerySet[Media]:
     two copies are free to drift, and the failure mode is that moderated content comes back on
     exactly one of the two endpoints.
     """
-    return Media.objects.exclude(state__in={MediaState.HIDDEN, MediaState.REMOVED}).order_by("created_at")
+    return Media.objects.exclude(state__in={MediaState.HIDDEN, MediaState.REMOVED}).order_by(
+        "created_at"
+    )
 
 
 def media_for_report(*, report_id: UUID | str) -> list[Media]:

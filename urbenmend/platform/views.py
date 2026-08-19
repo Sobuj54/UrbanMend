@@ -20,6 +20,7 @@ from rest_framework.views import APIView
 from urbenmend.classification.models import Category
 from urbenmend.issues.models import IssueStatus
 from urbenmend.notifications.models import NotificationChannel, NotificationType
+from urbenmend.platform.selectors import check_all
 from urbenmend.reporting.models import ReportStatus, SeveritySignal
 
 
@@ -53,8 +54,6 @@ class EnumMetadataView(APIView):
                 ],
             }
         )
-
-from urbenmend.platform.selectors import check_all
 
 
 @api_view(["GET"])

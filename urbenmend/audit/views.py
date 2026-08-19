@@ -7,9 +7,9 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from urbenmend.api.pagination import StandardCursorPagination
 from urbenmend.audit import selectors
 from urbenmend.audit.serializers import AuditEventQuerySerializer, AuditEventSerializer
-from urbenmend.api.pagination import StandardCursorPagination
 from urbenmend.identity.models import User
 
 

@@ -13,14 +13,14 @@ from __future__ import annotations
 
 from django.urls import path
 
-from urbenmend.export import views as export_views
 from urbenmend.audit import views as audit_views
-from urbenmend.moderation import views as moderation_views
 from urbenmend.classification import views as classification_views
+from urbenmend.export import views as export_views
 from urbenmend.geo import views as geo_views
 from urbenmend.identity import views as identity_views
 from urbenmend.issues import views as issue_views
 from urbenmend.media import views as media_views
+from urbenmend.moderation import views as moderation_views
 from urbenmend.notifications import views as notification_views
 from urbenmend.platform import views as platform_views
 from urbenmend.reporting import views as reporting_views
@@ -51,7 +51,9 @@ urlpatterns = [
         name="auth-2fa-verify",
     ),
     path("auth/logout", identity_views.LogoutView.as_view(), name="auth-logout"),
-    path("auth/password/forgot", identity_views.PasswordForgotView.as_view(), name="password-forgot"),
+    path(
+        "auth/password/forgot", identity_views.PasswordForgotView.as_view(), name="password-forgot"
+    ),
     path("auth/password/reset", identity_views.PasswordResetView.as_view(), name="password-reset"),
     # API §6.2 — users. T1.6 adds Authority provisioning (FR-2, BR-25).
     #
@@ -165,18 +167,54 @@ urlpatterns = [
     path("analytics/summary", issue_views.AnalyticsSummaryView.as_view(), name="analytics-summary"),
     path("audit-events", audit_views.AuditEventCollectionView.as_view(), name="audit-events"),
     path("categories", classification_views.CategoryCollectionView.as_view(), name="categories"),
-    path("categories/<slug:key>", classification_views.CategoryDetailView.as_view(), name="categories-detail"),
-    path("severity-keywords", classification_views.SeverityKeywordCollectionView.as_view(), name="severity-keywords"),
-    path("severity-keywords/<int:keyword_id>", classification_views.SeverityKeywordDetailView.as_view(), name="severity-keywords-detail"),
-    path("clustering-rules", issue_views.ClusteringRuleCollectionView.as_view(), name="clustering-rules"),
-    path("clustering-rules/<int:rule_id>", issue_views.ClusteringRuleDetailView.as_view(), name="clustering-rules-detail"),
+    path(
+        "categories/<slug:key>",
+        classification_views.CategoryDetailView.as_view(),
+        name="categories-detail",
+    ),
+    path(
+        "severity-keywords",
+        classification_views.SeverityKeywordCollectionView.as_view(),
+        name="severity-keywords",
+    ),
+    path(
+        "severity-keywords/<int:keyword_id>",
+        classification_views.SeverityKeywordDetailView.as_view(),
+        name="severity-keywords-detail",
+    ),
+    path(
+        "clustering-rules",
+        issue_views.ClusteringRuleCollectionView.as_view(),
+        name="clustering-rules",
+    ),
+    path(
+        "clustering-rules/<int:rule_id>",
+        issue_views.ClusteringRuleDetailView.as_view(),
+        name="clustering-rules-detail",
+    ),
     path("pois", geo_views.POICollectionView.as_view(), name="pois"),
     path("pois/<uuid:poi_id>", geo_views.POIDetailView.as_view(), name="pois-detail"),
     path("meta/city-boundary", geo_views.CityBoundaryView.as_view(), name="city-boundary"),
-    path("reports/<uuid:pk>/moderation", moderation_views.ReportModerationView.as_view(), name="reports-moderation"),
-    path("issues/<uuid:pk>/moderation", moderation_views.IssueModerationView.as_view(), name="issues-moderation"),
-    path("media/<uuid:pk>/moderation", moderation_views.MediaModerationView.as_view(), name="media-moderation"),
-    path("issues/<uuid:pk>/comments/<uuid:comment_id>/moderation", moderation_views.CommentModerationView.as_view(), name="comments-moderation"),
+    path(
+        "reports/<uuid:pk>/moderation",
+        moderation_views.ReportModerationView.as_view(),
+        name="reports-moderation",
+    ),
+    path(
+        "issues/<uuid:pk>/moderation",
+        moderation_views.IssueModerationView.as_view(),
+        name="issues-moderation",
+    ),
+    path(
+        "media/<uuid:pk>/moderation",
+        moderation_views.MediaModerationView.as_view(),
+        name="media-moderation",
+    ),
+    path(
+        "issues/<uuid:pk>/comments/<uuid:comment_id>/moderation",
+        moderation_views.CommentModerationView.as_view(),
+        name="comments-moderation",
+    ),
     path("exports", export_views.ExportCollectionView.as_view(), name="exports"),
     path(
         "exports/<uuid:export_id>", export_views.ExportDetailView.as_view(), name="exports-detail"

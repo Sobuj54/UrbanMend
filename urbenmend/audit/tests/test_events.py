@@ -64,9 +64,7 @@ def test_database_trigger_blocks_queryset_update_and_delete() -> None:
     actor = AdminFactory()
     event = services.record_event(actor=actor, action="identity.created", target=actor)
 
-    with pytest.raises(DatabaseError, match="Audit events are immutable"):
-        with transaction.atomic():
-            AuditEvent.objects.filter(pk=event.pk).update(action="changed")
-    with pytest.raises(DatabaseError, match="Audit events are immutable"):
-        with transaction.atomic():
-            AuditEvent.objects.filter(pk=event.pk).delete()
+    with pytest.raises(DatabaseError, match="Audit events are immutable"), transaction.atomic():
+        AuditEvent.objects.filter(pk=event.pk).update(action="changed")
+    with pytest.raises(DatabaseError, match="Audit events are immutable"), transaction.atomic():
+        AuditEvent.objects.filter(pk=event.pk).delete()

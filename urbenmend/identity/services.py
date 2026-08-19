@@ -31,9 +31,9 @@ from django.contrib.auth import login as django_login
 from django.contrib.auth import logout as django_logout
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
 from django.utils import timezone
-from django.core.mail import send_mail
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -80,13 +80,21 @@ def request_password_reset(*, identifier: str) -> None:
 @transaction.atomic
 def reset_password(*, reset_token: str, new_password: str) -> None:
     """Consume one valid reset token, change the password and revoke every session."""
-    from django.contrib.sessions.models import Session
     from django.contrib.auth.password_validation import validate_password
+    from django.contrib.sessions.models import Session
+
     from urbenmend.identity.models import PasswordResetToken
 
-    candidates = PasswordResetToken.objects.select_for_update().select_related("user").filter(
-        consumed_at__isnull=True, expires_at__gt=timezone.now(), attempts__lt=PasswordResetToken.MAX_ATTEMPTS
-    ).order_by("-created_at")
+    candidates = (
+        PasswordResetToken.objects.select_for_update()
+        .select_related("user")
+        .filter(
+            consumed_at__isnull=True,
+            expires_at__gt=timezone.now(),
+            attempts__lt=PasswordResetToken.MAX_ATTEMPTS,
+        )
+        .order_by("-created_at")
+    )
     matched = None
     for candidate in candidates:
         if check_password(reset_token, candidate.token_hash):
@@ -794,7 +802,7 @@ def has_category_scope(user: User, category: Category) -> bool:
     until an Admin scopes them. Reading empty as "unrestricted" would make a forgotten
     provisioning step into unrestricted access.
     """
-    from urbenmend.identity.models import Role, User
+    from urbenmend.identity.models import Role
 
     if has_role(user, Role.ADMIN):
         return True
@@ -863,7 +871,7 @@ def scoped_category_ids(user: User) -> set[int] | None:
     every caller's query, so `selectors.py` in other apps needs no dependency on the shape of
     this relation.
     """
-    from urbenmend.identity.models import Role, User
+    from urbenmend.identity.models import Role
 
     if has_role(user, Role.ADMIN):
         return None
@@ -1081,11 +1089,13 @@ def set_category_scope(
 def update_user_by_admin(*, actor: User, user_id, **changes: Any) -> User:
     """Apply the documented admin account controls and audit each resulting snapshot."""
     from urbenmend.identity.models import Role, User
+
     require_role(actor, Role.ADMIN)
     try:
         target = User.objects.select_for_update().get(pk=user_id)
     except (User.DoesNotExist, ValueError, TypeError) as exc:
         from django.http import Http404
+
         raise Http404("User not found.") from exc
     before = {
         "role": target.role,
@@ -1114,7 +1124,10 @@ def update_user_by_admin(*, actor: User, user_id, **changes: Any) -> User:
         "category_scope": sorted(target.category_scope.values_list("slug", flat=True)),
     }
     from urbenmend.audit.services import record_event
-    record_event(actor=actor, action="identity.user_updated", target=target, before=before, after=after)
+
+    record_event(
+        actor=actor, action="identity.user_updated", target=target, before=before, after=after
+    )
     return target
 
 

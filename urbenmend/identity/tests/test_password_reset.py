@@ -12,7 +12,9 @@ from urbenmend.identity.tests.factories import UserFactory
 pytestmark = pytest.mark.django_db
 
 
-def test_forgot_is_generic_and_sends_only_for_verified_active_email(django_capture_on_commit_callbacks) -> None:
+def test_forgot_is_generic_and_sends_only_for_verified_active_email(
+    django_capture_on_commit_callbacks,
+) -> None:
     user = UserFactory(email="reset@example.test", email_verified_at=timezone.now())
     url = reverse("api:password-forgot")
     with django_capture_on_commit_callbacks(execute=True):
@@ -26,7 +28,9 @@ def test_forgot_is_generic_and_sends_only_for_verified_active_email(django_captu
     assert token not in PasswordResetToken.objects.get(user=user).token_hash
 
 
-def test_reset_changes_password_consumes_token_and_rejects_replay(django_capture_on_commit_callbacks) -> None:
+def test_reset_changes_password_consumes_token_and_rejects_replay(
+    django_capture_on_commit_callbacks,
+) -> None:
     user = UserFactory(email="complete-reset@example.test", email_verified_at=timezone.now())
     forgot = reverse("api:password-forgot")
     reset = reverse("api:password-reset")
@@ -43,6 +47,16 @@ def test_reset_changes_password_consumes_token_and_rejects_replay(django_capture
 
 def test_invalid_token_weak_password_and_unknown_fields_are_rejected() -> None:
     reset = reverse("api:password-reset")
-    assert APIClient().post(reset, {"resetToken": "x" * 32, "newPassword": "weakpass"}, format="json").status_code == 422
+    assert (
+        APIClient()
+        .post(reset, {"resetToken": "x" * 32, "newPassword": "weakpass"}, format="json")
+        .status_code
+        == 422
+    )
     forgot = reverse("api:password-forgot")
-    assert APIClient().post(forgot, {"identifier": "a@example.test", "extra": True}, format="json").status_code == 400
+    assert (
+        APIClient()
+        .post(forgot, {"identifier": "a@example.test", "extra": True}, format="json")
+        .status_code
+        == 400
+    )

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from django.db.models import Q, F
+from django.db.models import F, Q
 
 from urbenmend.identity.models import Role, User
 from urbenmend.identity.services import require_role

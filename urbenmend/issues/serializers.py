@@ -16,8 +16,15 @@ from urbenmend.api.serializers import (
 from urbenmend.classification.models import Category
 from urbenmend.geo.models import POI
 from urbenmend.geo.selectors import nearby_pois
-from urbenmend.issues.models import Comment, CommentVisibility, Issue, IssueStatus, StatusEvent
-from urbenmend.issues.models import ClusteringRule, ClusteringRuleStatus
+from urbenmend.issues.models import (
+    ClusteringRule,
+    ClusteringRuleStatus,
+    Comment,
+    CommentVisibility,
+    Issue,
+    IssueStatus,
+    StatusEvent,
+)
 from urbenmend.issues.pagination import SORT_CHOICES
 from urbenmend.issues.selectors import MODERATED_ISSUE_STATUSES, PROXIMITY_ATTR
 from urbenmend.issues.services import REOPEN_ACTION
@@ -66,23 +73,30 @@ class IssueAssignmentSerializer(CamelCaseSerializer):
         reject_unknown_fields(self)
         return attrs
 
+
 class ClusteringRuleSerializer(CamelCaseSerializer):
     id = serializers.IntegerField(read_only=True)
     category = serializers.SlugRelatedField(slug_field="slug", read_only=True)
     radius_m = serializers.IntegerField(read_only=True)
     time_window_hours = serializers.IntegerField(read_only=True)
     active = serializers.SerializerMethodField()
-    def get_active(self, obj: ClusteringRule) -> bool: return obj.status == ClusteringRuleStatus.ACTIVE
+
+    def get_active(self, obj: ClusteringRule) -> bool:
+        return obj.status == ClusteringRuleStatus.ACTIVE
+
 
 class ClusteringRuleWriteSerializer(CamelCaseSerializer):
     category = serializers.SlugField(required=False)
     radius_m = serializers.IntegerField(required=False, min_value=1)
     time_window_hours = serializers.IntegerField(required=False, min_value=1)
     active = serializers.BooleanField(required=False)
+
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         reject_unknown_fields(self)
-        if not attrs: raise serializers.ValidationError("Provide at least one field.")
+        if not attrs:
+            raise serializers.ValidationError("Provide at least one field.")
         return attrs
+
 
 class StatusEventSerializer(CamelCaseSerializer):
     from_status = serializers.CharField(read_only=True)
@@ -90,8 +104,10 @@ class StatusEventSerializer(CamelCaseSerializer):
     actor_role = serializers.CharField(source="actor.role", read_only=True)
     reason = serializers.SerializerMethodField()
     at = serializers.DateTimeField(source="created_at", read_only=True)
+
     def get_reason(self, obj: StatusEvent) -> str | None:
         return obj.reason or None
+
     def to_representation(self, instance: StatusEvent) -> dict[str, Any]:
         data = super().to_representation(instance)
         data["from"] = data.pop("fromStatus")

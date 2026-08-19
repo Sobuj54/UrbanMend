@@ -16,11 +16,11 @@ from urbenmend.identity.models import User
 from urbenmend.notifications import selectors, services
 from urbenmend.notifications.serializers import (
     NotificationListQuerySerializer,
+    NotificationPreferenceSerializer,
+    NotificationPreferenceUpdateSerializer,
     NotificationReadAllSerializer,
     NotificationReadSerializer,
     NotificationSerializer,
-    NotificationPreferenceSerializer,
-    NotificationPreferenceUpdateSerializer,
 )
 
 

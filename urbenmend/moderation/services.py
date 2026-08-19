@@ -21,6 +21,7 @@ Rules for this file [doc: Arch §3.1, FR-3]:
 from __future__ import annotations
 
 from typing import Any
+
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
 from django.utils import timezone
@@ -42,6 +43,7 @@ def moderate(*, actor: User, target: Any, action: str, reason: str) -> Moderatio
     from urbenmend.issues.models import Comment, Issue, IssueStatus
     from urbenmend.media.models import Media, MediaState
     from urbenmend.reporting.models import Report, ReportStatus
+
     if isinstance(target, Report):
         target.status = ReportStatus.HIDDEN if action == "hide" else ReportStatus.REMOVED
         target.save(update_fields=["status"])
@@ -56,9 +58,17 @@ def moderate(*, actor: User, target: Any, action: str, reason: str) -> Moderatio
         target.save(update_fields=["removed_at", "updated_at"])
     else:
         raise ValueError("Unsupported moderation target.")
-    event = ModerationAction.objects.create(actor=actor, action=action, reason=reason,
+    event = ModerationAction.objects.create(
+        actor=actor,
+        action=action,
+        reason=reason,
         target_content_type=ContentType.objects.get_for_model(target, for_concrete_model=False),
-        target_object_id=str(target.pk))
-    record_event(actor=actor, action=f"moderation.{action}", target=target,
-        after={"reason": reason, "moderation_action_id": str(event.pk)})
+        target_object_id=str(target.pk),
+    )
+    record_event(
+        actor=actor,
+        action=f"moderation.{action}",
+        target=target,
+        after={"reason": reason, "moderation_action_id": str(event.pk)},
+    )
     return event

@@ -114,10 +114,19 @@ def nearby_pois(*, point: Point, radius_m: float, limit: int = 5) -> QuerySet[PO
         .order_by("knn_distance", "pk")[:limit]
     )
 
-def list_pois(*, poi_type: str | None = None, bbox=None, near: Point | None = None, radius_m: float | None = None) -> QuerySet[POI]:
+
+def list_pois(
+    *,
+    poi_type: str | None = None,
+    bbox=None,
+    near: Point | None = None,
+    radius_m: float | None = None,
+) -> QuerySet[POI]:
     queryset = POI.objects.all()
-    if poi_type: queryset = queryset.filter(poi_type=poi_type)
-    if bbox is not None: queryset = queryset.filter(location__bboverlaps=bbox)
+    if poi_type:
+        queryset = queryset.filter(poi_type=poi_type)
+    if bbox is not None:
+        queryset = queryset.filter(location__bboverlaps=bbox)
     if near is not None and radius_m is not None:
         queryset = queryset.filter(location__dwithin=(near, Distance(m=radius_m)))
     return queryset

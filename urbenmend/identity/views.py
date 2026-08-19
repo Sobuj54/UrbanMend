@@ -68,7 +68,9 @@ class PasswordForgotView(RateLimitHeadersMixin, APIView):
 
     @extend_schema(
         request=PasswordForgotSerializer,
-        responses={202: OpenApiResponse(description="Request accepted; response is always generic.")},
+        responses={
+            202: OpenApiResponse(description="Request accepted; response is always generic.")
+        },
         tags=["Authentication"],
         operation_id="passwordForgot",
     )
@@ -114,7 +116,10 @@ class RegisterView(RateLimitHeadersMixin, APIView):
 
     @extend_schema(
         request=RegisterSerializer,
-        responses={201: RegisterResponseSerializer, 409: OpenApiResponse(description="Account conflict.")},
+        responses={
+            201: RegisterResponseSerializer,
+            409: OpenApiResponse(description="Account conflict."),
+        },
         tags=["Authentication"],
         operation_id="register",
     )
@@ -181,7 +186,10 @@ class VerifyView(RateLimitHeadersMixin, APIView):
 
     @extend_schema(
         request=VerifyRequestSerializer,
-        responses={200: VerifyResponseSerializer, 422: OpenApiResponse(description="Code invalid or expired.")},
+        responses={
+            200: VerifyResponseSerializer,
+            422: OpenApiResponse(description="Code invalid or expired."),
+        },
         tags=["Authentication"],
         operation_id="verifyChannel",
     )
@@ -246,7 +254,10 @@ class LoginView(RateLimitHeadersMixin, APIView):
 
     @extend_schema(
         request=LoginSerializer,
-        responses={200: LoginResponseSerializer, 401: OpenApiResponse(description="Invalid credentials.")},
+        responses={
+            200: LoginResponseSerializer,
+            401: OpenApiResponse(description="Invalid credentials."),
+        },
         tags=["Authentication"],
         operation_id="login",
     )
@@ -353,8 +364,10 @@ class UserCollectionView(APIView):
         params.is_valid(raise_exception=True)
         values = params.validated_data
         queryset = selectors.list_users(
-            actor=cast("User", request.user), role=values.get("role"),
-            status=values.get("status"), query=values.get("q", "")
+            actor=cast("User", request.user),
+            role=values.get("role"),
+            status=values.get("status"),
+            query=values.get("q", ""),
         )
         paginator = StandardCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self) or []

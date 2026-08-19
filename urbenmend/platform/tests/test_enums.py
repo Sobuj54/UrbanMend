@@ -16,8 +16,12 @@ def test_enum_metadata_is_public_and_model_derived() -> None:
     assert [item["value"] for item in response.data["severities"]] == list(SeveritySignal.values)
     assert [item["value"] for item in response.data["issueStatuses"]] == list(IssueStatus.values)
     assert [item["value"] for item in response.data["reportStatuses"]] == list(ReportStatus.values)
-    assert [item["value"] for item in response.data["notificationTypes"]] == list(NotificationType.values)
-    assert [item["value"] for item in response.data["notificationChannels"]] == list(NotificationChannel.values)
+    assert [item["value"] for item in response.data["notificationTypes"]] == list(
+        NotificationType.values
+    )
+    assert [item["value"] for item in response.data["notificationChannels"]] == list(
+        NotificationChannel.values
+    )
     assert set(NotificationChannel.values) == {"in_app", "email"}
 
 
@@ -26,7 +30,9 @@ def test_categories_include_active_and_retired_taxonomy_rows() -> None:
         slug="retired-enum-test", name_en="Retired Enum", name_bn="অবসর", status="retired"
     )
     response = APIClient().get(reverse("api:meta-enums"))
-    item = next(category for category in response.data["categories"] if category["key"] == retired.slug)
+    item = next(
+        category for category in response.data["categories"] if category["key"] == retired.slug
+    )
     assert item == {
         "key": "retired-enum-test",
         "label": {"en": "Retired Enum", "bn": "অবসর"},

@@ -81,18 +81,23 @@ def active_clustering_rule(*, category_id: int) -> ClusteringRule:
             f"No active clustering rule is configured for category {category_id}."
         ) from exc
 
+
 def list_clustering_rules(*, actor: User):
     from urbenmend.identity.services import require_role
+
     require_role(actor, Role.ADMIN)
     return ClusteringRule.objects.select_related("category").all()
 
+
 def list_status_events(*, issue_id, actor) -> QuerySet:
     from django.http import Http404
+
     issue = Issue.objects.select_related("primary_category").filter(pk=issue_id).first()
     if issue is None or issue.status in MODERATED_ISSUE_STATUSES:
         raise Http404("Issue not found.")
     if getattr(actor, "is_authenticated", False) and getattr(actor, "role", None) == Role.AUTHORITY:
         from urbenmend.identity.services import has_category_scope
+
         if not has_category_scope(actor, issue.primary_category):
             raise Http404("Issue not found.")
     return issue.status_events.select_related("actor").order_by("created_at", "pk")

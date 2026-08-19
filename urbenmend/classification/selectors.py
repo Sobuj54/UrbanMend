@@ -106,6 +106,7 @@ def active_keyword_rules() -> tuple[KeywordRule, ...]:
         for term, severity, category_slug, language in rows
     )
 
+
 def list_severity_keywords(*, actor: User):
     require_role(actor, Role.AUTHORITY, Role.ADMIN)
     return SeverityKeyword.objects.select_related("category").all()

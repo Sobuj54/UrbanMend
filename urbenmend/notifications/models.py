@@ -68,6 +68,9 @@ class NotificationPreference(models.Model):
     class Meta:
         db_table = "notifications_preference"
 
+    def __str__(self) -> str:
+        return f"Notification preferences for {self.user_id}"
+
 
 class NotificationState(models.TextChoices):
     """Delivery outcome for one channel attempt."""

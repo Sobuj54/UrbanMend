@@ -32,6 +32,10 @@ class AuditEventQuerySerializer(CamelCaseSerializer):
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         reject_unknown_fields(self, extra_allowed=("limit", "cursor"))
-        if attrs.get("from_date") and attrs.get("to_date") and attrs["from_date"] > attrs["to_date"]:
+        if (
+            attrs.get("from_date")
+            and attrs.get("to_date")
+            and attrs["from_date"] > attrs["to_date"]
+        ):
             raise serializers.ValidationError({"from": "Must be before or equal to `to`."})
         return attrs

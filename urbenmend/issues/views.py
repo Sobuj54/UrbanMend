@@ -19,8 +19,11 @@ from urbenmend.identity.services import AuthorizationError, has_category_scope
 from urbenmend.issues import selectors, services
 from urbenmend.issues.models import Issue, IssueStatus
 from urbenmend.issues.pagination import SORT_DEFAULT, IssueCursorPagination
+from urbenmend.issues.reference_services import create_clustering_rule, update_clustering_rule
 from urbenmend.issues.serializers import (
     AnalyticsSummaryQuerySerializer,
+    ClusteringRuleSerializer,
+    ClusteringRuleWriteSerializer,
     CommentCreateSerializer,
     CommentSerializer,
     CommentUpdateSerializer,
@@ -39,11 +42,8 @@ from urbenmend.issues.serializers import (
     IssueSplitSerializer,
     IssueStatusResponseSerializer,
     IssueStatusTransitionSerializer,
-    ClusteringRuleSerializer,
-    ClusteringRuleWriteSerializer,
     StatusEventSerializer,
 )
-from urbenmend.issues.reference_services import create_clustering_rule, update_clustering_rule
 from urbenmend.reporting.pagination import ReportCursorPagination
 from urbenmend.reporting.serializers import ReportDetailSerializer
 
@@ -51,37 +51,52 @@ from urbenmend.reporting.serializers import ReportDetailSerializer
 class _QueueAnnotatedIssue(Protocol):
     corroboration_total: int
 
+
 class IssueStatusEventsView(APIView):
     permission_classes = [AllowAny]
+
     def get(self, request: Request, issue_id) -> Response:
         events = selectors.list_status_events(issue_id=issue_id, actor=request.user)
-        paginator = StandardCursorPagination(); page = paginator.paginate_queryset(events, request, view=self) or []
+        paginator = StandardCursorPagination()
+        page = paginator.paginate_queryset(events, request, view=self) or []
         return paginator.get_paginated_response(StatusEventSerializer(page, many=True).data)
+
 
 class ClusteringRuleCollectionView(APIView):
     permission_classes = [IsAuthenticated]
+
     def get(self, request: Request) -> Response:
         queryset = selectors.list_clustering_rules(actor=cast("User", request.user))
-        paginator = StandardCursorPagination(); page = paginator.paginate_queryset(queryset, request, view=self) or []
+        paginator = StandardCursorPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self) or []
         return paginator.get_paginated_response(ClusteringRuleSerializer(page, many=True).data)
+
     def post(self, request: Request) -> Response:
-        serializer = ClusteringRuleWriteSerializer(data=request.data); serializer.is_valid(raise_exception=True)
+        serializer = ClusteringRuleWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         required = {"category", "radius_m", "time_window_hours"}
         missing = required - serializer.validated_data.keys()
         if missing:
             from rest_framework.serializers import ValidationError
-            raise ValidationError({field: "This field is required." for field in missing})
+
+            raise ValidationError(dict.fromkeys(missing, "This field is required."))
         rule = create_clustering_rule(actor=cast("User", request.user), **serializer.validated_data)
         return Response(ClusteringRuleSerializer(rule).data, status=status.HTTP_201_CREATED)
 
+
 class ClusteringRuleDetailView(APIView):
     permission_classes = [IsAuthenticated]
+
     def patch(self, request: Request, rule_id: int) -> Response:
-        serializer = ClusteringRuleWriteSerializer(data=request.data); serializer.is_valid(raise_exception=True)
+        serializer = ClusteringRuleWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         if "category" in serializer.validated_data:
             from rest_framework.serializers import ValidationError
+
             raise ValidationError({"category": "This field is immutable."})
-        rule = update_clustering_rule(actor=cast("User", request.user), rule_id=rule_id, **serializer.validated_data)
+        rule = update_clustering_rule(
+            actor=cast("User", request.user), rule_id=rule_id, **serializer.validated_data
+        )
         return Response(ClusteringRuleSerializer(rule).data)
 
 

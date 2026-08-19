@@ -27,9 +27,14 @@ from urbenmend.identity.services import AuthorizationError
 
 
 def list_events(
-    *, actor: User, actor_id: UUID | None = None, action: str | None = None,
-    target_type: str | None = None, target_id: str | None = None,
-    from_date: datetime | None = None, to_date: datetime | None = None,
+    *,
+    actor: User,
+    actor_id: UUID | None = None,
+    action: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
 ) -> QuerySet[AuditEvent]:
     """Admins see all events; authorities see only events they created."""
     if actor.role not in {Role.AUTHORITY, Role.ADMIN}:

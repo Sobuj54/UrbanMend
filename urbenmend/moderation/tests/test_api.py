@@ -48,11 +48,14 @@ def test_admin_can_hide_supported_resources(route, factory, field, expected) -> 
 
 def test_remove_comment_sets_tombstone() -> None:
     from urbenmend.issues.models import Comment
+
     issue = IssueFactory()
     comment = Comment.objects.create(issue=issue, author=UserFactory(), body="abusive")
     response = _client(AdminFactory()).post(
         reverse("api:comments-moderation", kwargs={"pk": issue.pk, "comment_id": comment.pk}),
-        {"action": "remove", "reason": "Abuse"}, format="json")
+        {"action": "remove", "reason": "Abuse"},
+        format="json",
+    )
     comment.refresh_from_db()
     assert response.status_code == 200
     assert comment.removed_at is not None
@@ -61,8 +64,18 @@ def test_remove_comment_sets_tombstone() -> None:
 def test_non_admin_and_invalid_requests_are_rejected_without_mutation() -> None:
     report = ReportFactory()
     url = reverse("api:reports-moderation", kwargs={"pk": report.pk})
-    assert _client(AuthorityFactory()).post(url, {"action": "hide", "reason": "x"}, format="json").status_code == 403
-    assert _client(AdminFactory()).post(url, {"action": "hide", "reason": " "}, format="json").status_code == 400
+    assert (
+        _client(AuthorityFactory())
+        .post(url, {"action": "hide", "reason": "x"}, format="json")
+        .status_code
+        == 403
+    )
+    assert (
+        _client(AdminFactory())
+        .post(url, {"action": "hide", "reason": " "}, format="json")
+        .status_code
+        == 400
+    )
     report.refresh_from_db()
     assert report.status == ReportStatus.SUBMITTED
     assert ModerationAction.objects.count() == 0

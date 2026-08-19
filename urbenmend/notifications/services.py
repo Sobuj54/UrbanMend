@@ -13,10 +13,10 @@ from urbenmend.identity.models import User, UserStatus
 from urbenmend.notifications.models import (
     Notification,
     NotificationChannel,
+    NotificationPreference,
     NotificationState,
     NotificationType,
     OutboxEvent,
-    NotificationPreference,
 )
 
 if TYPE_CHECKING:
@@ -66,10 +66,14 @@ def generate_status_change_notifications(event: OutboxEvent) -> int:
     from_status = str(payload["fromStatus"])
     to_status = str(payload["toStatus"])
     body = f"Your reported issue status changed from {from_status} to {to_status}."
-    recipients = User.objects.filter(
-        reports__issue_id=issue_id,
-        status__in=[UserStatus.REGISTERED, UserStatus.VERIFIED, UserStatus.ACTIVE],
-    ).exclude(notification_preference__in_app=False).distinct()
+    recipients = (
+        User.objects.filter(
+            reports__issue_id=issue_id,
+            status__in=[UserStatus.REGISTERED, UserStatus.VERIFIED, UserStatus.ACTIVE],
+        )
+        .exclude(notification_preference__in_app=False)
+        .distinct()
+    )
     now = timezone.now()
     notifications = [
         Notification(

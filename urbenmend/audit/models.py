@@ -37,8 +37,13 @@ class AuditEvent(models.Model):
         ordering = ["created_at", "id"]
         indexes = [
             models.Index(fields=["actor", "created_at"], name="audit_actor_created_idx"),
-            models.Index(fields=["target_content_type", "target_object_id"], name="audit_target_idx"),
+            models.Index(
+                fields=["target_content_type", "target_object_id"], name="audit_target_idx"
+            ),
         ]
+
+    def __str__(self) -> str:
+        return f"{self.action} ({self.id})"
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         if not self._state.adding:

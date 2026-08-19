@@ -23,7 +23,9 @@ class ModerationAction(models.Model):
         REMOVE = "remove", "Remove"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    actor = models.ForeignKey("identity.User", on_delete=models.PROTECT, related_name="moderation_actions")
+    actor = models.ForeignKey(
+        "identity.User", on_delete=models.PROTECT, related_name="moderation_actions"
+    )
     action = models.CharField(max_length=16, choices=Action.choices)
     reason = models.TextField()
     target_content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT)
@@ -34,6 +36,9 @@ class ModerationAction(models.Model):
     class Meta:
         db_table = "moderation_action"
         ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.action} ({self.id})"
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         if not self._state.adding:

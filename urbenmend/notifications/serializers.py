@@ -7,8 +7,7 @@ from typing import Any
 from rest_framework import serializers
 
 from urbenmend.api.serializers import CamelCaseSerializer, reject_unknown_fields
-from urbenmend.notifications.models import Notification, NotificationType
-from urbenmend.notifications.models import NotificationPreference
+from urbenmend.notifications.models import Notification, NotificationPreference, NotificationType
 
 
 class NotificationSerializer(CamelCaseSerializer):

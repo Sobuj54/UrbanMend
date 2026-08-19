@@ -47,14 +47,20 @@ def test_admin_updates_status_scope_and_two_factor_with_audit() -> None:
     assert list(authority.category_scope.values_list("slug", flat=True)) == ["roads"]
     event = AuditEvent.objects.get(action="identity.user_updated")
     assert event.target == authority
-    assert event.before["status"] == UserStatus.REGISTERED or event.before["status"] == UserStatus.ACTIVE
+    assert (
+        event.before["status"] == UserStatus.REGISTERED
+        or event.before["status"] == UserStatus.ACTIVE
+    )
     assert event.after["status"] == UserStatus.SUSPENDED
 
 
 def test_non_admin_and_invalid_scope_are_rejected_without_mutation() -> None:
     authority = AuthorityFactory()
     url = reverse("api:users-detail", kwargs={"user_id": authority.pk})
-    assert client(AuthorityFactory()).patch(url, {"status": "suspended"}, format="json").status_code == 403
+    assert (
+        client(AuthorityFactory()).patch(url, {"status": "suspended"}, format="json").status_code
+        == 403
+    )
     response = client(AdminFactory()).patch(
         url, {"categoryScope": ["does-not-exist"]}, format="json"
     )
