@@ -16,15 +16,37 @@ Rules for this file:
 
 from __future__ import annotations
 
+from datetime import datetime
+from uuid import UUID
+
 from django.db.models import QuerySet
 
 from urbenmend.audit.models import AuditEvent
 from urbenmend.identity.models import Role, User
+from urbenmend.identity.services import AuthorizationError
 
 
-def list_events(*, actor: User) -> QuerySet[AuditEvent]:
+def list_events(
+    *, actor: User, actor_id: UUID | None = None, action: str | None = None,
+    target_type: str | None = None, target_id: str | None = None,
+    from_date: datetime | None = None, to_date: datetime | None = None,
+) -> QuerySet[AuditEvent]:
     """Admins see all events; authorities see only events they created."""
+    if actor.role not in {Role.AUTHORITY, Role.ADMIN}:
+        raise AuthorizationError("You do not have permission to view audit events.")
     queryset = AuditEvent.objects.select_related("actor", "target_content_type")
-    if actor.role == Role.ADMIN:
-        return queryset
-    return queryset.filter(actor=actor)
+    if actor.role != Role.ADMIN:
+        queryset = queryset.filter(actor=actor)
+    elif actor_id is not None:
+        queryset = queryset.filter(actor_id=actor_id)
+    if action:
+        queryset = queryset.filter(action=action)
+    if target_type:
+        queryset = queryset.filter(target_content_type__model=target_type)
+    if target_id:
+        queryset = queryset.filter(target_object_id=target_id)
+    if from_date:
+        queryset = queryset.filter(created_at__gte=from_date)
+    if to_date:
+        queryset = queryset.filter(created_at__lte=to_date)
+    return queryset
