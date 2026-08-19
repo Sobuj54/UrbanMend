@@ -17,6 +17,12 @@
 - Where behavior depends on an **unresolved open question**, the endpoint **references it** (PRD `❓Qx`, Domain `DM-Qx`, `ASSUMP-x`) and does **not** invent an answer.
 - **No implementation code.** Schemas are described as JSON contracts, not database or language artifacts.
 
+### Interactive documentation
+
+The running service publishes generated OpenAPI 3 documentation at `/api/schema/` (machine-readable
+schema) and `/api/docs/` (interactive Swagger UI). Both endpoints are public; API operations retain
+their normal session-cookie and CSRF requirements.
+
 ### Changelog
 - **v1.2 (2026-08-03)** — **No contract changes: no endpoint, payload, status code, or header was altered.** The framework was committed to Python + Django + DRF (`docs/07-adr-001-app-framework.md`, ADR-001); two informational notes were added (§2 on CSRF, §1.2 on GeoJSON) recording which library supplies a mechanism this spec already required. **This spec remains the authority over the implementation, not the reverse** — where DRF's defaults differ from the contracts below (notably the §4.1 error envelope and the §1.2 cursor pagination shape), the implementation is customised to match this document (Project Plan T0.6).
 - **v1.1 (2026-07-22)** — Q2/Q4/Q7/Q8/Q9/DM-Q5/Q7/Q8 resolved.

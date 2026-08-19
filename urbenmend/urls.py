@@ -10,9 +10,16 @@ repeats it [doc: API §5].
 
 from django.contrib import admin
 from django.urls import URLPattern, URLResolver, include, path
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 # Annotated because mypy cannot infer the element type from a heterogeneous list.
 urlpatterns: list[URLPattern | URLResolver] = [
+    path("api/schema/", SpectacularAPIView.as_view(), name="openapi-schema"),
+    path(
+        "api/docs/",
+        SpectacularSwaggerView.as_view(url_name="openapi-schema"),
+        name="swagger-ui",
+    ),
     path("api/v1/", include("urbenmend.api.urls")),
     # FR-30/FR-31 — reference data and moderation are surfaced through Django admin
     # [doc: Arch §2.4]. This is also the only consumer of `PermissionsMixin` on the user model.

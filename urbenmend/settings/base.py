@@ -75,6 +75,7 @@ INSTALLED_APPS = [
     # Third-party.
     "rest_framework",
     "rest_framework_gis",
+    "drf_spectacular",
     "django_otp",
     "django_otp.plugins.otp_totp",  # 2FA for Authority/Admin (FR-4).
     "django_prometheus",  # Observability — T0.9.
@@ -417,6 +418,7 @@ CLASSIFICATION_LOW_CONFIDENCE_THRESHOLD = env.float(
 # --------------------------------------------------------------------------------------
 # API conventions (API §1.2, T0.6).
 REST_FRAMEWORK = {
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",  # Cookie-based (API §2).
     ],
@@ -451,6 +453,15 @@ REST_FRAMEWORK = {
     # throttle the public map and issue list, which API §4.5 does not ask for and Q7 makes
     # unauthenticated. Rates live in `AUTH_THROTTLE_RATES` below, read at throttle-instantiation
     # time so `override_settings` reaches them — see `urbenmend/api/throttling.py`.
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "UrbanMend API",
+    "DESCRIPTION": "Urban civic issue reporting, triage, moderation, and notification API.",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SCHEMA_PATH_PREFIX": r"/api/v1",
+    "COMPONENT_SPLIT_REQUEST": True,
 }
 
 # --------------------------------------------------------------------------------------

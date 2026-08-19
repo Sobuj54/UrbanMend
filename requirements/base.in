@@ -15,6 +15,8 @@
 # --- Core -------------------------------------------------------------------
 django~=5.2.16
 djangorestframework~=3.17.0
+# OpenAPI 3 schema generation and interactive Swagger UI.
+drf-spectacular~=0.28
 
 # --- Geospatial -------------------------------------------------------------
 # Pulls django-filter as a hard dependency (>=23.5,<26.0).

@@ -18,6 +18,7 @@ from typing import Any, cast
 
 from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
@@ -30,6 +31,7 @@ from urbenmend.api.exceptions import (
     InvalidCredentials,
     UnprocessableEntity,
 )
+from urbenmend.api.pagination import StandardCursorPagination
 from urbenmend.api.throttling import (
     AuthAnonRateThrottle,
     AuthIdentityRateThrottle,
@@ -37,26 +39,26 @@ from urbenmend.api.throttling import (
     RateLimitHeadersMixin,
     clear_identity_throttle,
 )
-from urbenmend.identity import services
-from urbenmend.identity import selectors
+from urbenmend.identity import selectors, services
 from urbenmend.identity.models import Channel, User
 from urbenmend.identity.serializers import (
+    AdminUserListQuerySerializer,
+    AdminUserUpdateSerializer,
     LoginResponseSerializer,
     LoginSerializer,
+    PasswordForgotSerializer,
+    PasswordResetSerializer,
     ProfileUpdateSerializer,
     ProvisionAuthoritySerializer,
+    RegisterResponseSerializer,
     RegisterSerializer,
     TwoFactorEnrollResponseSerializer,
     TwoFactorVerifyResponseSerializer,
     TwoFactorVerifySerializer,
     UserSerializer,
     VerifyRequestSerializer,
-    AdminUserListQuerySerializer,
-    AdminUserUpdateSerializer,
-    PasswordForgotSerializer,
-    PasswordResetSerializer,
+    VerifyResponseSerializer,
 )
-from urbenmend.api.pagination import StandardCursorPagination
 
 
 class PasswordForgotView(RateLimitHeadersMixin, APIView):
@@ -64,6 +66,12 @@ class PasswordForgotView(RateLimitHeadersMixin, APIView):
     authentication_classes: list[Any] = []
     throttle_classes = [AuthAnonRateThrottle]
 
+    @extend_schema(
+        request=PasswordForgotSerializer,
+        responses={202: OpenApiResponse(description="Request accepted; response is always generic.")},
+        tags=["Authentication"],
+        operation_id="passwordForgot",
+    )
     def post(self, request: Request) -> Response:
         serializer = PasswordForgotSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -76,6 +84,15 @@ class PasswordResetView(RateLimitHeadersMixin, APIView):
     authentication_classes: list[Any] = []
     throttle_classes = [AuthAnonRateThrottle]
 
+    @extend_schema(
+        request=PasswordResetSerializer,
+        responses={
+            200: OpenApiResponse(description="Password changed successfully."),
+            422: OpenApiResponse(description="Reset token invalid or expired."),
+        },
+        tags=["Authentication"],
+        operation_id="passwordReset",
+    )
     def post(self, request: Request) -> Response:
         serializer = PasswordResetSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -95,6 +112,12 @@ class RegisterView(RateLimitHeadersMixin, APIView):
     # only bucket that applies. Caps automated account creation from one source (T1.8).
     throttle_classes = [AuthAnonRateThrottle]
 
+    @extend_schema(
+        request=RegisterSerializer,
+        responses={201: RegisterResponseSerializer, 409: OpenApiResponse(description="Account conflict.")},
+        tags=["Authentication"],
+        operation_id="register",
+    )
     def post(self, request: Request) -> Response:
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -156,6 +179,12 @@ class VerifyView(RateLimitHeadersMixin, APIView):
     # cap the volume of attempts across many codes and accounts, which that counter cannot see.
     throttle_classes = [AuthAnonRateThrottle, AuthUserRateThrottle]
 
+    @extend_schema(
+        request=VerifyRequestSerializer,
+        responses={200: VerifyResponseSerializer, 422: OpenApiResponse(description="Code invalid or expired.")},
+        tags=["Authentication"],
+        operation_id="verifyChannel",
+    )
     def post(self, request: Request) -> Response:
         serializer = VerifyRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -215,6 +244,12 @@ class LoginView(RateLimitHeadersMixin, APIView):
     # identifier they are attacking stays the same). Both apply; whichever is tighter binds.
     throttle_classes = [AuthIdentityRateThrottle, AuthAnonRateThrottle]
 
+    @extend_schema(
+        request=LoginSerializer,
+        responses={200: LoginResponseSerializer, 401: OpenApiResponse(description="Invalid credentials.")},
+        tags=["Authentication"],
+        operation_id="login",
+    )
     def post(self, request: Request) -> Response:
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
