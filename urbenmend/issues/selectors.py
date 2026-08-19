@@ -81,6 +81,11 @@ def active_clustering_rule(*, category_id: int) -> ClusteringRule:
             f"No active clustering rule is configured for category {category_id}."
         ) from exc
 
+def list_clustering_rules(*, actor: User):
+    from urbenmend.identity.services import require_role
+    require_role(actor, Role.ADMIN)
+    return ClusteringRule.objects.select_related("category").all()
+
 
 def issues_within_radius(*, point: Point, radius_m: float) -> QuerySet[Issue]:
     """Issues within `radius_m` metres of `point`, using index-assisted `ST_DWithin`.

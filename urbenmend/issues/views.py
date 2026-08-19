@@ -13,6 +13,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from urbenmend.api.pagination import StandardCursorPagination
 from urbenmend.identity.models import Role, User
 from urbenmend.identity.services import AuthorizationError, has_category_scope
 from urbenmend.issues import selectors, services
@@ -38,13 +39,42 @@ from urbenmend.issues.serializers import (
     IssueSplitSerializer,
     IssueStatusResponseSerializer,
     IssueStatusTransitionSerializer,
+    ClusteringRuleSerializer,
+    ClusteringRuleWriteSerializer,
 )
+from urbenmend.issues.reference_services import create_clustering_rule, update_clustering_rule
 from urbenmend.reporting.pagination import ReportCursorPagination
 from urbenmend.reporting.serializers import ReportDetailSerializer
 
 
 class _QueueAnnotatedIssue(Protocol):
     corroboration_total: int
+
+class ClusteringRuleCollectionView(APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request: Request) -> Response:
+        queryset = selectors.list_clustering_rules(actor=cast("User", request.user))
+        paginator = StandardCursorPagination(); page = paginator.paginate_queryset(queryset, request, view=self) or []
+        return paginator.get_paginated_response(ClusteringRuleSerializer(page, many=True).data)
+    def post(self, request: Request) -> Response:
+        serializer = ClusteringRuleWriteSerializer(data=request.data); serializer.is_valid(raise_exception=True)
+        required = {"category", "radius_m", "time_window_hours"}
+        missing = required - serializer.validated_data.keys()
+        if missing:
+            from rest_framework.serializers import ValidationError
+            raise ValidationError({field: "This field is required." for field in missing})
+        rule = create_clustering_rule(actor=cast("User", request.user), **serializer.validated_data)
+        return Response(ClusteringRuleSerializer(rule).data, status=status.HTTP_201_CREATED)
+
+class ClusteringRuleDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+    def patch(self, request: Request, rule_id: int) -> Response:
+        serializer = ClusteringRuleWriteSerializer(data=request.data); serializer.is_valid(raise_exception=True)
+        if "category" in serializer.validated_data:
+            from rest_framework.serializers import ValidationError
+            raise ValidationError({"category": "This field is immutable."})
+        rule = update_clustering_rule(actor=cast("User", request.user), rule_id=rule_id, **serializer.validated_data)
+        return Response(ClusteringRuleSerializer(rule).data)
 
 
 class IssueCollectionView(APIView):

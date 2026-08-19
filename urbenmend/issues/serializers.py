@@ -17,6 +17,7 @@ from urbenmend.classification.models import Category
 from urbenmend.geo.models import POI
 from urbenmend.geo.selectors import nearby_pois
 from urbenmend.issues.models import Comment, CommentVisibility, Issue, IssueStatus
+from urbenmend.issues.models import ClusteringRule, ClusteringRuleStatus
 from urbenmend.issues.pagination import SORT_CHOICES
 from urbenmend.issues.selectors import MODERATED_ISSUE_STATUSES, PROXIMITY_ATTR
 from urbenmend.issues.services import REOPEN_ACTION
@@ -63,6 +64,24 @@ class IssueAssignmentSerializer(CamelCaseSerializer):
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         reject_unknown_fields(self)
+        return attrs
+
+class ClusteringRuleSerializer(CamelCaseSerializer):
+    id = serializers.IntegerField(read_only=True)
+    category = serializers.SlugRelatedField(slug_field="slug", read_only=True)
+    radius_m = serializers.IntegerField(read_only=True)
+    time_window_hours = serializers.IntegerField(read_only=True)
+    active = serializers.SerializerMethodField()
+    def get_active(self, obj: ClusteringRule) -> bool: return obj.status == ClusteringRuleStatus.ACTIVE
+
+class ClusteringRuleWriteSerializer(CamelCaseSerializer):
+    category = serializers.SlugField(required=False)
+    radius_m = serializers.IntegerField(required=False, min_value=1)
+    time_window_hours = serializers.IntegerField(required=False, min_value=1)
+    active = serializers.BooleanField(required=False)
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self)
+        if not attrs: raise serializers.ValidationError("Provide at least one field.")
         return attrs
 
 
