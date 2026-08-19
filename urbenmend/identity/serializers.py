@@ -17,10 +17,11 @@ from rest_framework import serializers
 from urbenmend.api.serializers import (
     CamelCaseModelSerializer,
     CamelCaseSerializer,
+    reject_unknown_fields,
     to_camel_case,
 )
 from urbenmend.identity import services
-from urbenmend.identity.models import Channel, User
+from urbenmend.identity.models import Channel, Role, User, UserStatus
 
 
 class RegisterSerializer(CamelCaseSerializer):
@@ -240,6 +241,35 @@ class UserSerializer(CamelCaseModelSerializer):
         from urbenmend.identity.selectors import category_scope_for
 
         return [category.slug for category in category_scope_for(obj)]
+
+
+class AdminUserListQuerySerializer(CamelCaseSerializer):
+    role = serializers.ChoiceField(choices=Role.choices, required=False)
+    status = serializers.ChoiceField(choices=UserStatus.choices, required=False)
+    q = serializers.CharField(required=False, allow_blank=False)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self, extra_allowed=("limit", "cursor"))
+        return attrs
+
+
+class AdminUserUpdateSerializer(CamelCaseSerializer):
+    role = serializers.ChoiceField(choices=Role.choices, required=False)
+    status = serializers.ChoiceField(choices=UserStatus.choices, required=False)
+    category_scope = serializers.ListField(
+        child=serializers.SlugField(max_length=50), required=False, allow_empty=True
+    )
+    require_two_factor = serializers.BooleanField(required=False)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self)
+        if not attrs:
+            raise serializers.ValidationError("Provide at least one field.")
+        if "category_scope" in attrs and attrs.get("role") not in {None, Role.AUTHORITY}:
+            raise serializers.ValidationError(
+                {"category_scope": "Category scope applies only to Authority accounts."}
+            )
+        return attrs
 
 
 class ProfileUpdateSerializer(CamelCaseSerializer):

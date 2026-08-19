@@ -18,6 +18,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from django.db.models import Q, F
+
+from urbenmend.identity.models import Role, User
+from urbenmend.identity.services import require_role
+
 if TYPE_CHECKING:
     from django.db.models import QuerySet
 
@@ -45,3 +50,15 @@ def category_scope_for(user: User) -> QuerySet[Category]:
     role is what disambiguates; do not infer capability from this list alone.
     """
     return user.category_scope.all()
+
+
+def list_users(*, actor: User, role: str | None = None, status: str | None = None, query: str = ""):
+    require_role(actor, Role.ADMIN)
+    queryset = User.objects.prefetch_related("category_scope").annotate(created_at=F("date_joined"))
+    if role:
+        queryset = queryset.filter(role=role)
+    if status:
+        queryset = queryset.filter(status=status)
+    if query:
+        queryset = queryset.filter(Q(email__icontains=query) | Q(phone__icontains=query))
+    return queryset.order_by("-date_joined", "-pk")

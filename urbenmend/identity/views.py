@@ -38,6 +38,7 @@ from urbenmend.api.throttling import (
     clear_identity_throttle,
 )
 from urbenmend.identity import services
+from urbenmend.identity import selectors
 from urbenmend.identity.models import Channel, User
 from urbenmend.identity.serializers import (
     LoginResponseSerializer,
@@ -50,7 +51,10 @@ from urbenmend.identity.serializers import (
     TwoFactorVerifySerializer,
     UserSerializer,
     VerifyRequestSerializer,
+    AdminUserListQuerySerializer,
+    AdminUserUpdateSerializer,
 )
+from urbenmend.api.pagination import StandardCursorPagination
 
 
 class RegisterView(RateLimitHeadersMixin, APIView):
@@ -275,6 +279,37 @@ class ProvisionAuthorityView(APIView):
             UserSerializer(authority).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+class UserCollectionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        params = AdminUserListQuerySerializer(data=request.query_params)
+        params.is_valid(raise_exception=True)
+        values = params.validated_data
+        queryset = selectors.list_users(
+            actor=cast("User", request.user), role=values.get("role"),
+            status=values.get("status"), query=values.get("q", "")
+        )
+        paginator = StandardCursorPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self) or []
+        return paginator.get_paginated_response(UserSerializer(page, many=True).data)
+
+
+class UserAdminDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request: Request, user_id) -> Response:
+        serializer = AdminUserUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            target = services.update_user_by_admin(
+                actor=cast("User", request.user), user_id=user_id, **serializer.validated_data
+            )
+        except DjangoValidationError as exc:
+            raise UnprocessableEntity(exc.messages[0]) from exc
+        return Response(UserSerializer(target).data)
 
 
 class TwoFactorEnrollView(RateLimitHeadersMixin, APIView):

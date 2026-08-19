@@ -71,6 +71,8 @@ urlpatterns = [
     # swallow `me` and turn profile reads into lookups for a user whose id is "me". Order in this
     # file IS the router.
     path("users/me", identity_views.MeView.as_view(), name="users-me"),
+    path("users", identity_views.UserCollectionView.as_view(), name="users"),
+    path("users/<uuid:user_id>", identity_views.UserAdminDetailView.as_view(), name="users-detail"),
     # API §6.3 — reports. T2.2 adds submission (`POST`), T2.7 the collection read (`GET`) and the
     # detail read below; T2.8 adds the edit (`PATCH`) to the same detail route.
     #

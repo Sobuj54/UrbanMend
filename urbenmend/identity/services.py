@@ -739,7 +739,7 @@ def has_category_scope(user: User, category: Category) -> bool:
     until an Admin scopes them. Reading empty as "unrestricted" would make a forgotten
     provisioning step into unrestricted access.
     """
-    from urbenmend.identity.models import Role
+    from urbenmend.identity.models import Role, User
 
     if has_role(user, Role.ADMIN):
         return True
@@ -808,7 +808,7 @@ def scoped_category_ids(user: User) -> set[int] | None:
     every caller's query, so `selectors.py` in other apps needs no dependency on the shape of
     this relation.
     """
-    from urbenmend.identity.models import Role
+    from urbenmend.identity.models import Role, User
 
     if has_role(user, Role.ADMIN):
         return None
@@ -1020,6 +1020,47 @@ def set_category_scope(
         category_scope=sorted(category.slug for category in categories),
     )
     return authority
+
+
+@transaction.atomic
+def update_user_by_admin(*, actor: User, user_id, **changes: Any) -> User:
+    """Apply the documented admin account controls and audit each resulting snapshot."""
+    from urbenmend.identity.models import Role, User
+    require_role(actor, Role.ADMIN)
+    try:
+        target = User.objects.select_for_update().get(pk=user_id)
+    except (User.DoesNotExist, ValueError, TypeError) as exc:
+        from django.http import Http404
+        raise Http404("User not found.") from exc
+    before = {
+        "role": target.role,
+        "status": target.status,
+        "require_two_factor": target.require_two_factor,
+        "category_scope": sorted(target.category_scope.values_list("slug", flat=True)),
+    }
+    resulting_role = changes.get("role", target.role)
+    if "category_scope" in changes and resulting_role != Role.AUTHORITY:
+        raise ValidationError("Category scope applies only to Authority accounts (BR-26).")
+    if "category_scope" in changes:
+        scope = _resolve_category_scope(changes.pop("category_scope"))
+        target.category_scope.set(scope)
+    for field in ("role", "status", "require_two_factor"):
+        if field in changes:
+            setattr(target, field, changes.pop(field))
+    if target.role != Role.AUTHORITY and target.category_scope.exists():
+        target.category_scope.clear()
+    if changes:
+        raise ValidationError("Unsupported user update field.")
+    target.save(update_fields=["role", "status", "require_two_factor"])
+    after = {
+        "role": target.role,
+        "status": target.status,
+        "require_two_factor": target.require_two_factor,
+        "category_scope": sorted(target.category_scope.values_list("slug", flat=True)),
+    }
+    from urbenmend.audit.services import record_event
+    record_event(actor=actor, action="identity.user_updated", target=target, before=before, after=after)
+    return target
 
 
 # =======================================================================================
