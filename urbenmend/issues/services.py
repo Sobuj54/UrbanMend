@@ -15,6 +15,7 @@ from django.http import Http404
 from django.utils import timezone
 
 from urbenmend.api.exceptions import Conflict, UnprocessableEntity
+from urbenmend.audit.services import record_event
 from urbenmend.identity.models import Role, User
 from urbenmend.identity.services import (
     AuthorizationError,
@@ -292,6 +293,7 @@ def assign_issue(
     require_role(actor, Role.AUTHORITY, Role.ADMIN)
     issue = _locked_issue(issue_id)
     require_category_scope(actor, issue.primary_category)
+    previous_assignee_id = issue.assignee_id
 
     if assignee_id is None:
         if actor.role == Role.AUTHORITY and issue.assignee_id not in {None, actor.pk}:
@@ -314,6 +316,13 @@ def assign_issue(
         issue.assignee = assignee
 
     issue.save(update_fields=["assignee", "updated_at"])
+    record_event(
+        actor=actor,
+        action="issue.assignment_changed",
+        target=issue,
+        before={"assignee_id": str(previous_assignee_id) if previous_assignee_id else None},
+        after={"assignee_id": str(issue.assignee_id) if issue.assignee_id else None},
+    )
     return IssueAssignmentResult(issue_id=issue.pk, assignee_id=issue.assignee_id)
 
 
@@ -329,6 +338,13 @@ def override_issue_severity(
     require_role(actor, Role.AUTHORITY, Role.ADMIN)
     issue = _locked_issue(issue_id)
     require_category_scope(actor, issue.primary_category)
+    previous_override = {
+        "severity": issue.overridden_severity,
+        "reason": issue.severity_override_reason,
+        "overridden_by": str(issue.severity_overridden_by_id)
+        if issue.severity_overridden_by_id
+        else None,
+    }
 
     if severity not in SeveritySignal.values:
         raise UnprocessableEntity(
@@ -355,6 +371,13 @@ def override_issue_severity(
             "severity_overridden_at",
             "updated_at",
         ]
+    )
+    record_event(
+        actor=actor,
+        action="issue.severity_overridden",
+        target=issue,
+        before=previous_override,
+        after={"severity": severity, "reason": normalized_reason, "overridden_by": str(actor.pk)},
     )
     return IssueSeverityResult(
         issue_id=issue.pk,
@@ -413,6 +436,8 @@ def merge_issues(
         raise Conflict("Only open Issues can be merged.", code="INVALID_MERGE")
     if not survivor.reports.exists() or not absorbed.reports.exists():
         raise Conflict("Both Issues must contain Reports before merging.", code="INVALID_MERGE")
+    survivor_report_count = survivor.report_count
+    absorbed_report_count = absorbed.report_count
 
     # One citizen can confirm both clusters before an Authority identifies the duplicate. Remove
     # only that collision, then move every remaining confirmation without violating BR-23.
@@ -435,6 +460,18 @@ def merge_issues(
         related_issue=survivor,
     )
     record_issue_status_changed(event)
+    record_event(
+        actor=actor,
+        action="issue.merged",
+        target=survivor,
+        before={"report_count": survivor_report_count},
+        after={
+            "absorbed_issue_id": str(absorbed.pk),
+            "absorbed_report_count": absorbed_report_count,
+            "report_count": survivor.report_count,
+            "reason": normalized_reason,
+        },
+    )
     logger.info(
         "issue.merged",
         survivor_issue_id=str(survivor.pk),
@@ -530,6 +567,18 @@ def split_issue(
 
     _recompute_issue_severity(original)
     _recompute_issue_severity(created)
+    record_event(
+        actor=actor,
+        action="issue.split",
+        target=original,
+        before={"report_count": len(members)},
+        after={
+            "created_issue_id": str(created.pk),
+            "moved_report_ids": sorted(str(report_id) for report_id in selected_ids),
+            "report_count": len(remaining),
+            "reason": normalized_reason,
+        },
+    )
     logger.info(
         "issue.split",
         original_issue_id=str(original.pk),
@@ -592,6 +641,17 @@ def transition_issue_status(
             related_issue=surviving,
         )
         record_issue_status_changed(event)
+        record_event(
+            actor=actor,
+            action="issue.status_changed",
+            target=issue,
+            before={"status": plan.from_status, "duplicate_of_issue_id": None},
+            after={
+                "status": plan.to_status,
+                "duplicate_of_issue_id": str(surviving.pk),
+                "reason": plan.reason or "",
+            },
+        )
         return _status_result(issue)
 
     if duplicate_of_issue_id is not None:
@@ -620,6 +680,17 @@ def transition_issue_status(
             related_issue=reopened,
         )
         record_issue_status_changed(event)
+        record_event(
+            actor=actor,
+            action="issue.reopened",
+            target=issue,
+            before={"status": plan.from_status},
+            after={
+                "status": plan.from_status,
+                "reopened_issue_id": str(reopened.pk),
+                "reason": plan.reason or "",
+            },
+        )
         return _status_result(reopened)
 
     issue.status = plan.to_status
@@ -634,6 +705,13 @@ def transition_issue_status(
         public_note=normalized_public_note,
     )
     record_issue_status_changed(event)
+    record_event(
+        actor=actor,
+        action="issue.status_changed",
+        target=issue,
+        before={"status": plan.from_status},
+        after={"status": plan.to_status, "reason": plan.reason or ""},
+    )
     return _status_result(issue)
 
 

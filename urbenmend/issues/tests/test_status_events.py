@@ -12,6 +12,7 @@ from django.test import Client, RequestFactory
 from django.urls import reverse
 
 from urbenmend.api.exceptions import Conflict
+from urbenmend.audit.models import AuditEvent
 from urbenmend.identity.models import User
 from urbenmend.identity.tests.factories import AuthorityFactory
 from urbenmend.issues.models import Issue, IssueStatus, StatusEvent
@@ -50,6 +51,11 @@ def test_normal_transition_writes_complete_event() -> None:
     assert event.reason == ""
     assert event.public_note == "A crew has acknowledged the report."
     assert event.related_issue is None
+    audit = AuditEvent.objects.get(action="issue.status_changed")
+    assert audit.actor == actor
+    assert audit.target == issue
+    assert audit.before == {"status": IssueStatus.TRIAGED}
+    assert audit.after == {"status": IssueStatus.ACKNOWLEDGED, "reason": ""}
 
 
 def test_reason_required_branch_persists_the_normalized_reason() -> None:

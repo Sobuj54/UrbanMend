@@ -10,6 +10,7 @@ from django.test import Client
 from django.urls import reverse
 
 from urbenmend.api.exceptions import UnprocessableEntity
+from urbenmend.audit.models import AuditEvent
 from urbenmend.identity.models import User, UserStatus
 from urbenmend.identity.tests.factories import AdminFactory, AuthorityFactory, UserFactory
 from urbenmend.issues.models import Issue
@@ -48,6 +49,15 @@ def test_authority_can_assign_and_unassign_self() -> None:
     issue.refresh_from_db()
     assert cleared.assignee_id is None
     assert issue.assignee_id is None
+    events = list(AuditEvent.objects.filter(action="issue.assignment_changed"))
+    assert [event.before for event in events] == [
+        {"assignee_id": None},
+        {"assignee_id": str(authority.pk)},
+    ]
+    assert [event.after for event in events] == [
+        {"assignee_id": str(authority.pk)},
+        {"assignee_id": None},
+    ]
 
 
 def test_authority_cannot_assign_or_unassign_another_authority() -> None:

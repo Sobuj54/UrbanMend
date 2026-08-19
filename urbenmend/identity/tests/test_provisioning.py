@@ -28,6 +28,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from urbenmend.audit.models import AuditEvent
 from urbenmend.classification.models import Category, CategoryStatus
 from urbenmend.identity.models import Role, User, UserStatus
 from urbenmend.identity.services import (
@@ -78,6 +79,10 @@ class TestProvisionAuthorityAuthorization:
 
         assert authority.role == Role.AUTHORITY
         assert authority.pk != admin.pk
+        event = AuditEvent.objects.get(action="authority.provisioned")
+        assert event.actor == admin
+        assert event.target == authority
+        assert event.after == {"category_scope": ["roads"], "require_two_factor": False}
 
     def test_citizen_cannot_provision(self, citizen: User) -> None:
         with pytest.raises(AuthorizationError):

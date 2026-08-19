@@ -827,30 +827,13 @@ def _audit_privileged_action(
     actor: User,
     action: str,
     target: User,
+    before: dict[str, Any] | None = None,
     **detail: Any,
 ) -> None:
-    """Record a privileged action (BR-25's "and the grant is audited", FR-32).
+    """Persist and operationally log a privileged identity action (FR-32)."""
+    from urbenmend.audit.services import record_event
 
-    ⚠️ **This writes a structured log line, NOT the append-only audit table — and that is a
-    deliberate, documented shortfall, not an oversight.** The immutable audit log is **T8.1**, in
-    P8: a real table whose append-only property is enforced *at the database level* by revoking
-    `UPDATE`/`DELETE` from the application role, because "application discipline alone will not
-    satisfy NFR-10" [doc: Plan T8.1, database.md]. Building a table here would either duplicate
-    that schema before its design exists, or — worse — ship an audit table without the revoke and
-    create the false assurance NFR-10 exists to prevent. The plan agrees: M1's DoD does not
-    mention audit, M8's does ("every privileged action is audited immutably").
-
-    ⚠️ **A log line is not an audit record.** It is mutable, expires with log retention, and is
-    not queryable via `GET /audit-events`. Until T8.1, BR-25's audit obligation is only partly
-    met, and that gap is recorded in the build notes rather than papered over.
-
-    ⚠️ **T8.1 must replace this function's body, not add a second call path beside it.** Every
-    privileged action routes through here precisely so the swap is one edit — a caller that logs
-    directly is a caller T8.1 will miss. The `traceId` in the log line already correlates it with
-    the request that caused it [doc: ops §2.3].
-
-    ⚠️ Never widen `detail` to carry a password, a verification code, or a session key.
-    """
+    record_event(actor=actor, action=action, target=target, before=before, after=detail)
     logger.info(
         "privileged_action",
         action=action,
@@ -1026,12 +1009,14 @@ def set_category_scope(
         raise ValidationError("Category scope applies only to Authority accounts (BR-26).")
 
     categories = _resolve_category_scope(category_slugs)
+    previous_scope = sorted(authority.category_scope.values_list("slug", flat=True))
     authority.category_scope.set(categories)
 
     _audit_privileged_action(
         actor=actor,
         action="authority.scope_changed",
         target=authority,
+        before={"category_scope": previous_scope},
         category_scope=sorted(category.slug for category in categories),
     )
     return authority
