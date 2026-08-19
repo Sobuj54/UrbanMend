@@ -41,6 +41,7 @@ from urbenmend.issues.serializers import (
     IssueStatusTransitionSerializer,
     ClusteringRuleSerializer,
     ClusteringRuleWriteSerializer,
+    StatusEventSerializer,
 )
 from urbenmend.issues.reference_services import create_clustering_rule, update_clustering_rule
 from urbenmend.reporting.pagination import ReportCursorPagination
@@ -49,6 +50,13 @@ from urbenmend.reporting.serializers import ReportDetailSerializer
 
 class _QueueAnnotatedIssue(Protocol):
     corroboration_total: int
+
+class IssueStatusEventsView(APIView):
+    permission_classes = [AllowAny]
+    def get(self, request: Request, issue_id) -> Response:
+        events = selectors.list_status_events(issue_id=issue_id, actor=request.user)
+        paginator = StandardCursorPagination(); page = paginator.paginate_queryset(events, request, view=self) or []
+        return paginator.get_paginated_response(StatusEventSerializer(page, many=True).data)
 
 class ClusteringRuleCollectionView(APIView):
     permission_classes = [IsAuthenticated]

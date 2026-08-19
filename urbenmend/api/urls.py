@@ -107,6 +107,11 @@ urlpatterns = [
         name="issues-status",
     ),
     path(
+        "issues/<uuid:issue_id>/status-events",
+        issue_views.IssueStatusEventsView.as_view(),
+        name="issues-status-events",
+    ),
+    path(
         "issues/<uuid:issue_id>/assignment",
         issue_views.IssueAssignmentView.as_view(),
         name="issues-assignment",

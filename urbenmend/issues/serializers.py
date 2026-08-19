@@ -16,7 +16,7 @@ from urbenmend.api.serializers import (
 from urbenmend.classification.models import Category
 from urbenmend.geo.models import POI
 from urbenmend.geo.selectors import nearby_pois
-from urbenmend.issues.models import Comment, CommentVisibility, Issue, IssueStatus
+from urbenmend.issues.models import Comment, CommentVisibility, Issue, IssueStatus, StatusEvent
 from urbenmend.issues.models import ClusteringRule, ClusteringRuleStatus
 from urbenmend.issues.pagination import SORT_CHOICES
 from urbenmend.issues.selectors import MODERATED_ISSUE_STATUSES, PROXIMITY_ATTR
@@ -83,6 +83,20 @@ class ClusteringRuleWriteSerializer(CamelCaseSerializer):
         reject_unknown_fields(self)
         if not attrs: raise serializers.ValidationError("Provide at least one field.")
         return attrs
+
+class StatusEventSerializer(CamelCaseSerializer):
+    from_status = serializers.CharField(read_only=True)
+    to_status = serializers.CharField(read_only=True)
+    actor_role = serializers.CharField(source="actor.role", read_only=True)
+    reason = serializers.SerializerMethodField()
+    at = serializers.DateTimeField(source="created_at", read_only=True)
+    def get_reason(self, obj: StatusEvent) -> str | None:
+        return obj.reason or None
+    def to_representation(self, instance: StatusEvent) -> dict[str, Any]:
+        data = super().to_representation(instance)
+        data["from"] = data.pop("fromStatus")
+        data["to"] = data.pop("toStatus")
+        return data
 
 
 class IssueAssignmentResponseSerializer(CamelCaseSerializer):
