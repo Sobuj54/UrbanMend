@@ -13,3 +13,18 @@ Rules for this file:
 
 [doc: Arch §3 (FR-32)]
 """
+
+from __future__ import annotations
+
+from django.db.models import QuerySet
+
+from urbenmend.audit.models import AuditEvent
+from urbenmend.identity.models import Role, User
+
+
+def list_events(*, actor: User) -> QuerySet[AuditEvent]:
+    """Admins see all events; authorities see only events they created."""
+    queryset = AuditEvent.objects.select_related("actor", "target_content_type")
+    if actor.role == Role.ADMIN:
+        return queryset
+    return queryset.filter(actor=actor)
