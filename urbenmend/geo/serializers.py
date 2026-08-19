@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any
 from django.conf import settings
 from django.contrib.gis.geos import Point, Polygon
+from django.contrib.gis.geos import GEOSGeometry, MultiPolygon
 from rest_framework import serializers
 from urbenmend.api.serializers import CamelCaseSerializer, reject_unknown_fields
 from urbenmend.geo.models import POI, POIType
@@ -56,3 +57,27 @@ class POIQuerySerializer(CamelCaseSerializer):
         if any(v is not None for v in spatial) and not all(v is not None for v in spatial): raise serializers.ValidationError("nearLng, nearLat and radiusM are required together.")
         if all(v is not None for v in spatial): attrs["near"] = Point(attrs.pop("near_lng"), attrs.pop("near_lat"), srid=4326)
         return attrs
+
+class CityBoundarySerializer(CamelCaseSerializer):
+    type = serializers.CharField(default="Feature", read_only=True)
+    geometry = serializers.SerializerMethodField()
+    properties = serializers.SerializerMethodField()
+    def get_geometry(self, obj):
+        import json
+        return json.loads(obj.area.geojson)
+    def get_properties(self, obj):
+        return {"id": str(obj.pk), "name": obj.name, "active": obj.is_active, "createdAt": obj.created_at.isoformat().replace("+00:00", "Z")}
+
+class CityBoundaryWriteSerializer(CamelCaseSerializer):
+    name = serializers.CharField(max_length=100)
+    geometry = serializers.JSONField()
+    def validate_geometry(self, value):
+        import json
+        try: geometry = GEOSGeometry(json.dumps(value), srid=4326)
+        except (ValueError, TypeError) as exc: raise serializers.ValidationError("Invalid GeoJSON geometry.") from exc
+        if geometry.geom_type == "Polygon": geometry = MultiPolygon(geometry, srid=4326)
+        if geometry.geom_type != "MultiPolygon" or geometry.empty: raise serializers.ValidationError("Geometry must be a non-empty Polygon or MultiPolygon.")
+        if not geometry.valid: raise serializers.ValidationError("Geometry is invalid.")
+        geometry.srid = 4326
+        return geometry
+    def validate(self, attrs): reject_unknown_fields(self); return attrs

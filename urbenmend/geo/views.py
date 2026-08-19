@@ -1,6 +1,6 @@
 from typing import cast
 from uuid import UUID
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -8,7 +8,8 @@ from rest_framework import status
 from urbenmend.api.pagination import StandardCursorPagination
 from urbenmend.geo import selectors
 from urbenmend.geo.reference_services import create_poi, update_poi
-from urbenmend.geo.serializers import POISerializer, POICreateSerializer, POIUpdateSerializer, POIQuerySerializer
+from urbenmend.geo.reference_services import replace_city_boundary
+from urbenmend.geo.serializers import POISerializer, POICreateSerializer, POIUpdateSerializer, POIQuerySerializer, CityBoundarySerializer, CityBoundaryWriteSerializer
 from urbenmend.identity.models import User
 
 class POICollectionView(APIView):
@@ -32,3 +33,12 @@ class POIDetailView(APIView):
     def delete(self, request: Request, poi_id: UUID) -> Response:
         poi = update_poi(actor=cast("User", request.user), poi_id=poi_id, active=False)
         return Response(POISerializer(poi).data)
+
+class CityBoundaryView(APIView):
+    permission_classes = [AllowAny]
+    def get(self, request: Request) -> Response:
+        return Response(CityBoundarySerializer(selectors.active_city_boundary()).data)
+    def put(self, request: Request) -> Response:
+        serializer = CityBoundaryWriteSerializer(data=request.data); serializer.is_valid(raise_exception=True)
+        boundary = replace_city_boundary(actor=cast("User", request.user), **serializer.validated_data)
+        return Response(CityBoundarySerializer(boundary).data)

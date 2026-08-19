@@ -163,6 +163,7 @@ urlpatterns = [
     path("clustering-rules/<int:rule_id>", issue_views.ClusteringRuleDetailView.as_view(), name="clustering-rules-detail"),
     path("pois", geo_views.POICollectionView.as_view(), name="pois"),
     path("pois/<uuid:poi_id>", geo_views.POIDetailView.as_view(), name="pois-detail"),
+    path("meta/city-boundary", geo_views.CityBoundaryView.as_view(), name="city-boundary"),
     path("reports/<uuid:pk>/moderation", moderation_views.ReportModerationView.as_view(), name="reports-moderation"),
     path("issues/<uuid:pk>/moderation", moderation_views.IssueModerationView.as_view(), name="issues-moderation"),
     path("media/<uuid:pk>/moderation", moderation_views.MediaModerationView.as_view(), name="media-moderation"),
