@@ -31,6 +31,8 @@ from urbenmend.classification.models import (
     SeverityKeyword,
     SeverityKeywordStatus,
 )
+from urbenmend.identity.models import Role, User
+from urbenmend.identity.services import require_role
 
 
 def active_category_slugs() -> tuple[str, ...]:
@@ -103,3 +105,7 @@ def active_keyword_rules() -> tuple[KeywordRule, ...]:
         )
         for term, severity, category_slug, language in rows
     )
+
+def list_severity_keywords(*, actor: User):
+    require_role(actor, Role.AUTHORITY, Role.ADMIN)
+    return SeverityKeyword.objects.select_related("category").all()
