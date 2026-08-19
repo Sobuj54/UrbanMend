@@ -16,6 +16,8 @@ from django.urls import path
 from urbenmend.export import views as export_views
 from urbenmend.audit import views as audit_views
 from urbenmend.moderation import views as moderation_views
+from urbenmend.classification import views as classification_views
+from urbenmend.geo import views as geo_views
 from urbenmend.identity import views as identity_views
 from urbenmend.issues import views as issue_views
 from urbenmend.media import views as media_views
@@ -153,6 +155,10 @@ urlpatterns = [
     path("map/issues", issue_views.IssueMapView.as_view(), name="map-issues"),
     path("analytics/summary", issue_views.AnalyticsSummaryView.as_view(), name="analytics-summary"),
     path("audit-events", audit_views.AuditEventCollectionView.as_view(), name="audit-events"),
+    path("categories", classification_views.CategoryCollectionView.as_view(), name="categories"),
+    path("categories/<slug:key>", classification_views.CategoryDetailView.as_view(), name="categories-detail"),
+    path("pois", geo_views.POICollectionView.as_view(), name="pois"),
+    path("pois/<uuid:poi_id>", geo_views.POIDetailView.as_view(), name="pois-detail"),
     path("reports/<uuid:pk>/moderation", moderation_views.ReportModerationView.as_view(), name="reports-moderation"),
     path("issues/<uuid:pk>/moderation", moderation_views.IssueModerationView.as_view(), name="issues-moderation"),
     path("media/<uuid:pk>/moderation", moderation_views.MediaModerationView.as_view(), name="media-moderation"),
