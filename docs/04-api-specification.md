@@ -741,8 +741,8 @@ All are **admin-managed reference data** (FR-30, NFR-11, BR-34). Reads are broad
 #### `GET /notification-preferences` · `PATCH /notification-preferences`
 - **Purpose:** Read/update per-channel preferences and opt-outs (FR-28).
 - **Auth:** Session. **Authorization:** Self.
-- **Body (PATCH):** `{ "inApp": true, "email": true, "sms": false }`
-  - Note: SMS is **reserved for High-severity** server-side regardless of preference (BR-30, RISK-9); disabling SMS is honored, enabling it does not bypass the severity gate.
+- **Body (PATCH):** `{ "inApp": true, "email": true }`
+  - Note: SMS is out of scope for this prototype; clients must not send an `sms` field.
 - **Response `200`.**
 - **Errors:** `VALIDATION_FAILED`, standard.
 
@@ -863,7 +863,7 @@ Moderation (FR-31) is expressed as **actions on existing resources**, not a sepa
 ### Security concerns raised
 - **Login required (Q4 RESOLVED)** — `POST /reports`/`POST /media` require a Citizen session. IP rate-limiting still applies for unauthenticated login/register attempts.
 - **Public read (Q7 RESOLVED)** — exact coordinates are publicly visible. Privacy risk (P1) is accepted; EXIF is still stripped (P3) and PII in response bodies is minimized.
-- **SMS gate (BR-30)** is enforced server-side irrespective of preference — prevents cost/abuse bypass (RISK-9). ✅
+- **SMS is explicitly out of scope** for this prototype; supported channels are in-app and email. ✅
 - **Export links** must be short-lived, signed URLs (`expiresAt`) to avoid data leakage of bulk PII/location.
 
 ### Open items — all resolved

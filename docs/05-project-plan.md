@@ -79,7 +79,7 @@ Phases are ordered by dependency, not by perceived importance. P6 and P7 can par
 | **M3** | P3 | Async classification with LLM adapter + keyword fallback + cost caps | ~1 sprint |
 | **M4** | P4 | Concurrency-safe clustering into Issues; corroboration; proximity context | ~1.5 sprints |
 | **M5** | P5 | Full issue lifecycle: status, assignment, severity override, merge/split | ~1.5 sprints |
-| **M6** | P6 | Transactional outbox + notification dispatch (in-app/email/SMS gate) + SSE | ~1 sprint |
+| **M6** | P6 | Transactional outbox + notification dispatch (in-app/email) + SSE | ~1 sprint |
 | **M7** | P7 | Severity-ranked queue, map (GeoJSON), analytics | ~1 sprint |
 | **M8** | P8 | Moderation actions, append-only audit log, admin reference-data management | ~1 sprint |
 | **M9** | P9 | Export (CSV/GeoJSON) async jobs | ~0.5 sprint |
@@ -199,11 +199,10 @@ Legend — **Cx** = complexity, **Dep** = depends on.
 | T6.3 Notification entity + generation on status change | Med | T6.1 | FR-27/29, BR-29 |
 | T6.4 In-app delivery + `GET /notifications` + mark-read | Med | T6.3 | FR-27 |
 | T6.5 Email channel adapter | Med | T6.3 | FR-29 — Django email backend |
-| T6.6 SMS channel adapter — **gated to High severity server-side** | Med | T6.3 | BR-30, RISK-9 |
-| T6.7 Notification preferences (opt-outs; SMS gate not bypassable) | Med | T6.4 | FR-28 |
+| T6.7 Notification preferences (in-app/email opt-outs) | Med | T6.4 | FR-28 |
 | T6.8 SSE stream (`/notifications/stream`) for in-app real-time | Med | T6.4 | ASSUMP-3, API §6.11 — ⚠️ **requires the ASGI stack**; under WSGI each open stream pins a worker thread. Polling remains the ASSUMP-3-sanctioned fallback |
 
-**DoD (M6):** A status change reliably produces a notification even across a worker crash (outbox replays); citizens receive in-app notifications within SLA; email works; SMS fires only for High severity regardless of preference; preferences are honored; SSE pushes new notifications.
+**DoD (M6):** A status change reliably produces a notification even across a worker crash (outbox replays); citizens receive in-app notifications within SLA; email works; preferences are honored; SSE pushes new notifications.
 
 ### P7 — Read Paths (M7)
 | Task | Cx | Dep | Traces |
@@ -288,7 +287,7 @@ Parallelizable with 2 engineers:
 | R-5 | ~~Unresolved open questions block phases~~ **Q2/Q4/Q7/Q8/Q9/DM-Q5/DM-Q7/DM-Q8 all RESOLVED** — gates closed; only ❓Q10 (accuracy bar) remains open | Rework / stalls | Decision gates in §10 with owners; isolate affected branches behind abstractions | All |
 | R-6 | RBAC/authZ gaps (privilege escalation, IDOR) | Security breach | AuthZ built per-slice + dedicated security review; opaque IDs; `404`-hiding | P1/P10 |
 | R-7 | Privacy leakage (EXIF, PII to LLM, PII in responses) | Legal/ethical, P1–P7 | EXIF strip by default, prompt minimization, response field discipline, privacy review | P2/P3/P10 |
-| R-8 | SMS abuse/cost | Budget | Server-side High-severity gate, not preference-bypassable | P6 |
+| R-8 | Email delivery cost/reliability | Budget | Verified email channel and provider rate limits | P6 |
 | R-9 | Scope creep beyond approved features | Timeline, grading | This plan schedules only traced work; changes require doc updates first | All |
 | R-10 | 2-person bandwidth / capstone timeline | Missed milestones | MVP-first ordering; P8/P9 are trimmable; buffer in P10 | All |
 | R-11 | Bangla/Banglish handling weakness | Misclassification | UTF-8 end-to-end, bilingual keyword fallback, test corpus in both | P3 |
@@ -307,7 +306,7 @@ Parallelizable with 2 engineers:
 | P3 | Classification result shape, **fallback triggers when LLM down/over-budget**, cost-cap behavior, bilingual inputs |
 | P4 | **Concurrency test** for find-or-create (no duplicate Issues), severity=max, corroboration count derivation, spatial query correctness |
 | P5 | State-machine legal/illegal transitions, mandatory-reason enforcement, override retains computed value, merge/split invariants |
-| P6 | Outbox replay after simulated crash, at-least-once idempotency, SMS High-severity gate, preference honoring, SSE delivery |
+| P6 | Outbox replay after simulated crash, at-least-once idempotency, preference honoring, email delivery, SSE delivery |
 | P7 | Queue ordering (severity→age), cursor pagination stability under mutation, GeoJSON/map aggregation, analytics accuracy |
 | P8 | Audit immutability & completeness, moderation `410`, reference-data propagation |
 | P9 | Export correctness, signed-URL expiry, scope limiting |

@@ -16,6 +16,7 @@ from urbenmend.notifications.models import (
     NotificationState,
     NotificationType,
     OutboxEvent,
+    NotificationPreference,
 )
 
 if TYPE_CHECKING:
@@ -55,7 +56,7 @@ def generate_status_change_notifications(event: OutboxEvent) -> int:
 
     Celery may deliver an outbox message more than once. The database uniqueness constraint,
     together with ``ignore_conflicts``, makes this fan-out idempotent without treating a duplicate
-    task as an error. Email and SMS are intentionally separate channel rows in T6.5/T6.6.
+    task as an error. Email is a separate channel row from in-app delivery.
     """
     if event.event_type != ISSUE_STATUS_CHANGED:
         return 0
@@ -68,7 +69,7 @@ def generate_status_change_notifications(event: OutboxEvent) -> int:
     recipients = User.objects.filter(
         reports__issue_id=issue_id,
         status__in=[UserStatus.REGISTERED, UserStatus.VERIFIED, UserStatus.ACTIVE],
-    ).distinct()
+    ).exclude(notification_preference__in_app=False).distinct()
     now = timezone.now()
     notifications = [
         Notification(
@@ -114,3 +115,18 @@ def mark_all_notifications_read(*, actor: User) -> int:
     return Notification.objects.filter(recipient=actor, read_at__isnull=True).update(
         read_at=timezone.now()
     )
+
+
+@transaction.atomic
+def update_notification_preferences(
+    *, actor: User, in_app: bool | None = None, email: bool | None = None
+) -> NotificationPreference:
+    preference, _ = NotificationPreference.objects.select_for_update().get_or_create(user=actor)
+    fields: list[str] = []
+    for name, value in (("in_app", in_app), ("email", email)):
+        if value is not None:
+            setattr(preference, name, value)
+            fields.append(name)
+    if fields:
+        preference.save(update_fields=[*fields, "updated_at"])
+    return preference

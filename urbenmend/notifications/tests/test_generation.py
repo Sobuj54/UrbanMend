@@ -13,6 +13,7 @@ from urbenmend.notifications.models import (
     NotificationChannel,
     NotificationState,
     NotificationType,
+    NotificationPreference,
     OutboxEvent,
 )
 from urbenmend.notifications.services import generate_status_change_notifications
@@ -68,6 +69,22 @@ def test_replaying_event_does_not_duplicate_notifications() -> None:
 
     assert Notification.objects.count() == 1
     assert Notification.objects.get().source_event_id == event.pk
+
+
+def test_in_app_opt_out_is_honored_during_generation() -> None:
+    issue = IssueFactory.create(status=IssueStatus.TRIAGED)
+    opted_out = UserFactory.create()
+    enabled = UserFactory.create()
+    ReportFactory.create(author=opted_out, issue=issue)
+    ReportFactory.create(author=enabled, issue=issue)
+    NotificationPreference.objects.create(user=opted_out, in_app=False)
+    actor = AuthorityFactory.create()
+    actor.category_scope.add(issue.primary_category)
+    transition_issue_status(actor=actor, issue_id=issue.pk, to_status=IssueStatus.ACKNOWLEDGED)
+
+    generate_status_change_notifications(OutboxEvent.objects.get(aggregate_id=issue.pk))
+
+    assert set(Notification.objects.values_list("recipient_id", flat=True)) == {enabled.pk}
 
 
 def test_celery_consumer_generates_notifications_idempotently() -> None:

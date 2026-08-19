@@ -8,6 +8,7 @@ from rest_framework import serializers
 
 from urbenmend.api.serializers import CamelCaseSerializer, reject_unknown_fields
 from urbenmend.notifications.models import Notification, NotificationType
+from urbenmend.notifications.models import NotificationPreference
 
 
 class NotificationSerializer(CamelCaseSerializer):
@@ -59,4 +60,24 @@ class NotificationReadAllSerializer(CamelCaseSerializer):
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         reject_unknown_fields(self)
+        return attrs
+
+
+class NotificationPreferenceSerializer(CamelCaseSerializer):
+    in_app = serializers.BooleanField(read_only=True)
+    email = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = NotificationPreference
+        fields = ("in_app", "email")
+
+
+class NotificationPreferenceUpdateSerializer(CamelCaseSerializer):
+    in_app = serializers.BooleanField(required=False)
+    email = serializers.BooleanField(required=False)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        reject_unknown_fields(self)
+        if not attrs:
+            raise serializers.ValidationError("Provide at least one preference.")
         return attrs

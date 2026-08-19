@@ -19,6 +19,8 @@ from urbenmend.notifications.serializers import (
     NotificationReadAllSerializer,
     NotificationReadSerializer,
     NotificationSerializer,
+    NotificationPreferenceSerializer,
+    NotificationPreferenceUpdateSerializer,
 )
 
 
@@ -66,3 +68,21 @@ class NotificationReadAllView(APIView):
         serializer.is_valid(raise_exception=True)
         services.mark_all_notifications_read(actor=cast("User", request.user))
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class NotificationPreferenceView(APIView):
+    """Read or replace fields on the authenticated user's channel preferences."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        preference = selectors.get_notification_preferences(actor=cast("User", request.user))
+        return Response(NotificationPreferenceSerializer(preference).data)
+
+    def patch(self, request: Request) -> Response:
+        serializer = NotificationPreferenceUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        preference = services.update_notification_preferences(
+            actor=cast("User", request.user), **serializer.validated_data
+        )
+        return Response(NotificationPreferenceSerializer(preference).data)

@@ -79,7 +79,7 @@ Carried from the proposal and extended:
 | A3 | Authorities are **not real municipal partners** during the prototype; roles are provisioned by an admin. | If real, adds legal, procurement, SLA, and integration requirements. |
 | A4 | The AI layer is a **hosted LLM API** (OpenAI / Claude / Gemini) used for **categorization + severity labelling**, with **keyword rules as a deterministic fallback** when the API is unavailable or over budget. **No custom model is trained or hosted.** | Determines integration, cost, privacy, and fallback requirements. Replaces v1.0's "trained ML classifier." |
 | A5 | We may **seed static reference data** (hospitals, schools, highways) from OpenStreetMap or a provided dataset; approximate data is acceptable. Used **only to display proximity context**, not to compute a score. | Proximity display quality and licensing depend on this. |
-| A6 | **SMS and/or email** are acceptable notification channels; push is optional. | Affects notification cost, deliverability, phone-number verification. |
+| A6 | **In-app and email** are the notification channels for the prototype; SMS is out of scope. | Affects notification cost, deliverability, phone-number verification. |
 | A7 | Expected prototype scale is **modest** (hundreds–low thousands of reports, tens of concurrent authority users). | Sizing/caching/scaling change materially at high scale; also keeps LLM API cost low. |
 | A8 | Photos may contain **people, faces, plates, homes** — personal data — and reports are at least partially **publicly visible**. | Drives privacy, moderation, data-protection requirements (§9). |
 | A9 | Citizen identity can be **lightweight** (email or phone verification); no national ID/KYC to report. | Anonymous/low-friction vs abuse trade-off (§7, RISK-3). |
@@ -167,7 +167,7 @@ IDs (`FR-x`) are stable. Priorities use MoSCoW (**MUST / SHOULD / COULD**). Requ
 
 ### 5.6 Notifications
 
-- **FR-27 (MUST) — Status-change notifications.** Notify reporting citizen(s) on every status transition (email/SMS per A6 + in-app), within 1 minute.
+- **FR-27 (MUST) — Status-change notifications.** Notify reporting citizen(s) on every status transition (email + in-app), within 1 minute.
 - **FR-28 (SHOULD) — Notification preferences.** Choose channels; opt out (transactional vs marketing).
 - **FR-29 (COULD) — Authority alerts.** Alert the relevant department when a **High-severity** issue is created or a cluster's reporter count crosses a threshold.
 
@@ -310,7 +310,7 @@ Removing the numeric score **lowers** — but does not eliminate — gaming stak
 | RISK-6 | **Privacy incident** from published photos. | Med | High | Moderation (FR-31); EXIF stripping (P3); disclosure (P1); blurring (S8). |
 | RISK-7 | **POI reference data** unavailable/stale/licensed → weak proximity context. | Med | Low | Confirm OSM/dataset (A5); admin-managed POIs (FR-30); degrade gracefully (context is display-only). |
 | RISK-8 | **Scope creep** toward native apps / real integration / dispatch / re-adding a scoring engine. | High | Med | Non-goals (§2.2) enforced via change control. |
-| RISK-9 | **Notification cost/deliverability** (SMS). | Med | Low | Prefer in-app + email; SMS for High-severity only; verify numbers (A6). |
+| RISK-9 | **Notification cost/deliverability** (email). | Med | Low | Use in-app + email; verify email channels. |
 | RISK-10 | **Duplicate clustering errors** — over-merge hides distinct issues, under-merge inflates counts. | Med | Med | Conservative clustering + merge/split tools (FR-25); tunable thresholds. |
 | RISK-11 | **Academic timeline** too tight. | Med | Med | Strict MoSCoW; MUST-set is a coherent MVP; LLM + geospatial are the main efforts, scoring engine removed. |
 | RISK-12 | **PII sent to a third party** (report text → LLM). | Med | Med | Disclose (P7); minimize PII in prompts; choose no-training provider config; keyword fallback avoids sending text at all when triggered. |
@@ -361,7 +361,7 @@ Removing the numeric score **lowers** — but does not eliminate — gaming stak
 - **Q2 — Severity levels. RESOLVED:** Four levels — **Critical / High / Medium / Low**. Critical is reserved for life-safety emergencies (collapse, live wire, gas leak, severe flooding). High = significant risk/disruption; Medium = moderate; Low = minor inconvenience.
 - **❓Q3 — POI data source & licensing.** OSM, a government dataset, or admin-entered? Which POI types show as proximity context? (A5)
 - **Q4 — Anonymous reporting. RESOLVED:** Login required for all submissions. Anonymous reporting is not supported.
-- **❓Q5 — Notification channels for the prototype.** In-app only, + email, and/or SMS? SMS budget? (A6)
+- **Q5 — Notification channels for the prototype.** Resolved: in-app + email; SMS is out of scope.
 - **❓Q6 — EXIF/location privacy default.** Strip photo GPS on upload (recommended) or retain? (P3)
 - **Q7 — Public visibility granularity. RESOLVED:** Map and issue list are publicly visible to unauthenticated users. Exact coordinates are shown publicly.
 - **Q8 — Definition of "resolved." RESOLVED:** Authority self-attestation. An authority marks the issue Resolved; no citizen confirmation is required.
@@ -413,4 +413,4 @@ Two deliberate deviations from `PROJECT PROPOSAL.pdf`, recorded for your supervi
 
 ---
 
-*End of `docs/01-prd.md` (v1.3). Open questions Q2/Q4/Q7/Q8/Q9, domain questions DM-Q5/Q7/Q8, and **Q1 (taxonomy — confirmed 2026-08-07, T0.10)** are resolved — see §15 and §16 — and the §16.5 stack deferral is closed by ADR-001 (`docs/07-adr-001-app-framework.md`). Remaining open: ❓Q3 (POI source), ❓Q5 (notification channels), ❓Q6 (EXIF default), ❓Q10 (accuracy bar).*
+*End of `docs/01-prd.md` (v1.3). Open questions Q2/Q4/Q7/Q8/Q9, domain questions DM-Q5/Q7/Q8, and **Q1 (taxonomy — confirmed 2026-08-07, T0.10)** are resolved — see §15 and §16 — and the §16.5 stack deferral is closed by ADR-001 (`docs/07-adr-001-app-framework.md`). Remaining open: ❓Q3 (POI source), ❓Q6 (EXIF default), ❓Q10 (accuracy bar). Notification channel Q5 is resolved as in-app + email; SMS is out of scope.*

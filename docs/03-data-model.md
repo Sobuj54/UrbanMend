@@ -226,8 +226,8 @@ The domain comprises the following entities, grouped by concern:
 **Purpose.** A message informing a user of a relevant change — primarily a status transition on their tracked Issue (FR-27), optionally an authority alert (FR-29).
 
 **Responsibilities.**
-- Represent one intended message and its delivery outcome across channels (in-app/email/SMS).
-- Respect verified channels and severity-gated SMS (RISK-9).
+- Represent one intended message and its delivery outcome across channels (in-app/email).
+- Respect verified channels; SMS is out of scope for the prototype.
 
 **Key attributes (high level).** Recipient, subject reference (usually an Issue), channel(s), content, delivery state/outcome, timestamp.
 
@@ -421,7 +421,7 @@ Grouped by area; each traces to the PRD/Architecture.
 **History, notification & integrity**
 - BR-28. Every status transition and severity override generates an **Audit Event**. *(FR-32)*
 - BR-29. Every citizen-facing status change generates a **Notification** within the stated SLA. *(FR-27)*
-- BR-30. Notifications are sent **only to verified channels**; SMS is reserved for **High** severity. *(Edge case, RISK-9)*
+- BR-30. Notifications are sent **only to verified channels**; SMS is out of scope for the prototype. *(Edge case, RISK-9)*
 - BR-31. **Audit Events and Status Events are append-only** and immutable. *(FR-32, NFR-10)*
 
 **Privacy & moderation**

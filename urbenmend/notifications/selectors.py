@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from django.db.models import QuerySet
 
 from urbenmend.identity.models import User
-from urbenmend.notifications.models import Notification
+from urbenmend.notifications.models import Notification, NotificationPreference
 
 
 def list_notifications(
@@ -25,3 +25,8 @@ def list_notifications(
     if notification_types:
         queryset = queryset.filter(notification_type__in=notification_types)
     return queryset.order_by("-created_at", "-pk")
+
+
+def get_notification_preferences(*, actor: User) -> NotificationPreference:
+    preference = NotificationPreference.objects.filter(user=actor).first()
+    return preference or NotificationPreference(user=actor)

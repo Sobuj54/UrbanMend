@@ -200,6 +200,11 @@ urlpatterns = [
         notification_views.NotificationCollectionView.as_view(),
         name="notifications",
     ),
+    path(
+        "notification-preferences",
+        notification_views.NotificationPreferenceView.as_view(),
+        name="notification-preferences",
+    ),
 ]
 
 # Remaining §6 resources land with their phases, not here:

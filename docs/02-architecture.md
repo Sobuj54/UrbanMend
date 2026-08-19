@@ -79,7 +79,7 @@ The monolith is decomposed so a future extraction (e.g. pulling the classificati
                           └───┬───────────────┬───────────────┬─────┘
                               │               │               │
                          ┌────▼─────┐   ┌──────▼──────┐  ┌─────▼───────┐
-                         │ LLM API  │   │ Object store│  │ Email / SMS │
+                         │ LLM API  │   │ Object store│  │   Email     │
                          │ provider │   │ (S3-compat) │  │  providers  │
                          └──────────┘   └─────────────┘  └─────────────┘
 ```
@@ -89,7 +89,7 @@ The monolith is decomposed so a future extraction (e.g. pulling the classificati
 - **PostgreSQL + PostGIS** — the single system of record and spatial engine.
 - **Redis** — job queue, cache (reference data, LLM response cache), and rate-limit counters.
 - **Object store** — photos and generated thumbnails (never in the DB).
-- **External providers** — LLM, email, SMS — each reached only through an internal adapter.
+- **External providers** — LLM and email — each reached only through an internal adapter.
 
 ### 2.3 Recommended technology stack
 
@@ -171,7 +171,7 @@ The monolith is divided into modules with explicit responsibilities and dependen
 | **Issues & Clustering** | Report→Issue find-or-create clustering, Issue-level severity resolution, lifecycle state machine, merge/split, assignment, overrides | FR-14, FR-15, FR-18, FR-19, FR-20, FR-24, FR-25, §6.3 |
 | **Geospatial** | Spatial queries (radius, nearest-POI, density), reverse geocoding integration, POI reference data | FR-6, FR-16, FR-17, FR-23, NFR-1 |
 | **Dashboard & Query** | Severity-ranked queue reads, filters, map/hotspot data, analytics aggregates | FR-22, FR-23, FR-26 |
-| **Notifications** | Event-driven dispatch across in-app/email/SMS, preferences, debounce | FR-27, FR-28, FR-29 |
+| **Notifications** | Event-driven dispatch across in-app/email, preferences, debounce | FR-27, FR-28, FR-29 |
 | **Administration & Moderation** | Reference-data management (POIs, severity keyword lists), content moderation, account verification tools | FR-30, FR-31 |
 | **Audit & Integrity** | Append-only audit log writes and queries | FR-32 |
 | **Export** | CSV / GeoJSON extracts for the technical report | NFR-12 |
@@ -183,7 +183,7 @@ The monolith is divided into modules with explicit responsibilities and dependen
 API/Controller layer   → HTTP concerns: routing, (de)serialization, auth guard, validation
 Service/Domain layer   → business rules, RBAC checks, transactions, emits domain events
 Data-access layer      → repositories over PostGIS; no business logic
-Integration/adapters   → LLM, email, SMS, object store, geocoder (all behind interfaces)
+Integration/adapters   → LLM, email, object store, geocoder (all behind interfaces)
 ```
 
 **Authorization is enforced in the service layer** (FR-3) so it cannot be bypassed by any caller, not merely hidden in the UI.
@@ -298,7 +298,7 @@ State changes (Report triaged, Issue status changed, severity overridden) must r
 
 ### 7.2 Notification dispatch (FR-27/28/29)
 - Consumes notification events; resolves recipient channels from preferences (FR-28).
-- **In-app** always; **email** per preference; **SMS reserved for High-severity** (RISK-9 cost control).
+- **In-app** and **email** are supported and preference-controlled; SMS is out of scope.
 - **Debounce** rapid successive status changes on one issue (PRD edge case) so citizens aren't spammed.
 - Never sends to an unverified/invalid channel and never leaks a report's existence to a wrong recipient (edge case).
 - Delivery outcome recorded for the notification-health KPI (NFR-9).

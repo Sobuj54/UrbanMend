@@ -53,7 +53,20 @@ class NotificationChannel(models.TextChoices):
 
     IN_APP = "in_app", _("In-app")
     EMAIL = "email", _("Email")
-    SMS = "sms", _("SMS")
+
+
+class NotificationPreference(models.Model):
+    """One user's channel opt-ins; absent rows mean all channels enabled."""
+
+    user = models.OneToOneField(
+        "identity.User", on_delete=models.CASCADE, related_name="notification_preference"
+    )
+    in_app = models.BooleanField(default=True)
+    email = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "notifications_preference"
 
 
 class NotificationState(models.TextChoices):
