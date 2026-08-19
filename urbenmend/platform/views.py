@@ -15,6 +15,44 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from urbenmend.classification.models import Category
+from urbenmend.issues.models import IssueStatus
+from urbenmend.notifications.models import NotificationChannel, NotificationType
+from urbenmend.reporting.models import ReportStatus, SeveritySignal
+
+
+def _choices(choices) -> list[dict[str, str]]:
+    return [{"value": value, "label": str(label)} for value, label in choices]
+
+
+class EnumMetadataView(APIView):
+    """Public capability metadata derived directly from domain enums and taxonomy data."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request) -> Response:
+        categories = Category.objects.order_by("name_en").values(
+            "slug", "name_en", "name_bn", "status"
+        )
+        return Response(
+            {
+                "severities": _choices(SeveritySignal.choices),
+                "issueStatuses": _choices(IssueStatus.choices),
+                "reportStatuses": _choices(ReportStatus.choices),
+                "notificationTypes": _choices(NotificationType.choices),
+                "notificationChannels": _choices(NotificationChannel.choices),
+                "categories": [
+                    {
+                        "key": category["slug"],
+                        "label": {"en": category["name_en"], "bn": category["name_bn"]},
+                        "active": category["status"] == "active",
+                    }
+                    for category in categories
+                ],
+            }
+        )
 
 from urbenmend.platform.selectors import check_all
 

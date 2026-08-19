@@ -31,6 +31,7 @@ urlpatterns = [
     # API §6.16 — liveness/readiness with dependency degradation flags. The K8s readiness
     # probe targets this path [doc: DevOps §8.4].
     path("health", platform_views.health, name="health"),
+    path("meta/enums", platform_views.EnumMetadataView.as_view(), name="meta-enums"),
     # API §6.1 — authentication. T1.2 covers register + verify; T1.3 adds login + logout;
     # T1.7 adds the two 2FA routes. `/auth/password` remains deliberately absent rather than
     # stubbed — it is unbuilt and blocked on ❓Q5 for delivery of the reset token.
