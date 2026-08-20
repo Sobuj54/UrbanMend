@@ -18,13 +18,13 @@ from urbenmend.notifications.models import (
     OutboxEvent,
 )
 from urbenmend.notifications.services import generate_status_change_notifications
-from urbenmend.reporting.tests.factories import ReportFactory
 from urbenmend.notifications.tasks import (
     OUTBOX_CONSUMER_TASK,
     OUTBOX_RELAY_TASK,
     consume_outbox_event,
     relay_outbox,
 )
+from urbenmend.reporting.tests.factories import ReportFactory
 
 pytestmark = pytest.mark.django_db
 
@@ -101,6 +101,8 @@ def test_status_event_generates_pending_email_and_dispatches() -> None:
     event = _pending_event()
     issue = IssueFactory._meta.model.objects.get(pk=event.aggregate_id)
     recipient = ReportFactory.create(issue=issue).author
+    recipient.email_verified_at = timezone.now()
+    recipient.save(update_fields=["email_verified_at"])
     generate_status_change_notifications(event)
     email = Notification.objects.get(
         source_event=event,

@@ -250,14 +250,15 @@ class IssueCommentDetailView(APIView):
         comment = services.update_comment(
             actor=cast("User", request.user),
             comment_id=comment_id,
+            issue_id=issue_id,
             body=serializer.validated_data["body"],
         )
-        if str(comment.issue_id) != issue_id:
-            raise Http404("Comment not found.")
         return Response(CommentSerializer(comment).data)
 
     def delete(self, request: Request, issue_id: str, comment_id: str) -> Response:
-        services.delete_comment(actor=cast("User", request.user), comment_id=comment_id)
+        services.delete_comment(
+            actor=cast("User", request.user), comment_id=comment_id, issue_id=issue_id
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

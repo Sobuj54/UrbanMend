@@ -22,7 +22,10 @@ class ModerationView(APIView):
         serializer.is_valid(raise_exception=True)
         model = Comment if self.target_model is Comment else self.target_model
         target_id = comment_id if model is Comment else pk
-        target = model.objects.filter(pk=target_id).first()
+        filters = {"pk": target_id}
+        if model is Comment:
+            filters["issue_id"] = pk
+        target = model.objects.filter(**filters).first()
         if target is None:
             raise Http404("Target not found.")
         action = services.moderate(actor=request.user, target=target, **serializer.validated_data)

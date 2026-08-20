@@ -103,11 +103,14 @@ def create_comment(*, actor: User, issue_id: UUID | str, body: str, visibility: 
     return Comment.objects.create(issue=issue, author=actor, body=text, visibility=visibility)
 
 
-def update_comment(*, actor: User, comment_id: UUID | str, body: str) -> Comment:
+def update_comment(
+    *, actor: User, comment_id: UUID | str, body: str, issue_id: UUID | str | None = None
+) -> Comment:
     try:
-        comment = Comment.objects.select_related("issue").get(
-            pk=comment_id, removed_at__isnull=True
-        )
+        filters = {"pk": comment_id, "removed_at__isnull": True}
+        if issue_id is not None:
+            filters["issue_id"] = issue_id
+        comment = Comment.objects.select_related("issue").get(**filters)
     except Comment.DoesNotExist as exc:
         raise Http404("Comment not found.") from exc
     if actor.pk != comment.author_id and actor.role != Role.ADMIN:
@@ -120,9 +123,14 @@ def update_comment(*, actor: User, comment_id: UUID | str, body: str) -> Comment
     return comment
 
 
-def delete_comment(*, actor: User, comment_id: UUID | str) -> None:
+def delete_comment(
+    *, actor: User, comment_id: UUID | str, issue_id: UUID | str | None = None
+) -> None:
     try:
-        comment = Comment.objects.get(pk=comment_id, removed_at__isnull=True)
+        filters = {"pk": comment_id, "removed_at__isnull": True}
+        if issue_id is not None:
+            filters["issue_id"] = issue_id
+        comment = Comment.objects.get(**filters)
     except Comment.DoesNotExist as exc:
         raise Http404("Comment not found.") from exc
     if actor.pk != comment.author_id and actor.role != Role.ADMIN:

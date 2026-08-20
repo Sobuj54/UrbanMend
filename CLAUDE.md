@@ -64,8 +64,12 @@ T3.1–T3.7 (LLM abstraction, keyword fallback, controls, async classification) 
 clustering, severity, confirmations, proximity) · T5.1–T5.7 (workflow, status events, assignment,
 severity override, merge/split).
 
-Suite after T5.7 (2026-08-16): **1159 passed**, mypy 171 source files and ruff clean, no migration
-drift. **Next: T5.8** (public/internal comments).
+Suite after the T5.8/P10 hardening slice (2026-08-20): **1316 passed** serially, mypy and ruff clean,
+and no migration drift. T5.8 public/internal comments are implemented, including nested parent binding,
+and the hardening slice adds response/log privacy guards, verified-email notification delivery, and the
+read-only `perf_smoke` management command. **Next: deployment-readiness hardening (T10.2/T10.4–T10.8)**:
+security review, representative load testing, failure drills, observability, deployment/rollback, and
+backup/restore verification.
 
 **Unowned / blocked — do not silently absorb into another task:** `/auth/password/forgot`·`/reset`
 (blocked on ❓Q5; **a provisioned Authority still has no way to set a first password**, so T1.6 accounts

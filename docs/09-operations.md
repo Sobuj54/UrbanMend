@@ -119,9 +119,40 @@ docker compose exec api ruff format --check
 docker compose exec api mypy                                 # strict
 docker compose exec api pytest
 docker compose exec api python manage.py makemigrations --check --dry-run
-docker compose exec api python manage.py check --deploy
+docker compose exec \
+  -e DJANGO_SETTINGS_MODULE=urbenmend.settings.prod \
+  -e DJANGO_SECRET_KEY=local-deploy-check-only-0123456789abcdefghijklmnopqrstuv \
+  -e DJANGO_ALLOWED_HOSTS=urbenmend.example \
+  api python manage.py check --deploy --fail-level WARNING
 docker compose exec api python manage.py createsuperuser      # Django admin (FR-30/31)
 ```
+
+If a previous interrupted pytest process leaves Django's disposable database behind, remove only
+that database before retrying a clean run:
+
+```bash
+docker compose exec db dropdb --if-exists -U urbenmend test_urbenmend
+docker compose exec api pytest
+```
+
+Do not use `--reuse-db` to diagnose migration or seed-data failures: it deliberately preserves a
+possibly stale schema and can hide whether the category/reference-data migrations work from zero.
+
+For a read-only local/staging performance smoke check, run:
+
+```bash
+docker compose exec api python manage.py perf_smoke \
+  --iterations 10 --max-ms 2000 --max-queries 100
+```
+
+It measures report list, issue queue, and low-zoom map responses over existing data, reporting
+HTTP status, average/max latency, and SQL count. The command exits non-zero if a response is not
+successful or exceeds either budget. It creates no rows and is not a substitute for a representative
+load test; record its output with the deployment's dataset size before release.
+
+The integration suite is intentionally run serially. Do not add `-n`/`pytest-xdist` to the command:
+several concurrency tests deliberately share Redis and exercise database transaction boundaries;
+parallel workers would use the same cache namespace and produce false failures.
 
 ⚠️ One command per line, deliberately. `docker compose exec api ruff check && ruff format --check`
 runs the **second command on the host**, where ruff is not installed — it either fails confusingly

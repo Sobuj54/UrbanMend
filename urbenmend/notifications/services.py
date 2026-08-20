@@ -102,7 +102,7 @@ def generate_status_change_notifications(event: OutboxEvent) -> int:
             state=NotificationState.PENDING,
         )
         for recipient in recipients
-        if recipient.email
+        if recipient.email and recipient.email_verified_at is not None
         and (
             not hasattr(recipient, "notification_preference")
             or recipient.notification_preference.email

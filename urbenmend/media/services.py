@@ -92,7 +92,7 @@ def _reject_undecodable(
         "media.undecodable",
         owner_id=str(owner.pk),
         declared_content_type=declared,
-        detail=str(exc),
+        error_type=type(exc).__name__,
     )
     raise UnprocessableEntity("This image could not be read. Try uploading the photo again.")
 

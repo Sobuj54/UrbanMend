@@ -81,6 +81,14 @@ class NotificationPreferenceView(APIView):
         preference = selectors.get_notification_preferences(actor=cast("User", request.user))
         return Response(NotificationPreferenceSerializer(preference).data)
 
+    def patch(self, request: Request) -> Response:
+        serializer = NotificationPreferenceUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        preference = services.update_notification_preferences(
+            actor=cast("User", request.user), **serializer.validated_data
+        )
+        return Response(NotificationPreferenceSerializer(preference).data)
+
 
 class NotificationStreamView(APIView):
     """Authenticated SSE stream of currently available notifications."""
@@ -101,11 +109,3 @@ class NotificationStreamView(APIView):
         response["Cache-Control"] = "no-cache"
         response["X-Accel-Buffering"] = "no"
         return response
-
-    def patch(self, request: Request) -> Response:
-        serializer = NotificationPreferenceUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        preference = services.update_notification_preferences(
-            actor=cast("User", request.user), **serializer.validated_data
-        )
-        return Response(NotificationPreferenceSerializer(preference).data)
