@@ -231,12 +231,7 @@ jobs:
             -e DATABASE_URL="postgis://ci:ci@127.0.0.1:5432/migration_probe" \
             -e REDIS_URL="redis://127.0.0.1:6379/0" \
             urbenmend:ci sh -c '
-              python - <<PY
-          import psycopg
-          with psycopg.connect("postgresql://ci:ci@127.0.0.1:5432/postgres", autocommit=True) as c:
-              c.execute("DROP DATABASE IF EXISTS migration_probe")
-              c.execute("CREATE DATABASE migration_probe")
-          PY
+              python -c "import psycopg; c=psycopg.connect(\"postgresql://ci:ci@127.0.0.1:5432/postgres\", autocommit=True); c.execute(\"DROP DATABASE IF EXISTS migration_probe\"); c.execute(\"CREATE DATABASE migration_probe\"); c.close()"
               python manage.py migrate --noinput
               python manage.py migrate identity zero --noinput
             '
