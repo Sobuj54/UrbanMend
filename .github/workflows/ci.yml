@@ -330,7 +330,7 @@ jobs:
       # normalize it on the runner before handing the tag to Buildx.
       - name: Normalize image name
         shell: bash
-        run: echo "IMAGE_NAME=$(echo \"${GITHUB_REPOSITORY}\" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       # Rebuilds from the stage-6 cache rather than transferring the image between jobs —
       # same layers, same digest inputs, and no multi-hundred-MB artifact round trip.
