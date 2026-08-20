@@ -262,9 +262,7 @@ def test_the_global_call_limit_applies_across_different_users() -> None:
     first = ReportFactory.create(
         author=UserFactory.create(), description="First account road defect."
     )
-    second = ReportFactory.create(
-        author=UserFactory.create(), description="A live wire is down."
-    )
+    second = ReportFactory.create(author=UserFactory.create(), description="A live wire is down.")
 
     classify_report.run(str(first.pk))
     classify_report.run(str(second.pk))

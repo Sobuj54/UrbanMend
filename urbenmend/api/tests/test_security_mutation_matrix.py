@@ -18,7 +18,11 @@ def test_anonymous_mutations_require_authentication() -> None:
 
     requests = [
         ("post", reverse("api:reports"), {"description": "new", "location": {}}),
-        ("patch", reverse("api:reports-detail", kwargs={"report_id": report.pk}), {"description": "changed"}),
+        (
+            "patch",
+            reverse("api:reports-detail", kwargs={"report_id": report.pk}),
+            {"description": "changed"},
+        ),
         ("post", reverse("api:issues-comments", kwargs={"issue_id": issue.pk}), {"body": "note"}),
         ("post", reverse("api:issues-confirmations", kwargs={"issue_id": issue.pk}), {}),
         ("patch", reverse("api:notification-preferences"), {"email": False}),

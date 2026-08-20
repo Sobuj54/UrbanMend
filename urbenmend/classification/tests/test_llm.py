@@ -632,11 +632,21 @@ def test_openai_compatible_provider_maps_chat_completion(monkeypatch: pytest.Mon
         def __exit__(self, *args: object) -> None:
             self.close()
 
-    body = json.dumps({"model": "served-model", "choices": [{"message": {"content": _reply()}}], "usage": {"prompt_tokens": 11, "completion_tokens": 7}}).encode()
+    body = json.dumps(
+        {
+            "model": "served-model",
+            "choices": [{"message": {"content": _reply()}}],
+            "usage": {"prompt_tokens": 11, "completion_tokens": 7},
+        }
+    ).encode()
     monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: Response(body))
-    provider = OpenAICompatibleLLMProvider(endpoint="https://example.test/v1", api_key="secret", model="configured-model")
+    provider = OpenAICompatibleLLMProvider(
+        endpoint="https://example.test/v1", api_key="secret", model="configured-model"
+    )
 
-    completion = provider.complete(build_prompt(_request(), max_output_tokens=50, timeout_seconds=2))
+    completion = provider.complete(
+        build_prompt(_request(), max_output_tokens=50, timeout_seconds=2)
+    )
 
     assert completion.model == "served-model"
     assert completion.input_tokens == 11

@@ -106,11 +106,14 @@ def test_crash_after_publish_replays_without_duplicate_notifications() -> None:
     consume_outbox_event.run(str(event.pk))
     consume_outbox_event.run(str(event.pk))
 
-    assert Notification.objects.filter(
-        source_event=event,
-        recipient=recipient,
-        channel=NotificationChannel.IN_APP,
-    ).count() == 1
+    assert (
+        Notification.objects.filter(
+            source_event=event,
+            recipient=recipient,
+            channel=NotificationChannel.IN_APP,
+        ).count()
+        == 1
+    )
 
 
 def test_batch_size_limits_claimed_rows() -> None:

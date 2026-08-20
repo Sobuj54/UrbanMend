@@ -165,13 +165,18 @@ class OpenAICompatibleLLMProvider(LLMProvider):
     def complete(self, prompt: LLMPrompt) -> LLMCompletion:
         request = urllib.request.Request(  # noqa: S310 -- constructor validates HTTPS above
             f"{self.endpoint}/chat/completions",
-            data=json.dumps({
-                "model": self.model,
-                "messages": [{"role": "system", "content": prompt.system}, {"role": "user", "content": prompt.user}],
-                "temperature": 0,
-                "max_tokens": prompt.max_output_tokens,
-                "response_format": {"type": "json_object"},
-            }).encode(),
+            data=json.dumps(
+                {
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": prompt.system},
+                        {"role": "user", "content": prompt.user},
+                    ],
+                    "temperature": 0,
+                    "max_tokens": prompt.max_output_tokens,
+                    "response_format": {"type": "json_object"},
+                }
+            ).encode(),
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             method="POST",
         )
@@ -182,11 +187,18 @@ class OpenAICompatibleLLMProvider(LLMProvider):
                 body = json.loads(response.read())
             choice = body["choices"][0]["message"]["content"]
             usage = body.get("usage", {})
-            return LLMCompletion(str(choice), str(body.get("model", self.model)), usage.get("prompt_tokens"), usage.get("completion_tokens"))
+            return LLMCompletion(
+                str(choice),
+                str(body.get("model", self.model)),
+                usage.get("prompt_tokens"),
+                usage.get("completion_tokens"),
+            )
         except (OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
             raise ClassificationUnavailable("LLM request failed") from exc
         except (KeyError, IndexError, TypeError) as exc:
-            raise ClassificationInvalidResponse("LLM response did not contain chat content") from exc
+            raise ClassificationInvalidResponse(
+                "LLM response did not contain chat content"
+            ) from exc
 
 
 # ⚠️ **The taxonomy and the bands are injected into the prompt, never hard-coded into it.** Both
