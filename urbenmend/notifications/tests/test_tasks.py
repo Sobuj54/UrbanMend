@@ -11,7 +11,14 @@ from urbenmend.identity.tests.factories import AuthorityFactory
 from urbenmend.issues.models import IssueStatus
 from urbenmend.issues.services import transition_issue_status
 from urbenmend.issues.tests.factories import IssueFactory
-from urbenmend.notifications.models import OutboxEvent
+from urbenmend.notifications.models import (
+    Notification,
+    NotificationChannel,
+    NotificationState,
+    OutboxEvent,
+)
+from urbenmend.notifications.services import generate_status_change_notifications
+from urbenmend.reporting.tests.factories import ReportFactory
 from urbenmend.notifications.tasks import (
     OUTBOX_CONSUMER_TASK,
     OUTBOX_RELAY_TASK,
@@ -88,3 +95,24 @@ def test_batch_size_limits_claimed_rows() -> None:
     assert publish.call_count == 1
     assert OutboxEvent.objects.filter(published_at__isnull=True).count() == 1
     assert OutboxEvent.objects.filter(pk=second.pk, published_at__isnull=True).exists()
+
+
+def test_status_event_generates_pending_email_and_dispatches() -> None:
+    event = _pending_event()
+    issue = IssueFactory._meta.model.objects.get(pk=event.aggregate_id)
+    recipient = ReportFactory.create(issue=issue).author
+    generate_status_change_notifications(event)
+    email = Notification.objects.get(
+        source_event=event,
+        recipient=recipient,
+        channel=NotificationChannel.EMAIL,
+    )
+
+    with patch("urbenmend.notifications.tasks.send_mail") as send:
+        from urbenmend.notifications.tasks import dispatch_email_notifications
+
+        assert dispatch_email_notifications.run(event) == 1
+
+    send.assert_called_once()
+    email.refresh_from_db()
+    assert email.state == NotificationState.SENT

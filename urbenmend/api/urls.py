@@ -238,6 +238,11 @@ urlpatterns = [
         name="notifications-read-all",
     ),
     path(
+        "notifications/stream",
+        notification_views.NotificationStreamView.as_view(),
+        name="notifications-stream",
+    ),
+    path(
         "notifications/<uuid:notification_id>",
         notification_views.NotificationDetailView.as_view(),
         name="notifications-detail",

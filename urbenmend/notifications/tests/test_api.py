@@ -53,6 +53,24 @@ def test_notification_collection_requires_authentication() -> None:
     assert Client().get(_collection_url()).status_code == 401
 
 
+def test_notification_stream_requires_authentication() -> None:
+    response = Client().get(reverse("api:notifications-stream"))
+    assert response.status_code == 401
+
+
+def test_notification_stream_emits_owned_notification() -> None:
+    owner = UserFactory.create()
+    notification = _notification(recipient=owner)
+    client = Client()
+    client.force_login(owner)
+
+    response = client.get(reverse("api:notifications-stream"))
+
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith("text/event-stream")
+    assert f'"notificationId": "{notification.pk}"' in b"".join(response.streaming_content).decode()
+
+
 def test_list_returns_only_callers_notifications_in_standard_envelope() -> None:
     owner = UserFactory.create()
     own = _notification(recipient=owner)

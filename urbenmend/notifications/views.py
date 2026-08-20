@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from typing import cast
 from uuid import UUID
 
+from django.http import StreamingHttpResponse
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
@@ -78,6 +80,27 @@ class NotificationPreferenceView(APIView):
     def get(self, request: Request) -> Response:
         preference = selectors.get_notification_preferences(actor=cast("User", request.user))
         return Response(NotificationPreferenceSerializer(preference).data)
+
+
+class NotificationStreamView(APIView):
+    """Authenticated SSE stream of currently available notifications."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> StreamingHttpResponse:
+        actor = cast("User", request.user)
+        items = selectors.list_notifications(actor=actor).order_by("created_at")[:100]
+
+        def events():
+            for notification in items:
+                payload = {"notificationId": str(notification.pk)}
+                yield f"event: notification\ndata: {json.dumps(payload)}\n\n"
+            yield ": heartbeat\n\n"
+
+        response = StreamingHttpResponse(events(), content_type="text/event-stream")
+        response["Cache-Control"] = "no-cache"
+        response["X-Accel-Buffering"] = "no"
+        return response
 
     def patch(self, request: Request) -> Response:
         serializer = NotificationPreferenceUpdateSerializer(data=request.data)

@@ -6,10 +6,11 @@ from typing import Any
 
 import structlog
 from celery import shared_task
+from django.core.mail import send_mail
 from django.db import transaction
 from django.utils import timezone
 
-from urbenmend.notifications.models import OutboxEvent
+from urbenmend.notifications.models import NotificationChannel, NotificationState, OutboxEvent
 from urbenmend.notifications.services import generate_status_change_notifications
 
 logger = structlog.get_logger(__name__)
@@ -36,7 +37,30 @@ def consume_outbox_event(event_id: str, **_options: Any) -> None:
         return
 
     created = generate_status_change_notifications(event)
+    dispatch_email_notifications(event)
     logger.info("notifications.outbox_consumed", event_id=event_id, notifications_created=created)
+
+
+@shared_task(name="notifications.dispatch_email", autoretry_for=(Exception,), retry_backoff=True)
+def dispatch_email_notifications(event: OutboxEvent) -> int:
+    """Deliver pending email notifications generated for an outbox event."""
+    sent = 0
+    for notification in event.notifications.select_related("recipient").filter(
+        channel=NotificationChannel.EMAIL, state=NotificationState.PENDING
+    ):
+        send_mail(
+            subject="UrbanMend issue status update",
+            message=notification.body,
+            from_email=None,
+            recipient_list=[notification.recipient.email],
+            fail_silently=False,
+        )
+        notification.state = NotificationState.SENT
+        notification.sent_at = timezone.now()
+        notification.delivered_at = notification.sent_at
+        notification.save(update_fields=["state", "sent_at", "delivered_at"])
+        sent += 1
+    return sent
 
 
 @shared_task(name=OUTBOX_RELAY_TASK)

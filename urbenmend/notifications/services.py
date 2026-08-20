@@ -66,12 +66,12 @@ def generate_status_change_notifications(event: OutboxEvent) -> int:
     from_status = str(payload["fromStatus"])
     to_status = str(payload["toStatus"])
     body = f"Your reported issue status changed from {from_status} to {to_status}."
-    recipients = (
+    recipients = list(
         User.objects.filter(
             reports__issue_id=issue_id,
             status__in=[UserStatus.REGISTERED, UserStatus.VERIFIED, UserStatus.ACTIVE],
         )
-        .exclude(notification_preference__in_app=False)
+        .select_related("notification_preference")
         .distinct()
     )
     now = timezone.now()
@@ -88,8 +88,28 @@ def generate_status_change_notifications(event: OutboxEvent) -> int:
             delivered_at=now,
         )
         for recipient in recipients
+        if not hasattr(recipient, "notification_preference")
+        or recipient.notification_preference.in_app
+    ]
+    email_notifications = [
+        Notification(
+            recipient=recipient,
+            issue_id=issue_id,
+            source_event=event,
+            notification_type=NotificationType.ISSUE_STATUS_CHANGED,
+            channel=NotificationChannel.EMAIL,
+            body=body,
+            state=NotificationState.PENDING,
+        )
+        for recipient in recipients
+        if recipient.email
+        and (
+            not hasattr(recipient, "notification_preference")
+            or recipient.notification_preference.email
+        )
     ]
     Notification.objects.bulk_create(notifications, ignore_conflicts=True)
+    Notification.objects.bulk_create(email_notifications, ignore_conflicts=True)
     return Notification.objects.filter(
         source_event=event,
         channel=NotificationChannel.IN_APP,
