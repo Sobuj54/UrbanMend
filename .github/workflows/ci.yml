@@ -325,6 +325,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # GHCR requires the repository path to be lowercase. GitHub preserves the casing of
+      # the owner/repository in `github.repository` (for example, `Sobuj54/UrbanMend`), so
+      # normalize it on the runner before handing the tag to Buildx.
+      - name: Normalize image name
+        shell: bash
+        run: echo "IMAGE_NAME=$(echo \"${GITHUB_REPOSITORY}\" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
       # Rebuilds from the stage-6 cache rather than transferring the image between jobs —
       # same layers, same digest inputs, and no multi-hundred-MB artifact round trip.
       - name: Build & push (SHA tag only)
