@@ -86,6 +86,33 @@ def test_publish_failure_leaves_event_pending_for_replay() -> None:
     assert event.attempt_count == 0
 
 
+def test_crash_after_publish_replays_without_duplicate_notifications() -> None:
+    event = _pending_event()
+    issue = IssueFactory._meta.model.objects.get(pk=event.aggregate_id)
+    recipient = ReportFactory.create(issue=issue).author
+
+    with (
+        patch.object(consume_outbox_event, "apply_async") as publish,
+        patch.object(OutboxEvent, "save", side_effect=RuntimeError("worker lost after publish")),
+        pytest.raises(RuntimeError, match="worker lost after publish"),
+    ):
+        relay_outbox.run()
+
+    event.refresh_from_db()
+    publish.assert_called_once_with(args=[str(event.pk)], task_id=str(event.pk))
+    assert event.published_at is None
+    assert event.attempt_count == 0
+
+    consume_outbox_event.run(str(event.pk))
+    consume_outbox_event.run(str(event.pk))
+
+    assert Notification.objects.filter(
+        source_event=event,
+        recipient=recipient,
+        channel=NotificationChannel.IN_APP,
+    ).count() == 1
+
+
 def test_batch_size_limits_claimed_rows() -> None:
     _pending_event()
     second = _pending_event()

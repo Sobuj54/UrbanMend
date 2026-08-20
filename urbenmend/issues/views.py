@@ -201,6 +201,11 @@ class IssueCollectionView(APIView):
 class IssueCommentsView(APIView):
     permission_classes = [AllowAny]
 
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticated()]
+        return super().get_permissions()
+
     def get(self, request: Request, issue_id: str) -> Response:
         issue = (
             Issue.objects.filter(pk=issue_id)
@@ -233,8 +238,6 @@ class IssueCommentsView(APIView):
         serializer = CommentCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        if not isinstance(request.user, User):
-            raise AuthorizationError("Authentication required.")
         comment = services.create_comment(
             actor=request.user, issue_id=issue_id, body=data["body"], visibility=data["visibility"]
         )

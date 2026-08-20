@@ -154,6 +154,30 @@ The integration suite is intentionally run serially. Do not add `-n`/`pytest-xdi
 several concurrency tests deliberately share Redis and exercise database transaction boundaries;
 parallel workers would use the same cache namespace and produce false failures.
 
+Before release, verify the NFR-13 LLM controls against the real Redis cache:
+
+```bash
+docker compose exec api pytest \
+  urbenmend/classification/tests/test_orchestration.py \
+  -k "call_limit or spend_guard or circuit_opens" -vv
+```
+
+This covers per-user and cross-user global call ceilings, the daily estimated-token budget, and the
+circuit breaker. Every exhausted or unavailable path must persist a keyword-fallback classification;
+the provider call count must stop at the configured limit rather than merely logging a warning.
+
+Verify the outbox worker-crash recovery boundary before release:
+
+```bash
+docker compose exec api pytest \
+  urbenmend/notifications/tests/test_tasks.py \
+  -k "publish_failure or crash_after_publish or does_not_republish" -vv
+```
+
+The critical case is a worker loss after the broker accepted the task but before the database
+transaction marked the outbox row published. The row must remain pending for relay, and duplicate
+consumer delivery must still create exactly one in-app notification per event and recipient.
+
 ⚠️ One command per line, deliberately. `docker compose exec api ruff check && ruff format --check`
 runs the **second command on the host**, where ruff is not installed — it either fails confusingly
 or silently checks nothing. To chain inside the container, quote the whole thing:
@@ -264,22 +288,51 @@ cannot enforce this; it is an Ingress/proxy concern. Pod-port scrape only.
 
 ### 2.5 Deploy **(DC-6)**
 
-Must answer: the pre-deploy `migrate` Job (§3.3); rollout order (migrate → API+worker together);
-readiness gating; SHA-tagged image selection. ⚠️ **Never deploy `latest`** — a moving tag makes the
-deployed revision unknowable and rollback unrepeatable [doc: DevOps §2.3].
+For a Kubernetes environment whose `app-config` ConfigMap and `app-secrets` Secret already exist:
+
+```powershell
+.\scripts\deploy.ps1 `
+  -ImageSha <git-sha> `
+  -Namespace urbenmend-staging `
+  -ImageRepository ghcr.io/<owner>/<repository>
+```
+
+The script renders `deploy/migration-job.yaml` with the exact SHA image, waits for migrations to
+complete, then rolls API, worker, and beat and waits for each workload's readiness. ⚠️ **Never deploy
+`latest`** — a moving tag makes the deployed revision unknowable and rollback unrepeatable.
 
 ### 2.6 Rollback **(DC-6)**
 
-Must answer: how to roll back **code** when the schema has already moved forward. ⚠️ This is why
-migrations must be **backward-compatible** (§3.2) — the previous image must run against the new
-schema. Also: what is *not* rollable (a dropped column), and the decision rule for
-roll-back-vs-roll-forward.
+Roll code back to the previously recorded SHA without reversing the schema by default:
+
+```powershell
+.\scripts\rollback.ps1 `
+  -PreviousImageSha <previous-git-sha> `
+  -Namespace urbenmend-staging `
+  -ImageRepository ghcr.io/<owner>/<repository>
+```
+
+This is why migrations must be backward-compatible: the previous image must run against the newer
+schema. Reverse a migration only after confirming its reverse operation is safe and data-preserving;
+otherwise fix forward.
 
 ### 2.7 Backup & restore **(DC-6)**
 
-Must answer: Postgres backup schedule/retention and a **rehearsed** restore; object-storage
-durability for report photos; what an Issue's history means if media is lost. ⚠️ Untested backups
-are not backups.
+The repository provides provider-neutral local rehearsal scripts. In production, run the equivalent
+commands through the managed Postgres/S3 backup systems with the same retention policy:
+
+```powershell
+.\scripts\backup.ps1 -OutputDirectory .\artifacts\backup
+.\scripts\restore-check.ps1 `
+  -DumpPath .\artifacts\backup\urbenmend-<timestamp>.dump `
+  -MediaDirectory .\artifacts\backup\media-<timestamp>
+```
+
+The backup captures a PostgreSQL custom-format dump, an object manifest, and the complete media
+bucket. The restore check uses a dedicated database and temporary bucket, validates that the schema
+restores, and compares media object counts. Schedule daily database snapshots plus continuous WAL
+archiving (30-day retention), and versioned/replicated object storage (90-day retention); rehearse a
+database restore monthly and media restore quarterly. ⚠️ Untested backups are not backups.
 
 ### 2.8 On-call **(DC-6)**
 
@@ -304,7 +357,15 @@ step-by-step procedure.
 | Security incident | ⚠️ Revoke sessions server-side by deleting `django_session` rows — this is why sessions are used and **not JWT** (BR-25/33, Arch §8). Rotate secrets including `DJANGO_SECRET_KEY`; review the audit log |
 | Beat scaled past 1 replica | Duplicate Issues / double-fired outbox. Scale back to exactly 1 (§2.1) |
 
-⚠️ **The outbox backlog metric — age of the oldest unrelayed row — is the only signal that
+Inspect the same outbox signal directly from a pod or scheduled monitor:
+
+```bash
+docker compose exec api python manage.py outbox_status
+# pending=3 oldest_age_seconds=412
+```
+
+Alert when `oldest_age_seconds > 300` while `pending > 0`, matching the five-minute threshold in
+the deployment guide. ⚠️ **The outbox backlog metric — age of the oldest unrelayed row — is the only signal that
 distinguishes "nothing to send" from "the relay is dead."** Queue depth will not tell you.
 
 ---

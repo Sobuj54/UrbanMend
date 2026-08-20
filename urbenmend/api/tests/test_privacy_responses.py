@@ -4,9 +4,13 @@ import pytest
 from django.test import Client
 from django.urls import reverse
 
+from urbenmend.identity import services as identity_services
 from urbenmend.identity.tests.factories import UserFactory
 from urbenmend.issues.models import Comment, CommentVisibility
 from urbenmend.issues.tests.factories import IssueFactory
+from urbenmend.notifications.models import Notification
+from urbenmend.notifications.services import generate_status_change_notifications
+from urbenmend.notifications.tests.test_tasks import _pending_event
 from urbenmend.reporting.tests.factories import ReportFactory
 
 pytestmark = pytest.mark.django_db
@@ -42,3 +46,17 @@ def test_public_issue_excludes_internal_comments_and_override_reason() -> None:
     payload = response.json()
     assert all(comment["body"] != "Internal operational note" for comment in payload["comments"])
     assert "Private officer deliberation" not in response.content.decode()
+
+
+def test_deleted_report_author_is_excluded_from_historical_outbox_replay() -> None:
+    event = _pending_event()
+    issue = IssueFactory._meta.model.objects.get(pk=event.aggregate_id)
+    author = UserFactory.create(email="deleted-private@example.test")
+    ReportFactory.create(issue=issue, author=author)
+
+    identity_services.anonymize_account(user=author)
+    generate_status_change_notifications(event)
+
+    author.refresh_from_db()
+    assert author.email is None
+    assert Notification.objects.filter(source_event=event, recipient=author).count() == 0

@@ -255,6 +255,30 @@ def test_the_per_user_call_limit_degrades_to_fallback() -> None:
 @override_settings(
     CLASSIFICATION_LLM_PROVIDER=f"{_HERE}.SuccessfulProvider",
     CLASSIFICATION_LLM_CACHE_SECONDS=0,
+    CLASSIFICATION_LLM_USER_RATE_LIMIT=100,
+    CLASSIFICATION_LLM_GLOBAL_RATE_LIMIT=1,
+)
+def test_the_global_call_limit_applies_across_different_users() -> None:
+    first = ReportFactory.create(
+        author=UserFactory.create(), description="First account road defect."
+    )
+    second = ReportFactory.create(
+        author=UserFactory.create(), description="A live wire is down."
+    )
+
+    classify_report.run(str(first.pk))
+    classify_report.run(str(second.pk))
+
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert first.classification_source == ClassificationSource.LLM
+    assert second.classification_source == ClassificationSource.FALLBACK
+    assert SuccessfulProvider.calls == 1
+
+
+@override_settings(
+    CLASSIFICATION_LLM_PROVIDER=f"{_HERE}.SuccessfulProvider",
+    CLASSIFICATION_LLM_CACHE_SECONDS=0,
     CLASSIFICATION_LLM_DAILY_TOKEN_BUDGET=1,
 )
 def test_the_spend_guard_degrades_before_calling_the_provider() -> None:
