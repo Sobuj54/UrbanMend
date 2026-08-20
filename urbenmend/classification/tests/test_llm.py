@@ -618,3 +618,26 @@ def test_token_counts_may_be_absent() -> None:
 
     assert adapter.classify(_request()).model == MODEL
     assert completion.input_tokens is None
+
+
+def test_openai_compatible_provider_maps_chat_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+    from io import BytesIO
+
+    from urbenmend.classification.llm import OpenAICompatibleLLMProvider
+
+    class Response(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.close()
+
+    body = json.dumps({"model": "served-model", "choices": [{"message": {"content": _reply()}}], "usage": {"prompt_tokens": 11, "completion_tokens": 7}}).encode()
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: Response(body))
+    provider = OpenAICompatibleLLMProvider(endpoint="https://example.test/v1", api_key="secret", model="configured-model")
+
+    completion = provider.complete(build_prompt(_request(), max_output_tokens=50, timeout_seconds=2))
+
+    assert completion.model == "served-model"
+    assert completion.input_tokens == 11
+    assert completion.output_tokens == 7

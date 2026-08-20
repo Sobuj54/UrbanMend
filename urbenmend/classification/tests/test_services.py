@@ -175,6 +175,27 @@ def test_the_default_provider_is_the_unconfigured_one() -> None:
     assert isinstance(build_llm_provider(), UnconfiguredLLMProvider)
 
 
+@override_settings(
+    CLASSIFICATION_LLM_PROVIDER="openai_compatible",
+    CLASSIFICATION_LLM_API_KEY="test-key",
+    CLASSIFICATION_LLM_ENDPOINT="https://example.test/v1",
+    CLASSIFICATION_LLM_MODEL="test-model",
+)
+def test_openai_compatible_provider_is_composed_from_settings() -> None:
+    from urbenmend.classification.llm import OpenAICompatibleLLMProvider
+
+    provider = build_llm_provider()
+    assert isinstance(provider, OpenAICompatibleLLMProvider)
+    assert provider.endpoint == "https://example.test/v1"
+    assert provider.model == "test-model"
+
+
+@override_settings(CLASSIFICATION_LLM_PROVIDER="openai_compatible", CLASSIFICATION_LLM_API_KEY="")
+def test_openai_compatible_provider_requires_api_key() -> None:
+    with pytest.raises(ImproperlyConfigured, match="CLASSIFICATION_LLM_API_KEY"):
+        build_llm_provider()
+
+
 @override_settings(CLASSIFICATION_LLM_PROVIDER=f"{_HERE}.RecordingProvider")
 def test_a_configured_provider_is_imported_by_path() -> None:
     """S1's "swap the provider without touching callers", as one setting."""

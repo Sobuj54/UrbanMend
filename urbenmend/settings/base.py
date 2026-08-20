@@ -349,6 +349,9 @@ CLASSIFICATION_LLM_PROVIDER = env(
     "CLASSIFICATION_LLM_PROVIDER",
     default="urbenmend.classification.llm.UnconfiguredLLMProvider",
 )
+CLASSIFICATION_LLM_ENDPOINT = env("CLASSIFICATION_LLM_ENDPOINT", default="https://api.openai.com/v1")
+CLASSIFICATION_LLM_API_KEY = env("CLASSIFICATION_LLM_API_KEY", default="")
+CLASSIFICATION_LLM_MODEL = env("CLASSIFICATION_LLM_MODEL", default="gpt-4o-mini")
 
 # NFR-13's "cap tokens per request". The reply is four short fields (category, severity, confidence,
 # one rationale sentence), so a large ceiling buys nothing but cost and a slower timeout when a model

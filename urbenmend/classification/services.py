@@ -50,7 +50,11 @@ from urbenmend.classification.contracts import (
     parse_severity,
 )
 from urbenmend.classification.keywords import KeywordFallbackClassifier
-from urbenmend.classification.llm import LLMClassificationAdapter, LLMProvider
+from urbenmend.classification.llm import (
+    LLMClassificationAdapter,
+    LLMProvider,
+    OpenAICompatibleLLMProvider,
+)
 from urbenmend.classification.selectors import active_category_slugs, active_keyword_rules
 
 logger = structlog.get_logger(__name__)
@@ -108,6 +112,14 @@ def build_llm_provider() -> LLMProvider:
         ImproperlyConfigured: the path cannot be imported, or does not name an `LLMProvider`.
     """
     path = settings.CLASSIFICATION_LLM_PROVIDER
+    if path == "openai_compatible":
+        if not settings.CLASSIFICATION_LLM_API_KEY:
+            raise ImproperlyConfigured("CLASSIFICATION_LLM_API_KEY is required")
+        return OpenAICompatibleLLMProvider(
+            endpoint=settings.CLASSIFICATION_LLM_ENDPOINT,
+            api_key=settings.CLASSIFICATION_LLM_API_KEY,
+            model=settings.CLASSIFICATION_LLM_MODEL,
+        )
     try:
         provider_class = import_string(path)
     except ImportError as exc:
