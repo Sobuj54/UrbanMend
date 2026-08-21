@@ -1,0 +1,226 @@
+# UrbanMend production deployment for a single Docker Compose host.
+#
+# Start this file with an explicit production environment file:
+#   docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+#
+# Caddy is the only service that publishes host ports. PostgreSQL, Redis, MinIO, and the application
+# containers remain reachable only through Docker networks.
+
+name: urbenmend-prod
+
+x-app: &app
+  image: ${APP_IMAGE:?Set APP_IMAGE to an immutable registry image tag}
+  env_file:
+    - path: ${URBENMEND_ENV_FILE:-.env.production}
+      required: true
+  networks:
+    - backend
+    - egress
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    storage-init:
+      condition: service_completed_successfully
+  restart: unless-stopped
+  init: true
+  logging: &json-logging
+    driver: json-file
+    options:
+      max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+      max-file: ${DOCKER_LOG_MAX_FILES:-5}
+
+services:
+  static-init:
+    image: ${APP_IMAGE:?Set APP_IMAGE to an immutable registry image tag}
+    command: ["/bin/sh", "-ec", "rm -rf /srv/static/* && cp -a /app/staticfiles/. /srv/static/"]
+    user: "0:0"
+    volumes:
+      - static_data:/srv/static
+    restart: "no"
+    logging: *json-logging
+
+  db:
+    image: ${POSTGIS_IMAGE:-postgis/postgis:17-3.5}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    logging: *json-logging
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:8-alpine}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a '$$REDIS_PASSWORD' ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    restart: unless-stopped
+    logging: *json-logging
+
+  storage:
+    image: ${MINIO_IMAGE:-minio/minio:latest}
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:?Set STORAGE_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:?Set STORAGE_SECRET_KEY}
+    volumes:
+      - storage_data:/data
+    networks:
+      - backend
+      - edge
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    logging: *json-logging
+
+  storage-init:
+    image: ${MINIO_CLIENT_IMAGE:-minio/mc:latest}
+    depends_on:
+      storage:
+        condition: service_healthy
+    environment:
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:?Set STORAGE_ACCESS_KEY}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:?Set STORAGE_SECRET_KEY}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-urbenmend-media}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mc alias set local http://storage:9000 "$$STORAGE_ACCESS_KEY" "$$STORAGE_SECRET_KEY"
+        mc mb --ignore-existing "local/$$STORAGE_BUCKET"
+        mc anonymous set none "local/$$STORAGE_BUCKET"
+    networks:
+      - backend
+    restart: "no"
+    logging: *json-logging
+
+  api:
+    <<: *app
+    command: ["uvicorn", "urbenmend.asgi:application", "--host", "0.0.0.0", "--port", "8080"]
+    expose:
+      - "8080"
+    networks:
+      - backend
+      - edge
+      - egress
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health', timeout=5).read()
+      interval: 15s
+      timeout: 7s
+      retries: 5
+      start_period: 30s
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "urbenmend", "worker", "--loglevel=info"]
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A urbenmend inspect ping --destination celery@$$HOSTNAME --timeout 5 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  beat:
+    <<: *app
+    command:
+      - celery
+      - -A
+      - urbenmend
+      - beat
+      - --loglevel=info
+      - --schedule=/tmp/celerybeat-schedule
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2.10-alpine}
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+      API_DOMAIN: ${API_DOMAIN:?Set API_DOMAIN}
+      STORAGE_DOMAIN: ${STORAGE_DOMAIN:?Set STORAGE_DOMAIN}
+      PROXY_MAX_REQUEST_BODY: ${PROXY_MAX_REQUEST_BODY:-12MB}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - static_data:/srv/static:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+      - egress
+    depends_on:
+      static-init:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    logging: *json-logging
+
+networks:
+  backend:
+    internal: true
+  egress:
+  edge:
+    name: urbenmend-edge
+
+volumes:
+  db_data:
+    name: urbenmend-prod-db
+  redis_data:
+    name: urbenmend-prod-redis
+  storage_data:
+    name: urbenmend-prod-storage
+  static_data:
+    name: urbenmend-prod-static
+  caddy_data:
+    name: urbenmend-prod-caddy-data
+  caddy_config:
+    name: urbenmend-prod-caddy-config

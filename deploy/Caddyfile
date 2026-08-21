@@ -1,0 +1,41 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+}
+
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size {$PROXY_MAX_REQUEST_BODY:12MB}
+	}
+
+	@metrics path /metrics /metrics/*
+	respond @metrics 404
+
+	handle_path /static/* {
+		root * /srv/static
+		file_server
+	}
+
+	handle {
+		reverse_proxy api:8080 {
+			# Disable proxy response buffering so notification SSE events reach clients immediately.
+			flush_interval -1
+			header_up Host {host}
+			header_up X-Forwarded-Proto https
+		}
+	}
+}
+
+{$STORAGE_DOMAIN} {
+	request_body {
+		max_size {$PROXY_MAX_REQUEST_BODY:12MB}
+	}
+
+	# Only the S3 API is routed. The MinIO administration console on port 9001 stays private.
+	reverse_proxy storage:9000 {
+		header_up Host {host}
+		header_up X-Forwarded-Proto https
+	}
+}
