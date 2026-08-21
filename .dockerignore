@@ -29,6 +29,9 @@ env/
 .env
 .env.local
 .env.*.local
+.env.production
+.env.production.*
+!.env.production.example
 
 # Test, lint and type-check caches + fixtures
 .pytest_cache/

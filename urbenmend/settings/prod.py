@@ -56,6 +56,26 @@ DATABASES["default"]["OPTIONS"]["sslmode"] = env(  # noqa: F405
 )
 
 # --------------------------------------------------------------------------------------
+# Email
+# --------------------------------------------------------------------------------------
+# Production must never inherit Django's localhost:25 SMTP defaults. Transactional providers
+# expose the same SMTP interface, so provider changes remain deployment configuration rather
+# than application code changes.
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = env("EMAIL_HOST")
+EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+EMAIL_HOST_USER = env("EMAIL_HOST_USER")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD")
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+EMAIL_USE_SSL = env.bool("EMAIL_USE_SSL", default=False)
+EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT_SECONDS", default=10)
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
+SERVER_EMAIL = env("SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)
+
+if EMAIL_USE_TLS and EMAIL_USE_SSL:
+    raise ValueError("EMAIL_USE_TLS and EMAIL_USE_SSL cannot both be enabled.")
+
+# --------------------------------------------------------------------------------------
 # Logging
 # --------------------------------------------------------------------------------------
 LOGGING["root"]["level"] = env("DJANGO_LOG_LEVEL", default="INFO")

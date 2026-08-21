@@ -69,7 +69,7 @@ Record the chosen values here before creating production infrastructure.
 | PostgreSQL hosting | Self-hosted on Droplet initially | [ ] |
 | MinIO data location | Droplet disk or mounted DigitalOcean Volume | [ ] |
 | Container registry | GitHub Container Registry (`ghcr.io`) | [ ] |
-| SMTP provider/from address | TBD | [ ] |
+| SMTP provider/from address | Resend SMTP; sender domain TBD | [ ] |
 | LLM provider/model | See `10-llm-deployment-evaluation.md` | [ ] |
 | Backup destination | Must be outside the Droplet | [ ] |
 | Monitoring/alert destination | Email, Discord, Slack, or equivalent | [ ] |
@@ -114,10 +114,10 @@ must render successfully without exposing secrets or development-only mounts/com
 
 ### 3.3 Add production environment templates
 
-- [ ] Add a committed placeholder-only `.env.production.example`.
-- [ ] Keep the actual `.env.production` outside Git with mode `0600`.
-- [ ] Remove obsolete or duplicate variables such as unused `LLM_API_KEY` after verification.
-- [ ] Document generation and rotation of every secret.
+- [x] Add a committed placeholder-only `.env.production.example`.
+- [x] Keep the actual `.env.production` outside Git with mode `0600`.
+- [x] Remove obsolete or duplicate variables such as unused `LLM_API_KEY` after verification.
+- [x] Document generation and rotation of every secret.
 
 Required settings include:
 
@@ -142,6 +142,46 @@ AWS_REGION=us-east-1
 
 `DATABASE_SSLMODE=disable` is appropriate only while PostgreSQL is self-hosted on the private
 Docker network. A future managed database should use TLS and its provider-supplied CA policy.
+
+Create the server file from the committed template:
+
+```bash
+cp .env.production.example .env.production
+chmod 600 .env.production
+```
+
+Generate secrets on the Droplet or another trusted machine. Do not paste their output into chat,
+issue trackers, shell history, or repository files:
+
+```bash
+# Django secret (URL-safe, roughly 64 bytes of entropy)
+openssl rand -base64 64 | tr -d '\n'
+
+# PostgreSQL and Redis passwords
+openssl rand -base64 36 | tr -d '\n'
+
+# MinIO access key and secret key
+openssl rand -hex 16
+openssl rand -base64 48 | tr -d '\n'
+```
+
+Prefer generated values without `$`, `:`, `/`, `@`, or whitespace. Otherwise URL-encode database
+and Redis credentials inside connection URLs, and escape `$` as `$$` for Docker Compose.
+
+Rotation rules:
+
+| Secret | Rotation procedure |
+|---|---|
+| Django secret key | Maintenance window; changing it invalidates signed values and active sessions. Replace the environment value and restart API/worker/Beat. |
+| PostgreSQL password | Change the database role password, update both `POSTGRES_PASSWORD` and `DATABASE_URL`, then restart application processes and verify health. The image's initialization variable does not alter an existing database automatically. |
+| Redis password | Update Redis configuration and both Redis URLs as one coordinated maintenance operation, restart the stack, then verify sessions, throttles, Celery, and outbox relay. |
+| MinIO credentials | Create/activate replacement credentials first, update MinIO and application variables, restart, verify upload/download, then revoke the old credentials. Avoid a state where the application and MinIO expect different root credentials. |
+| LLM API key | Create a replacement provider key, update `CLASSIFICATION_LLM_API_KEY`, restart workers, run the smoke evaluation, then revoke the old key. |
+| GHCR deploy token | Create a read-only replacement, authenticate Docker, verify an image pull, then revoke the old token. |
+
+Production email is configured for Resend's SMTP service through the settings in
+`.env.production.example`. Repository configuration alone does not prove external delivery: the
+Resend account, sender domain, DNS records, and a real delivery test are still required.
 
 ## 4. Phase 2 — Droplet and Network Provisioning
 
@@ -177,11 +217,33 @@ Acceptance:
 
 ### 5.2 Email
 
-- [ ] Select an SMTP or transactional email provider.
-- [ ] Add production email settings to Django configuration if not already supported.
-- [ ] Configure a verified sender/domain and DNS records.
+- [x] Select an SMTP or transactional email provider: Resend.
+- [x] Add production email settings to Django configuration if not already supported.
+- [ ] Configure a verified sender/domain and DNS records in Resend.
 - [ ] Test registration verification, password reset, and status-change email delivery.
 - [ ] Confirm failed email delivery does not lose the underlying outbox event.
+
+#### Resend setup
+
+1. Create a Resend account and add the domain that will appear after `@` in
+   `DEFAULT_FROM_EMAIL` (for example, `mail.example.com`).
+2. Add every DNS record Resend shows for that domain, including SPF and DKIM. Keep the records
+   exactly as Resend provides them; do not add a second SPF TXT record for the same hostname.
+3. Wait for Resend to mark the domain verified. Use a verified domain-based sender; Resend may
+   restrict or rewrite unverified senders.
+4. Create a restricted Resend API key for this deployment. Store it as `EMAIL_HOST_PASSWORD` in the
+   server-only `.env.production` file. The SMTP username is literally `resend`.
+5. Keep `EMAIL_HOST=smtp.resend.com`, `EMAIL_PORT=587`, `EMAIL_USE_TLS=true`, and
+   `EMAIL_USE_SSL=false`. Port `465` is an alternative only when using SSL instead of STARTTLS.
+6. Restart API and worker containers after changing the environment file:
+
+   ```bash
+   docker compose --env-file .env.production -f docker-compose.prod.yml up -d --force-recreate api worker beat
+   ```
+
+7. Exercise registration verification, password reset, and an issue status notification. Confirm the
+   messages arrive and inspect Resend's delivery logs. For a failure test, temporarily use an invalid
+   SMTP key and confirm the notification remains pending and Celery retries the task.
 
 ### 5.3 LLM
 
@@ -218,7 +280,9 @@ pull immutable image
 
 ## 7. Phase 5 — Storage and Persistence Validation
 
-- [ ] Confirm the MinIO bucket is private.
+- [x] Add idempotent MinIO bucket creation and an authenticated read-back check that its anonymous
+  policy is `none`; API/worker/Beat startup depends on this check succeeding.
+- [ ] Confirm the MinIO bucket is private on the deployed host.
 - [ ] Upload a JPEG, PNG, and WebP through the API.
 - [ ] Confirm EXIF is removed and derivatives are generated by the worker.
 - [ ] Confirm returned presigned URLs use `https://storage.<domain>`, not `storage:9000`.
@@ -319,9 +383,9 @@ order unless a dependency requires otherwise.
 
 1. [x] Production Docker Compose file with separate API, worker, and Beat services.
 2. [x] Caddy/Nginx configuration for API, MinIO, TLS, SSE, and static files.
-3. [ ] `.env.production.example` with complete placeholder-only production variables.
-4. [ ] MinIO bucket initialization and private-bucket policy.
-5. [ ] Production email backend configuration and tests.
+3. [x] `.env.production.example` with complete placeholder-only production variables.
+4. [x] MinIO bucket initialization and private-bucket policy.
+5. [x] Production email backend configuration and tests.
 6. [ ] DigitalOcean Droplet bootstrap guide or script.
 7. [ ] SHA-based Docker Compose deploy and rollback scripts.
 8. [ ] Off-Droplet backup destination and scheduled backup procedure.
