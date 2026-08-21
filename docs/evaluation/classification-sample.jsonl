@@ -1,0 +1,8 @@
+{"text":"A live electric wire is sparking beside the footpath.","language":"en","expected_category":"electrical","expected_severity":"critical"}
+{"text":"রাস্তার মাঝখানে বড় গর্ত, মোটরসাইকেল দুর্ঘটনা হতে পারে।","language":"bn","expected_category":"roads","expected_severity":"high"}
+{"text":"The streetlight outside the school has been broken for three nights.","language":"en","expected_category":"street_lighting","expected_severity":"medium"}
+{"text":"ড্রেন বন্ধ হয়ে রাস্তায় পানি জমে আছে।","language":"bn","expected_category":"water_drainage","expected_severity":"medium"}
+{"text":"Garbage has not been collected and is blocking the market entrance.","language":"en","expected_category":"sanitation_waste","expected_severity":"medium"}
+{"text":"Public footbridge railing is loose and someone could fall.","language":"en","expected_category":"public_structures","expected_severity":"high"}
+{"text":"Road sign paint is faded but the sign is still readable.","language":"en","expected_category":"roads","expected_severity":"low"}
+{"text":"এলাকায় একটি ছোট পার্কের বেঞ্চের রং উঠে গেছে।","language":"bn","expected_category":"public_structures","expected_severity":"low"}
