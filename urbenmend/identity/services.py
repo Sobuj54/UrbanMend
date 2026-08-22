@@ -23,6 +23,7 @@ from __future__ import annotations
 import secrets
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import structlog
 from django.conf import settings
@@ -58,15 +59,16 @@ def request_password_reset(*, identifier: str) -> None:
     user = User.objects.filter(email=identifier.strip().lower()).first()
     if user is None or not user.email or user.email_verified_at is None or not user.is_active:
         return
-    raw_token = secrets.token_urlsafe(32)
+    raw_secret = secrets.token_urlsafe(32)
     PasswordResetToken.objects.filter(user=user, consumed_at__isnull=True).update(
         consumed_at=timezone.now()
     )
-    PasswordResetToken.objects.create(
+    token = PasswordResetToken.objects.create(
         user=user,
-        token_hash=make_password(raw_token),
+        token_hash=make_password(raw_secret),
         expires_at=timezone.now() + PasswordResetToken.TTL,
     )
+    raw_token = f"{token.pk}.{raw_secret}"
     transaction.on_commit(
         lambda: send_mail(
             subject="UrbanMend password reset",
@@ -77,7 +79,6 @@ def request_password_reset(*, identifier: str) -> None:
     )
 
 
-@transaction.atomic
 def reset_password(*, reset_token: str, new_password: str) -> None:
     """Consume one valid reset token, change the password and revoke every session."""
     from django.contrib.auth.password_validation import validate_password
@@ -85,32 +86,47 @@ def reset_password(*, reset_token: str, new_password: str) -> None:
 
     from urbenmend.identity.models import PasswordResetToken
 
-    candidates = (
-        PasswordResetToken.objects.select_for_update()
-        .select_related("user")
-        .filter(
-            consumed_at__isnull=True,
-            expires_at__gt=timezone.now(),
-            attempts__lt=PasswordResetToken.MAX_ATTEMPTS,
-        )
-        .order_by("-created_at")
-    )
-    matched = None
-    for candidate in candidates:
-        if check_password(reset_token, candidate.token_hash):
-            matched = candidate
-            break
-    if matched is None:
+    try:
+        token_id_text, raw_secret = reset_token.split(".", 1)
+        token_id = UUID(token_id_text)
+    except (ValueError, AttributeError) as exc:
+        raise ValidationError("The reset token is invalid or expired.") from exc
+
+    # Commit the failed-attempt increment independently, so raising below cannot roll it back.
+    with transaction.atomic():
+        try:
+            candidate = (
+                PasswordResetToken.objects.select_for_update()
+                .select_related("user")
+                .get(pk=token_id)
+            )
+        except PasswordResetToken.DoesNotExist as exc:
+            raise ValidationError("The reset token is invalid or expired.") from exc
+        if not candidate.is_usable:
+            raise ValidationError("The reset token is invalid or expired.")
+        candidate.attempts += 1
+        candidate.save(update_fields=["attempts"])
+
+    if not check_password(raw_secret, candidate.token_hash):
         raise ValidationError("The reset token is invalid or expired.")
-    validate_password(new_password, user=matched.user)
-    matched.user.set_password(new_password)
-    matched.user.save(update_fields=["password"])
-    matched.consumed_at = timezone.now()
-    matched.save(update_fields=["consumed_at"])
-    for session in Session.objects.all().iterator():
-        data = session.get_decoded()
-        if data.get(SESSION_KEY) == str(matched.user_id):
-            session.delete()
+
+    with transaction.atomic():
+        candidate = (
+            PasswordResetToken.objects.select_for_update().select_related("user").get(pk=token_id)
+        )
+        if not candidate.is_usable:
+            raise ValidationError("The reset token is invalid or expired.")
+        validate_password(new_password, user=candidate.user)
+        candidate.user.set_password(new_password)
+        candidate.user.save(update_fields=["password"])
+        candidate.consumed_at = timezone.now()
+        candidate.save(update_fields=["consumed_at"])
+        for session in Session.objects.all().iterator():
+            data = session.get_decoded()
+            if data.get(SESSION_KEY) == str(candidate.user_id):
+                import_module(settings.SESSION_ENGINE).SessionStore(
+                    session_key=session.session_key
+                ).delete()
 
 
 class RegistrationError(Exception):

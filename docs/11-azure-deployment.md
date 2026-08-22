@@ -144,3 +144,32 @@ but is not required as the application's media backend. Rehearse restoration wit
 - Health endpoint returns successfully over HTTPS.
 - Image upload/download, asynchronous processing, notifications, and exports work.
 - Database and media backups have completed and a restore has been tested.
+
+## Monitoring and alerts
+
+The image emits JSON logs to stdout/stderr and exposes Prometheus metrics at `/metrics`. Caddy
+returns `404` for that path deliberately; do not publish it through the public API hostname.
+Collect logs and metrics from the VM with Azure Monitor Agent (or an equivalent private collector):
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml logs --no-color --since=5m api worker beat caddy
+docker compose --env-file .env.production -f docker-compose.prod.yml exec -T api \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/metrics').read().decode())"
+```
+
+Create alerts for these release gates:
+
+| Signal | Initial alert | Response |
+|---|---:|---|
+| API 5xx rate | >2% for 5 minutes | Inspect `trace_id` logs and dependency health |
+| API request latency | p95 >2 seconds for 10 minutes | Check DB plans, worker backlog, and VM CPU/memory |
+| Health endpoint | Any `503` for 2 minutes | Remove host from traffic and inspect Postgres/Redis |
+| Celery queue depth | >500 for 10 minutes | Check worker health and scale/restart workers |
+| Outbox oldest pending age | >60 seconds | Check beat, broker, and notification dispatch |
+| Classification fallback rate | >20% for 15 minutes | Check provider availability and spend limits |
+| LLM daily token budget | >80% | Reduce provider traffic or investigate prompt growth |
+| Disk usage | >80% | Expand/clean Docker, database, and media volumes |
+
+Record the alert destination, owner, and on-call escalation in the Azure resource group. Test each
+alert with a staging fault before enabling public traffic; a dashboard without a tested response is
+not an operational control.

@@ -38,6 +38,8 @@ if ($MediaDirectory) {
     $remoteMedia = "/tmp/restore-media"
     docker cp $resolvedMedia "$StorageContainer`:$remoteMedia"
     if ($LASTEXITCODE -ne 0) { throw "failed to copy media backup" }
+    docker exec $StorageContainer mc alias set restore http://localhost:9000 $StorageAccessKey $StorageSecretKey
+    if ($LASTEXITCODE -ne 0) { throw "object-store authentication failed" }
     docker exec $StorageContainer mc mb --ignore-existing "restore/$RestoreBucket"
     if ($LASTEXITCODE -ne 0) { throw "failed to create restore-check bucket" }
     docker exec $StorageContainer mc mirror --overwrite $remoteMedia "restore/$RestoreBucket"
@@ -49,5 +51,3 @@ if ($MediaDirectory) {
     }
     Write-Host "Media restore check passed: $restoredCount objects"
 }
-    docker exec $StorageContainer mc alias set restore http://localhost:9000 $StorageAccessKey $StorageSecretKey
-    if ($LASTEXITCODE -ne 0) { throw "object-store authentication failed" }
