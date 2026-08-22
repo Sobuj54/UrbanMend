@@ -508,9 +508,9 @@ class MeView(RateLimitHeadersMixin, APIView):
     selector to tamper with and nothing for a scope check to compare (FR-3 is satisfied by the
     absence of a target parameter, not by an omitted check).
 
-    ⚠️ **`GET /users` and `PATCH /users/{id}` are NOT here.** Both are Admin endpoints in API §6.2
-    and both are out of T1.9's scope; `api/urls.py` records them as unowned rather than leaving
-    them silently absent.
+    ⚠️ **`GET /users` and `PATCH /users/{id}` are NOT here.** Both are separate Admin endpoints
+    in API §6.2; keeping them off the self-service view prevents an account id from entering a
+    path whose authorization is structurally limited to `request.user`.
     """
 
     permission_classes = [IsAuthenticated]

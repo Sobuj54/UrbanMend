@@ -71,11 +71,9 @@ read-only `perf_smoke` management command. **Next: deployment-readiness hardenin
 security review, representative load testing, failure drills, observability, deployment/rollback, and
 backup/restore verification.
 
-**Unowned / blocked — do not silently absorb into another task:** `/auth/password/forgot`·`/reset`
-(blocked on ❓Q5; **a provisioned Authority still has no way to set a first password**, so T1.6 accounts
-cannot log in) · `GET /users` and `PATCH /users/{id}` (Admin, API §6.2 — need a task ID; that `PATCH` is
-the documented route for Authority deprovisioning *and* Admin-side email changes, so **two T1.9
-decisions have no implemented alternative path**).
+**Previously unowned identity follow-ups are now implemented:** `/auth/password/forgot`·`/reset`,
+`GET /users`, and `PATCH /users/{id}`. The Admin update path audits role/scope/status/2FA-policy
+changes and immediately revokes live sessions when an account is suspended or deprovisioned.
 
 ## ⚠️ Traps that bind future work
 

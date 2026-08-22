@@ -262,7 +262,8 @@ urlpatterns = [
 # Remaining §6 resources land with their phases, not here:
 #   /auth/password/forgot, /reset     → ✅ built; email-only, generic 202 response
 #   /users/me                        → T1.9 ✅ built
-#   /users, /users/{id}              → unowned (admin list/search, role/scope/status change);
+#   /users, /users/{id}              → ✅ built (Admin list/search and audited role/scope/status
+#                                      changes; blocking statuses revoke live sessions immediately)
 #                                      API §6.2 names both, T1.9 scoped them out
 #   POST /reports                    → T2.2 ✅ built; T2.9 ✅ throttled (per-account + per-IP)
 #   GET /reports, GET /reports/{id}  → T2.7 ✅ built (list is session-scoped by role; detail public)

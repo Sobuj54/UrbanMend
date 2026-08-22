@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from django.test import Client
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -52,6 +53,24 @@ def test_admin_updates_status_scope_and_two_factor_with_audit() -> None:
         or event.before["status"] == UserStatus.ACTIVE
     )
     assert event.after["status"] == UserStatus.SUSPENDED
+
+
+@pytest.mark.parametrize("blocked_status", [UserStatus.SUSPENDED, UserStatus.DEPROVISIONED])
+def test_admin_blocking_account_revokes_its_live_sessions(blocked_status: str) -> None:
+    admin = AdminFactory()
+    authority = AuthorityFactory()
+    signed_in_client = Client()
+    signed_in_client.force_login(authority)
+    assert signed_in_client.get(reverse("api:users-me")).status_code == 200
+
+    response = client(admin).patch(
+        reverse("api:users-detail", kwargs={"user_id": authority.pk}),
+        {"status": blocked_status},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert signed_in_client.get(reverse("api:users-me")).status_code == 401
 
 
 def test_non_admin_and_invalid_scope_are_rejected_without_mutation() -> None:

@@ -1088,7 +1088,7 @@ def set_category_scope(
 @transaction.atomic
 def update_user_by_admin(*, actor: User, user_id, **changes: Any) -> User:
     """Apply the documented admin account controls and audit each resulting snapshot."""
-    from urbenmend.identity.models import Role, User
+    from urbenmend.identity.models import Role, User, UserStatus
 
     require_role(actor, Role.ADMIN)
     try:
@@ -1117,6 +1117,11 @@ def update_user_by_admin(*, actor: User, user_id, **changes: Any) -> User:
     if changes:
         raise ValidationError("Unsupported user update field.")
     target.save(update_fields=["role", "status", "require_two_factor"])
+    # Suspension and deprovisioning must invalidate already-issued sessions immediately.
+    # Checking the resulting status also handles an idempotent PATCH where the status was
+    # already blocked, keeping the operation fail-closed if a stale session exists.
+    if target.status in {UserStatus.SUSPENDED, UserStatus.DEPROVISIONED, UserStatus.DELETED}:
+        revoke_all_sessions(user=target)
     after = {
         "role": target.role,
         "status": target.status,
