@@ -217,17 +217,14 @@ class TestProvisionedAccountState:
 
         assert authority.email == "mixed.case@example.test"
 
-    def test_phone_only_authority_is_allowed(self, admin: User) -> None:
-        """Email *and/or* phone (data-model §1) — the endpoint's example body shows email, but the
-        user entity accepts either, and an authority reachable only by handset is legitimate."""
-        authority = provision_authority(
-            actor=admin,
-            phone="+8801712345678",
-            category_slugs=["roads"],
-        )
-
-        assert authority.email is None
-        assert authority.phone == "+8801712345678"
+    def test_phone_only_authority_is_rejected(self, admin: User) -> None:
+        """Authority activation is email-based because SMS delivery is out of scope."""
+        with pytest.raises(ValidationError, match="email address"):
+            provision_authority(
+                actor=admin,
+                phone="+8801712345678",
+                category_slugs=["roads"],
+            )
 
 
 class TestProvisioningScope:

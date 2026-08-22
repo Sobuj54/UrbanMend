@@ -185,7 +185,7 @@ def register_citizen(
 
     [doc: API §6.1 POST /auth/register, auth.md]
     """
-    from urbenmend.identity.models import Role, User, UserStatus
+    from urbenmend.identity.models import Channel, Role, User, UserStatus
 
     if not email and not phone:
         raise RegistrationError("At least one of email or phone is required.")
@@ -255,14 +255,18 @@ def send_verification_code(*, user: User, channel: Channel) -> tuple[Verificatio
         expires_at=timezone.now() + VerificationCode.TTL,
     )
 
-    # ⚠️ Delivery is NOT wired up, deliberately. Which channels exist and which provider
-    # sends them is ❓Q5, which is unresolved — CLAUDE.md forbids inventing an answer. When
-    # Q5 lands, the send is enqueued here via `transaction.on_commit` so the worker cannot
-    # observe an uncommitted row [doc: Arch §4.1]:
-    #
-    #     transaction.on_commit(lambda: deliver_verification_code.delay(verification.id, code))
-    #
-    # Until then the code is issued and verifiable, but nothing transmits it.
+    # Email is the supported verification delivery channel. Send only after commit so a
+    # recipient can never receive a credential for a row that later rolls back.
+    if channel == ChannelEnum.EMAIL:
+        transaction.on_commit(
+            lambda: send_mail(
+                subject="UrbanMend email verification",
+                message=f"Your UrbanMend verification code is: {code}",
+                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@urbanmend.local"),
+                recipient_list=[user.email],
+            )
+        )
+    # Phone delivery remains provider-specific; SMS is out of scope.
 
     return verification, code
 
@@ -988,12 +992,12 @@ def provision_authority(
     with nothing written. Inside `atomic` a later failure would roll back anyway, but ordering it
     this way keeps the error about the request rather than about a half-built account.
     """
-    from urbenmend.identity.models import Role, User, UserStatus
+    from urbenmend.identity.models import Channel, Role, User, UserStatus
 
     require_role(actor, Role.ADMIN)
 
-    if not email and not phone:
-        raise ValidationError("An authority account requires an email address or a phone number.")
+    if not email:
+        raise ValidationError("An authority account requires an email address.")
 
     categories = _resolve_category_scope(category_slugs)
 
@@ -1038,6 +1042,7 @@ def provision_authority(
         category_scope=sorted(category.slug for category in categories),
         require_two_factor=require_two_factor,
     )
+    send_verification_code(user=authority, channel=Channel.EMAIL)
     return authority
 
 

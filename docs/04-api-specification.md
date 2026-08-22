@@ -397,7 +397,9 @@ public Issue history keeps a stable author reference (C-14).
 #### `POST /users/authorities` *(admin)*
 - **Purpose:** **Provision an Authority account** and set category scope (FR-2, BR-25). Grant is audited (FR-32).
 - **Auth:** Session. **Authorization:** Admin.
-- **Body:** `{ "email":"...", "categoryScope":["roads"], "requireTwoFactor": true }`
+- **Body:** `{ "email":"...", "categoryScope":["roads"], "requireTwoFactor": true }`. Email is
+  required because SMS delivery is out of scope; the verified mailbox is used to establish the
+  Authority's first password through the password-reset flow.
 - **Response `201`:** authority user summary.
 - **Errors:** `409`, `VALIDATION_FAILED`, `FORBIDDEN`, standard.
 

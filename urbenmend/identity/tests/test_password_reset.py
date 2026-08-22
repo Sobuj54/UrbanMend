@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from urbenmend.identity.models import PasswordResetToken
-from urbenmend.identity.tests.factories import UserFactory
+from urbenmend.identity.tests.factories import AdminFactory, UserFactory
 
 pytestmark = pytest.mark.django_db
 
@@ -60,3 +60,54 @@ def test_invalid_token_weak_password_and_unknown_fields_are_rejected() -> None:
         .status_code
         == 400
     )
+
+
+def test_provisioned_authority_can_verify_email_set_first_password_and_login(
+    django_capture_on_commit_callbacks,
+) -> None:
+    admin_client = APIClient()
+    admin_client.force_authenticate(AdminFactory())
+    with django_capture_on_commit_callbacks(execute=True):
+        provisioned = admin_client.post(
+            reverse("api:users-authorities"),
+            {"email": "new-authority@example.test", "categoryScope": ["roads"]},
+            format="json",
+        )
+    assert provisioned.status_code == 201
+    verification_code = mail.outbox[-1].body.rsplit(": ", 1)[1]
+
+    verified = APIClient().post(
+        reverse("api:auth-verify"),
+        {
+            "identifier": "new-authority@example.test",
+            "channel": "email",
+            "code": verification_code,
+        },
+        format="json",
+    )
+    assert verified.status_code == 200
+
+    with django_capture_on_commit_callbacks(execute=True):
+        forgot = APIClient().post(
+            reverse("api:password-forgot"),
+            {"identifier": "new-authority@example.test"},
+            format="json",
+        )
+    assert forgot.status_code == 202
+    reset_token = mail.outbox[-1].body.rsplit(": ", 1)[1]
+    password = "Authority-first-password-2026!"
+    assert (
+        APIClient().post(
+            reverse("api:password-reset"),
+            {"resetToken": reset_token, "newPassword": password},
+            format="json",
+        ).status_code
+        == 200
+    )
+    login = APIClient().post(
+        reverse("api:auth-login"),
+        {"identifier": "new-authority@example.test", "password": password},
+        format="json",
+    )
+    assert login.status_code == 200
+    assert login.data["user"]["role"] == "authority"

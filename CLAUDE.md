@@ -74,6 +74,8 @@ backup/restore verification.
 **Previously unowned identity follow-ups are now implemented:** `/auth/password/forgot`·`/reset`,
 `GET /users`, and `PATCH /users/{id}`. The Admin update path audits role/scope/status/2FA-policy
 changes and immediately revokes live sessions when an account is suspended or deprovisioned.
+Authority provisioning is email-only (SMS is out of scope), sends an email verification code, and
+uses the verified mailbox as the first-password setup path.
 
 ## ⚠️ Traps that bind future work
 

@@ -176,7 +176,7 @@ class ProvisionAuthoritySerializer(CamelCaseSerializer):
     the process and start rejecting any category a later migration adds until the pod restarts.
     """
 
-    email = serializers.EmailField(required=False, allow_blank=False)
+    email = serializers.EmailField(required=True, allow_blank=False)
     phone = serializers.CharField(required=False, allow_blank=False, max_length=16)
     # `allow_empty=True`: an Authority provisioned with no scope can act on nothing, which is a
     # valid parked state (see `has_category_scope`). `required=False` because the spec marks
@@ -196,9 +196,9 @@ class ProvisionAuthoritySerializer(CamelCaseSerializer):
         `VALIDATION_FAILED` detail the spec asks for, while the service copy holds when the
         function is called from a management command with no serializer in sight (FR-3).
         """
-        if not attrs.get("email") and not attrs.get("phone"):
+        if not attrs.get("email"):
             raise serializers.ValidationError(
-                "At least one of email or phone is required.",
+                "An authority account requires an email address.",
                 code="REQUIRED",
             )
         return attrs
