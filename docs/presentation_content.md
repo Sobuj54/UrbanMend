@@ -69,7 +69,7 @@ UrbanMend — An AI-Powered Crowd-Sourced System for Public Issue Prioritization
 - Report and media APIs with validation, throttling, idempotency, image processing, thumbnails, and EXIF stripping.
 - LLM classification adapter with deterministic bilingual keyword fallback; category and severity rationale are retained.
 - Issue queue/map, clustering, confirmations, comments, assignment, status transitions, severity overrides, merge/split, moderation, notifications, audit, analytics, and exports.
-  ![System design diagram](./docs/system-design.png)
+  ![System design diagram](/docs/system-design.png)
 
 ## Page 10 – Platform Overview
 
