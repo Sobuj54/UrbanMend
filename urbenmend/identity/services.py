@@ -185,7 +185,7 @@ def register_citizen(
 
     [doc: API §6.1 POST /auth/register, auth.md]
     """
-    from urbenmend.identity.models import Channel, Role, User, UserStatus
+    from urbenmend.identity.models import Role, User, UserStatus
 
     if not email and not phone:
         raise RegistrationError("At least one of email or phone is required.")

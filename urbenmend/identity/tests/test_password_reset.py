@@ -97,11 +97,13 @@ def test_provisioned_authority_can_verify_email_set_first_password_and_login(
     reset_token = mail.outbox[-1].body.rsplit(": ", 1)[1]
     password = "Authority-first-password-2026!"
     assert (
-        APIClient().post(
+        APIClient()
+        .post(
             reverse("api:password-reset"),
             {"resetToken": reset_token, "newPassword": password},
             format="json",
-        ).status_code
+        )
+        .status_code
         == 200
     )
     login = APIClient().post(

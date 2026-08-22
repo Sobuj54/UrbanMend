@@ -312,6 +312,7 @@ class TestProvisioningConflicts:
     def test_duplicate_phone_raises_provisioning_error(self, admin: User) -> None:
         provision_authority(
             actor=admin,
+            email="existing-phone-authority@example.test",
             phone="+8801712345678",
             category_slugs=["roads"],
         )
@@ -319,6 +320,7 @@ class TestProvisioningConflicts:
         with pytest.raises(ProvisioningError):
             provision_authority(
                 actor=admin,
+                email="duplicate-phone-authority@example.test",
                 phone="+8801712345678",
                 category_slugs=["electrical"],
             )
